@@ -75,6 +75,36 @@ export function voiceBusy(): boolean {
   return busyProbe?.() === true;
 }
 
+/**
+ * 字框（`fcn_0044ecb6` 画的店员 / 司仪气泡）**至少**挂多久 @source `0x0044ee4e cmp eax, 0x7d0`。
+ */
+export const CAPTION_MIN_MS = 0x7d0;
+
+/**
+ * ★★ 第二十六份 panel #2：字框到期没有 —— `fcn_0044ee18(0)` 的**唯一**判据，各屏共用这一份。
+ *
+ * ```asm
+ * 0044ee1c  cmp  [0x4762c4], 0 / je → 1          ; 没有字框（或已被收掉）⇒ 到期
+ * 0044ee3f  call timeGetTime / sub eax, [0x4762c4]
+ * 0044ee4e  cmp  eax, 0x7d0 / jb 0x44ee5f         ; 不满 2000 ms ⇒ 还挂着（返回 0）
+ * 0044ee55  mov  [0x4762c4], 0                     ; 满了 ……
+ * 0044ee63  cmp  byte [0x49715b], 0 / je 0x44ee76  ; 音效档 = 0（RICH4.CFG+3，出厂 4 @ 0x00411ef0）⇒ 到期
+ * 0044ee6c  call 0x4544b9 / mov [0x4762c4], eax   ; 语音缓冲 [0x47e750] 还在响（DSBSTATUS_PLAYING）⇒ 1 ⇒ 继续挂
+ * ```
+ * ⇒ 音效开着：挂 **max(2000 ms, 语音放完)**；音效关着：恰好 2000 ms（那时 `0x45441a` 也根本不放语音）。
+ * `voiceBusy` 的注册方已经带了「音效档 > 0」那道闸（`main.ts` 的 `setVoiceBusyProbe`）。
+ *
+ * ⚠️ 只管 `0x44ee18` 这一族（`0x44ecb6` 气泡）。`0x440cac` 訊息框是**死时长**：`0x00440de8 call 0x4528b9(ms)`
+ *   只等调用方给的毫秒数（可点掉），不问语音 —— 串里的 `#NNNN` 照样由 `0x44fabc` 播，但框不等它。
+ *
+ * @param shownAt 这一句挂上去的时刻（`[0x4762c4]` = `0x0044ee07 timeGetTime`）
+ * @param busy 语音此刻还在响吗（缺省问 `voiceBusy()`；单测直接给）
+ */
+export function captionExpired(shownAt: number, now: number, busy: boolean = voiceBusy()): boolean {
+  if (now - shownAt < CAPTION_MIN_MS) return false;
+  return !busy;
+}
+
 /** 停掉正在响的语音（由 `main.ts` 注册）*/
 let stopper: (() => void) | null = null;
 

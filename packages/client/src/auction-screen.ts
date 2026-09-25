@@ -39,7 +39,7 @@
  * | 七颗钮：常态 图 `2i+4`、按下 图 `2i+3`，落点 (406, 133 + 48i) | 0x43b010 / 0x43bb86 |
  * | 七颗钮的命中框 `x∈[363,449]`、`y∈[中心−19, 中心+19]` | 0x43bb86 |
  * | 消息框 = 图 2（244×100，锚点 (122,50)）落点 (410,60)，字 20 号 #101010 居中 | 0x43c680 / 0x44ed71 |
- * | 消息 2 秒后自动消失 | 0x44ee4f `cmp eax, 0x7d0` |
+ * | 消息挂满 2 秒**且**语音放完才收（音效开着时；`#0131`/`#0132`/`#0135`/`#0148` 由 `0x44fabc` 播）| 0x44ee4e `cmp eax, 0x7d0` + 0x44ee6c `call 0x4544b9` |
  * | 定时器 100ms | 0x43a365 `push 0x64` 的 `SetTimer` |
  * | 每一次 `0x407` 都放音效 63 | 0x43a3fc `play_sound_effect(0x475bc2)` |
  * | 成交那一下放音效 29 | 0x43b412 `play_sound_effect(0x475bba)` |
@@ -48,9 +48,10 @@
  *   `fcn_00456418` VA 0x00456418）：拍賣官/助手/小人/钮全都是**带透明**的贴图；
  *   底图与消息框那种整块不透明的才走 `fcn_004563f5`。
  *
- * ⚠️ 消息串表里带 `#0131` 这类前缀 —— 原版显示前会
- *   `cmp byte [eax], '#' / add eax, 5` 跳掉（见 `places/magic-house.ts` 注），
- *   这里直接存**跳掉之后**的字。
+ * ⚠️ 消息串表里带 `#0131` 这类前缀 —— 原版画字的 `0x44fabc` 认出 `'#'`（`0x0044fb00`）就把后四位当语音号
+ *   `call 0x45441a` 播出来，再 `add ebx, 5` 跳掉。★★ 第二十六份 panel #2：先前这里只存跳掉之后的字、
+ *   **一声不响**；现在原串存在 `AUCTION_VOICE_TEXT`，挂句时经 `voice-sink.ts` 的 `playVoiceCode` 播，
+ *   屏上画的仍是跳掉之后的字（`AUCTION_*_TEXT` / `_FORMAT`）。
  *
  * ★ 原版把 PASS 记成状态 **1**（于是显示成「住宿中」）—— 见
  *   `docs/deviations/T-034.md` 的 `D-T034-1`，本屏照抄。
@@ -69,6 +70,8 @@ import { FONT_FAMILY, clerkTextStyle, drawGdiText } from './font.ts';
 import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import { drawSprite } from './hd-stage.ts';
+import { parseVoiceCode } from '@rich4/data';
+import { playVoiceCode, stopVoice, voiceBusy } from './voice-sink.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type AuctionSprite = (
@@ -289,17 +292,28 @@ export const AUCTION_STATUS_TEXT = [
 /** 賣方的状态字（状态 7）@source 0x464ed2 */
 export const AUCTION_SELLER_TEXT = '賣方';
 
+/**
+ * 四句消息框的**原串**（带 `#NNNN` 语音号，逐字取自 `rich4.exe`）。
+ * @source 0x465038 / 0x46507d / 0x465063 / 0x465098
+ */
+export const AUCTION_VOICE_TEXT = {
+  intro: '#0131公開拍賣土地一處。',
+  ask: '#0132底價%d元\n請意者出價。',
+  passedIn: '#0148無人出價，宣佈流標。',
+  deal: '#0135%d元成交',
+} as const;
+
 /** 开场那一句 @source 0x465038 */
-export const AUCTION_INTRO_TEXT = '公開拍賣土地一處。';
+export const AUCTION_INTRO_TEXT = parseVoiceCode(AUCTION_VOICE_TEXT.intro).rest;
 
 /** 请出价 @source 0x46507d */
-export const AUCTION_ASK_FORMAT = '底價%d元\n請意者出價。';
+export const AUCTION_ASK_FORMAT = parseVoiceCode(AUCTION_VOICE_TEXT.ask).rest;
 
 /** 没人出价 @source 0x465063 */
-export const AUCTION_PASSED_IN_TEXT = '無人出價，宣佈流標。';
+export const AUCTION_PASSED_IN_TEXT = parseVoiceCode(AUCTION_VOICE_TEXT.passedIn).rest;
 
 /** 成交价 @source 0x465098 */
-export const AUCTION_DEAL_FORMAT = '%d元成交';
+export const AUCTION_DEAL_FORMAT = parseVoiceCode(AUCTION_VOICE_TEXT.deal).rest;
 
 /** 得标播报（按角色号取）@source 0x464ed7..0x464ff7 的 12 条 */
 export const AUCTION_WINNER_TEXT = [
@@ -994,6 +1008,8 @@ function viewOf(env: UiScreenEnv, pending: PendingInteraction): AuctionRun {
 
 function startView(env: UiScreenEnv, pending: PendingInteraction): ScreenState {
   const run = viewOf(env, pending);
+  // 开场那一句（`0x0043a3eb call 0x44ecb6(0x465038)`）连同 `#0131` 语音
+  playVoiceCode(AUCTION_VOICE_TEXT.intro);
   return {
     key: runKey(pending),
     run,
@@ -1050,9 +1066,9 @@ function beginSettle(env: UiScreenEnv, st: ScreenState, out: { winner: number; p
   const frozen = env.state.pending;
   if (frozen !== null && frozen.kind === 'auction' && runKey(frozen) === st.key) syncView(env, frozen);
   if (out.winner < 0) {
-    st.message = AUCTION_PASSED_IN_TEXT;
+    st.message = playVoiceCode(AUCTION_VOICE_TEXT.passedIn);
   } else {
-    st.message = AUCTION_DEAL_FORMAT.replace('%d', String(out.price));
+    st.message = playVoiceCode(AUCTION_VOICE_TEXT.deal.replace('%d', String(out.price)));
   }
   st.messageUntil = env.now + AUCTION_BOX_MS;
   st.settleUntil = env.now + AUCTION_BOX_MS;
@@ -1129,6 +1145,27 @@ function applyHumanBid(
   env.requestRender();
 }
 
+/**
+ * ★★ 第二十六份 panel #2：消息框的到期判据是 `fcn_0044ee18(0)`（每拍先问，`0x0043aeb9`）——
+ *   满 `AUCTION_BOX_MS` **且**语音放完（音效开着时，`0x0044ee63` / `0x0044ee6c call 0x4544b9`）。
+ *
+ * 本屏的节拍是按时刻排的（`messageUntil` / `nextAt` / `settleUntil`）；到点那一拍若语音还在响，
+ * 就把这几个时刻一起往后推（推到「此刻」，下一拍再问）—— 挂在这句后面的事（下一句 / 第一口 / 收摊）
+ * 跟着一起等。音效关着时 `voiceBusy()` 恒假 ⇒ 恰好 2000 ms。
+ */
+export function holdBoxForVoice(
+  st: { message: string | null; messageUntil: number; nextAt: number; settleUntil: number },
+  now: number,
+  busy: boolean,
+): void {
+  if (!busy || st.message === null || st.messageUntil === 0 || now < st.messageUntil) return;
+  const tied = st.nextAt <= st.messageUntil;
+  const tiedSettle = st.settleUntil !== 0 && st.settleUntil <= st.messageUntil;
+  st.messageUntil = now + 1;
+  if (tied) st.nextAt = st.messageUntil;
+  if (tiedSettle) st.settleUntil = st.messageUntil;
+}
+
 export const auctionScreen: UiScreen = {
   id: 'auction',
 
@@ -1195,6 +1232,7 @@ export const auctionScreen: UiScreen = {
   },
 
   tick(env: UiScreenEnv): void {
+    if (screen !== null) holdBoxForVoice(screen, env.now, voiceBusy());
     const pending = env.state.pending;
     // ★ 第十八份：上一场的结算还在演 ⇒ 演完再轮到下一场（连拍时下一场的 pending 已经挂上了）
     const live = pending !== null && pending.kind === 'auction' && screen !== null && screen.key === runKey(pending);
@@ -1261,7 +1299,7 @@ export const auctionScreen: UiScreen = {
       //   相位 1 全场只进一次（唯一写点 0x0043a3f3）；之后轮转走 0x0043b406 直接回相位 2，不再弹这一句。
       if (st.askPending && !st.settling && st.outcome === null) {
         st.askPending = false;
-        st.message = AUCTION_ASK_FORMAT.replace('%d', String(st.run.price));
+        st.message = playVoiceCode(AUCTION_VOICE_TEXT.ask.replace('%d', String(st.run.price)));
         st.messageUntil = env.now + AUCTION_BOX_MS;
         st.nextAt = Math.max(st.nextAt, st.messageUntil);
         if (traceOn) traceAsks.push({ t: env.now, text: st.message });
@@ -1353,6 +1391,7 @@ export const auctionScreen: UiScreen = {
     if (st === null) return;
     // 结算演出中点任意处 = 跳过（原版按下时 `fcn_0044ee18(1)` 直接收摊）@source 0x43bb25
     if (st.settling || st.outcome !== null) {
+      if (st.message !== null) stopVoice(); // `0x44ee18(1)` 收框连语音一起停（0x0044ee30）
       st.message = null;
       st.messageUntil = 0;
       st.settleUntil = env.now;
@@ -1363,6 +1402,7 @@ export const auctionScreen: UiScreen = {
     //   先关訊息框，`0x0044ee29 test [esp+0x14],1` → 立即收），这一下不算出价（此刻还不是相位 3，`0x0043bb2f`）。
     //   收掉开场那句 ⇒ 下一拍弹「底價…」；收掉「底價…」⇒ 下一拍就轮到第一位（与原版计时器下一拍推相位同）。
     if (st.message !== null && st.messageUntil !== 0 && env.now < st.messageUntil && st.anim === null) {
+      stopVoice(); // `0x0043bb27 push 1 / call 0x44ee18` → 0x0044ee30 停语音
       st.messageUntil = env.now;
       st.nextAt = Math.min(st.nextAt, env.now);
       env.requestRender();

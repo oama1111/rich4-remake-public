@@ -53,6 +53,7 @@ import {
   hitNumber,
   lotMessageOf,
   lotView,
+  lotteryBubbleForTest,
   lotteryPending,
   LOTTERY_BUY_SOUND,
   lotteryPhase,
@@ -68,6 +69,8 @@ import {
   type LotView,
 } from './lottery-screen.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
+import { LOTTERY } from '@rich4/data';
+import { CAPTION_MIN_MS, setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 
 // ============================================================
 //  用到的图 @source `disasm.py xref 0x48c35c`
@@ -648,11 +651,86 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
 
     // reducer 收了 pending 之后的那一份状态
     const bought = mkState();
-    expect(lotteryScreen.active(mkEnv(bought, t).env)).toBe(true); // 还在（< 100 ms）
-    lotteryScreen.tick!(mkEnv(bought, t + 50).env);
-    expect(lotteryScreen.active(mkEnv(bought, t + 50).env)).toBe(true);
+    expect(lotteryScreen.active(mkEnv(bought, t).env)).toBe(true);
+    // ★★ 第二十六份 panel #2：「拜拜」那一句要挂满 `0x44ee18` 的 2000 ms（0x0042fa16 状态 5 + 0x44ecb6，
+    //   关屏 0x0042faf8 要等 0x0042fa5d 判它到期）—— 不是「下一拍 100 ms」
     lotteryScreen.tick!(mkEnv(bought, t + LOT_TICK_MS).env);
-    expect(lotteryScreen.active(mkEnv(bought, t + LOT_TICK_MS).env)).toBe(false);
+    expect(lotteryScreen.active(mkEnv(bought, t + LOT_TICK_MS).env)).toBe(true);
+    expect(lotteryBubbleForTest(mkEnv(bought, t + LOT_TICK_MS).env)).toBe(LOTTERY.counterBye.text);
+    lotteryScreen.tick!(mkEnv(bought, t + CAPTION_MIN_MS - 1).env);
+    expect(lotteryScreen.active(mkEnv(bought, t + CAPTION_MIN_MS - 1).env)).toBe(true);
+    lotteryScreen.tick!(mkEnv(bought, t + CAPTION_MIN_MS).env);
+    expect(lotteryScreen.active(mkEnv(bought, t + CAPTION_MIN_MS).env)).toBe(false);
+  });
+
+  it('★★ 第二十六份 panel #2：音效开着、语音还在响 ⇒ 气泡撑到语音放完（`0x0044ee6c call 0x4544b9`）；各句只放一次语音', () => {
+    resetLotteryScreenState();
+    const played: number[] = [];
+    let busy = true;
+    setVoiceSink((v) => played.push(v));
+    setVoiceBusyProbe(() => busy);
+    try {
+      const s = mkState({ pending: mkPending([4, 5, 6]) });
+      lotteryScreen.tick!(mkEnv(s, 0).env); // 开屏：#0011
+      for (let t = 0; t <= 3000; t += 100) lotteryScreen.tick!(mkEnv(s, t).env);
+      expect(lotteryPhase(), '语音还在响：满 2000 ms 也不换句').toBe('hello');
+      // 每帧都画，也只放一次（先前每帧 `stripVoice` 会在一句念完后重放）
+      const ctx = new Proxy({}, { get: (_t, k) => (k === 'measureText' ? () => ({ width: 1 }) : () => undefined), set: () => true });
+      const v = lotView(s, 'hello', null, null, null, 0)!;
+      expect(v.message).toBe(LOTTERY.counterHello.text);
+      for (let i = 0; i < 5; i++) drawLotteryScreen(ctx as CanvasRenderingContext2D, () => null, () => null, v, 3000);
+      expect(played).toEqual([11]);
+      busy = false;
+      lotteryScreen.tick!(mkEnv(s, 3100).env);
+      expect(lotteryPhase()).toBe('price');
+      expect(played).toEqual([11, 12]);
+    } finally {
+      setVoiceSink(null);
+      setVoiceBusyProbe(null);
+    }
+  });
+
+  it('★★ 第二十六份 panel #2：「請圈選」那一句到期也擦掉（状态 3 的跳表项 0x0042fa9e 空做，气泡由 0x44ee18 擦）', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([4, 5, 6]) });
+    lotteryScreen.tick!(mkEnv(s, 0).env);
+    lotteryScreen.tick!(mkEnv(s, CAPTION_MIN_MS).env);
+    lotteryScreen.tick!(mkEnv(s, CAPTION_MIN_MS * 2).env);
+    expect(lotteryPhase()).toBe('pick');
+    expect(lotteryBubbleForTest(mkEnv(s, CAPTION_MIN_MS * 2).env)).toBe(LOTTERY.counterPick.text);
+    lotteryScreen.tick!(mkEnv(s, CAPTION_MIN_MS * 3).env);
+    expect(lotteryPhase()).toBe('pick');
+    expect(lotteryBubbleForTest(mkEnv(s, CAPTION_MIN_MS * 3).env)).toBeNull();
+  });
+
+  it('★★ 第二十六份 panel #2：开场白里点一下 ⇒ 收掉那一句并停语音，直接到 pick、**不**再挂「請圈選」（0x0042fe9d）', () => {
+    resetLotteryScreenState();
+    let stopped = 0;
+    setVoiceStopper(() => stopped++);
+    try {
+      const s = mkState({ pending: mkPending([4, 5, 6]) });
+      lotteryScreen.tick!(mkEnv(s, 0).env);
+      expect(lotteryPhase()).toBe('hello');
+      lotteryScreen.down!(0, 0, mkEnv(s, 300).env);
+      expect(stopped).toBe(1);
+      expect(lotteryPhase()).toBe('pick');
+      expect(lotteryBubbleForTest(mkEnv(s, 300).env)).toBeNull();
+    } finally {
+      setVoiceStopper(null);
+    }
+  });
+
+  it('★★ 第二十六份 panel #2：右键不买 ⇒ 挂「下次再來吧！」（0x406 wParam 5 → 0x4755f8[5]），同样挂满才关', () => {
+    resetLotteryScreenState();
+    const s = mkState({ pending: mkPending([4, 5, 6]) });
+    const t = advanceToPick(s);
+    lotteryScreen.contextmenu!(0, 0, mkEnv(s, t).env);
+    const gone = mkState();
+    expect(lotteryBubbleForTest(mkEnv(gone, t).env)).toBe(LOTTERY.counterComeAgain.text);
+    lotteryScreen.tick!(mkEnv(gone, t + CAPTION_MIN_MS - 1).env);
+    expect(lotteryScreen.active(mkEnv(gone, t + CAPTION_MIN_MS - 1).env)).toBe(true);
+    lotteryScreen.tick!(mkEnv(gone, t + CAPTION_MIN_MS).env);
+    expect(lotteryScreen.active(mkEnv(gone, t + CAPTION_MIN_MS).env)).toBe(false);
   });
 
   it('★ 买中那一下 `event` 收到 `pending=null` **不能**把相位打回 hello（否则拜拜那一拍就没了）', () => {

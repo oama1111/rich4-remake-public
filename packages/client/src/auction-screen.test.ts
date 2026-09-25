@@ -10,7 +10,13 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Action, GameState, MapTopology, Player, Rich4Map } from '@rich4/core';
+import { setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 import {
+  AUCTION_VOICE_TEXT,
+  AUCTION_INTRO_TEXT,
+  AUCTION_ASK_FORMAT,
+  auctionMessageForTest,
+  holdBoxForVoice,
   AUCTION_ART,
   AUCTION_BUTTON,
   AUCTION_BUTTONS,
@@ -856,5 +862,94 @@ describe('★★ 第十八份：「賣方」是发起拍卖者（arg0 = pending.
     });
     expect(calls).toContainEqual([3 * 2 + 0x1b, 0]);
     expect(calls).toContainEqual([3 * 5 + 0x1c, 0]);
+  });
+});
+
+// ============================================================
+//  ★★ 第二十六份 panel #2：消息框的语音与时长（`fcn_0044ee18`）
+// ============================================================
+describe('★★ 第二十六份 panel #2：拍賣消息框 = `0x44ecb6` 气泡 ⇒ 带语音、满 2000 ms 且语音放完才收', () => {
+  it('原串带 `#0131` / `#0132` / `#0148` / `#0135`（逐字同 exe），屏上画跳掉之后的字', () => {
+    expect(AUCTION_VOICE_TEXT).toEqual({
+      intro: '#0131公開拍賣土地一處。',
+      ask: '#0132底價%d元\n請意者出價。',
+      passedIn: '#0148無人出價，宣佈流標。',
+      deal: '#0135%d元成交',
+    });
+    expect(AUCTION_INTRO_TEXT).toBe('公開拍賣土地一處。');
+    expect(AUCTION_ASK_FORMAT).toBe('底價%d元\n請意者出價。');
+  });
+
+  it('`holdBoxForVoice`：到点那一拍语音还在响 ⇒ 这句与挂在它后面的时刻一起往后推；不响 / 没到点 ⇒ 不动', () => {
+    const st = { message: 'x', messageUntil: 3000, nextAt: 3000, settleUntil: 0 };
+    holdBoxForVoice(st, 2999, true);
+    expect(st).toEqual({ message: 'x', messageUntil: 3000, nextAt: 3000, settleUntil: 0 });
+    holdBoxForVoice(st, 3000, false);
+    expect(st.messageUntil).toBe(3000);
+    holdBoxForVoice(st, 3500, true);
+    expect(st).toEqual({ message: 'x', messageUntil: 3501, nextAt: 3501, settleUntil: 0 });
+    // 结算那一句：收摊时刻跟着推；不相干的更晚的 nextAt 不动
+    const settle = { message: 'y', messageUntil: 100, nextAt: 9000, settleUntil: 100 };
+    holdBoxForVoice(settle, 200, true);
+    expect(settle).toEqual({ message: 'y', messageUntil: 201, nextAt: 9000, settleUntil: 201 });
+  });
+
+  for (const mode of ['single', 'multiplayer'] as const) {
+    it(`${mode}：开场那句 #0131 语音 3.5 秒 ⇒「底價…」等它念完才弹（#0132），第一口也跟着顺延；点一下收框并停语音`, () => {
+      resetAuctionScreenForTest();
+      const played: number[] = [];
+      let stopped = 0;
+      let busy = true;
+      setVoiceSink((v) => played.push(v));
+      setVoiceBusyProbe(() => busy);
+      setVoiceStopper(() => {
+        stopped++;
+        busy = false;
+      });
+      try {
+        const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+        const base = mkEnv(auctionPending({ bidders: [0, 1] }), players, 1000).env;
+        const env = mode === 'single' ? base : { ...base, localSeat: 1 };
+        auctionScreen.tick!(env); // 开屏
+        expect(played).toEqual([131]);
+        expect(auctionMessageForTest()).toBe(AUCTION_INTRO_TEXT);
+        auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS));
+        auctionScreen.tick!(withNow(env, 1000 + 3000));
+        expect(auctionMessageForTest(), '语音还在响：满 2000 ms 也不收').toBe(AUCTION_INTRO_TEXT);
+        busy = false;
+        auctionScreen.tick!(withNow(env, 1000 + 3500));
+        auctionScreen.tick!(withNow(env, 1000 + 3516));
+        expect(auctionMessageForTest()).toBe(AUCTION_ASK_FORMAT.replace('%d', '5000'));
+        expect(played).toEqual([131, 132]);
+        // 「底價…」同样至少 2000 ms；挂着时点一下 ⇒ 收框 + 停语音（`0x0043bb27 push 1 / call 0x44ee18`）
+        busy = true;
+        auctionScreen.down!(10, 10, withNow(env, 1000 + 4000));
+        expect(stopped).toBe(1);
+        auctionScreen.tick!(withNow(env, 1000 + 4016));
+        expect(auctionMessageForTest()).toBeNull();
+      } finally {
+        setVoiceSink(null);
+        setVoiceBusyProbe(null);
+        setVoiceStopper(null);
+      }
+    });
+  }
+
+  it('音效关着（语音不响）⇒ 恰好 2000 ms，语音照样请求（sink 里由音效档闸掉）', () => {
+    resetAuctionScreenForTest();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+      const env = mkEnv(auctionPending({ bidders: [0, 1] }), players, 1000).env;
+      auctionScreen.tick!(env);
+      auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS - 1));
+      expect(auctionMessageForTest()).toBe(AUCTION_INTRO_TEXT);
+      auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS));
+      expect(auctionMessageForTest()).toBe(AUCTION_ASK_FORMAT.replace('%d', '5000'));
+      expect(played).toEqual([131, 132]);
+    } finally {
+      setVoiceSink(null);
+    }
   });
 });

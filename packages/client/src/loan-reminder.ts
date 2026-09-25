@@ -47,7 +47,8 @@
  */
 
 import { BANK, formatOriginal } from '@rich4/data';
-import { LOAN_BUBBLE_MS, LOAN_TICK_MS } from './bank-dynamic.ts';
+import { LOAN_TICK_MS } from './bank-dynamic.ts';
+import { captionExpired } from './voice-sink.ts';
 
 /** `[0x48c3e7]` 的三档 —— 正在说第几句 */
 export const REMINDER_ST = { greet: 1, dueSoon: 2, dontForget: 3 } as const;
@@ -96,12 +97,15 @@ export interface ReminderTick {
 /**
  * 定时器走一拍（50 ms）。没到拍点原样返回（同一个对象）。
  *
- * `0x44ee18(0)` 为真 = 气泡已被收掉，或挂满 `LOAN_BUBBLE_MS`（2000 ms，`cmp eax, 0x7d0`）。
+ * `0x44ee18(0)` 为真 = 气泡已被收掉，或挂满 2000 ms（`cmp eax, 0x7d0`）**且**语音不在响（`voice-sink.ts` 的
+ * `captionExpired`）。这三句本身没有 `#nnnn`，但 `0x4544b9` 问的是**唯一那一路**语音缓冲 —— 上一句还在响就照样等。
+ *
+ * @param voiceBusy 语音此刻还在响吗（`main.ts` 传 `voiceBusy()`；缺省 = 不在响）
  */
-export function reminderTick(ui: LoanReminderUi, now: number, name: string): ReminderTick {
+export function reminderTick(ui: LoanReminderUi, now: number, name: string, voiceBusy = false): ReminderTick {
   if (now - ui.tickAt < LOAN_TICK_MS) return { ui, close: false };
   const ticked = { ...ui, tickAt: now };
-  if (ui.text !== null && now - ui.at < LOAN_BUBBLE_MS) return { ui: ticked, close: false };
+  if (ui.text !== null && !captionExpired(ui.at, now, voiceBusy)) return { ui: ticked, close: false };
   if (ui.st === REMINDER_ST.dontForget) return { ui: { ...ticked, text: null }, close: true };
   const st: ReminderSt = ui.st === REMINDER_ST.greet ? REMINDER_ST.dueSoon : REMINDER_ST.dontForget;
   return { ui: { ...ticked, st, text: reminderText(st, name), at: now }, close: false };

@@ -10,7 +10,15 @@
 
 import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, INMATE_THANKS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
-import { playVoiceCode, setVoiceBusyProbe, setVoiceSink, setVoiceStopper, voiceBusy } from './voice-sink.ts';
+import {
+  captionExpired,
+  playVoiceCode,
+  setVoiceBusyProbe,
+  setVoiceSink,
+  setVoiceStopper,
+  stopVoice,
+  voiceBusy,
+} from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -605,7 +613,6 @@ import {
 } from './bank-screen.ts';
 import {
   ATM_BAR,
-  LOAN_BUBBLE_MS,
   LOAN_SLIDE,
   LOAN_TICK_MS,
   atmApplyCode,
@@ -1394,6 +1401,10 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
+  // ★★ 第二十六份 panel #2：换句 / 点掉（`0x44ee18(1)`，`0x00434b6c` / `0x00435c1f` …）都先停上一句语音
+  //   （原版只有一路语音缓冲：`0x45441a` 起播前 `call 0x454493`；`0x0044ee30` 收框时同一个 call）——
+  //   不停的话，字框按「语音放完才到期」会被上一句拖住
+  if (hadBubble !== null && ui.bubble !== hadBubble) stopVoice();
   if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
   if (effect.kind === 'close') {
@@ -1477,7 +1488,7 @@ function syncLoanReminder(now: number): void {
 function reminderFrame(now: number): void {
   syncLoanReminder(now);
   if (reminderUi === null) return;
-  const r = reminderTick(reminderUi, now, reminderName());
+  const r = reminderTick(reminderUi, now, reminderName(), voiceBusy());
   if (r.ui !== reminderUi) {
     reminderUi = r.ui;
     requestRender();
@@ -1522,7 +1533,8 @@ function bankTick(now: number): void {
   // 先走滑入那一段（退净 + 办成过一笔 → st = 0xb），再轮到气泡到点那张表 —— 与原版同一拍的次序
   loanUi = loanTickSlide(loanUi);
   const bubble = loanUi.bubble;
-  if (bubble === null || now - loanBubbleAt >= LOAN_BUBBLE_MS) {
+  // ★★ 第二十六份 panel #2：`fcn_0044ee18(0)`（`0x00434766` / `0x00435669`）—— 满 `LOAN_BUBBLE_MS` **且**语音放完才到点
+  if (bubble === null || captionExpired(loanBubbleAt, now)) {
     loanSend({ kind: 'bubbleEnd' });
   }
 }
@@ -2484,6 +2496,7 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       const cut = reminderUi === null ? null : reminderCancel(reminderUi);
       if (cut !== null) {
         sound.play('Effect.mkf', REMINDER_CANCEL_SOUND);
+        stopVoice(); // `0x004365c3 … push 1 / call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
         reminderUi = cut;
         requestRender();
       }
@@ -6076,6 +6089,8 @@ function shopSay(ui: ShopUi, text: string, now: number): void {
  * @source 语音号 → `Speaking.mkf` 资源，与 `event-box-screen.ts` / `speechTick` 同一条路
  */
 function voiceDurationOf(text: string): number | null {
+  // ★★ 第二十六份 panel #2：音效档 = 0 时原版根本不放语音（`0x0045442c` / `0x0044ee63` 同一道闸），字框恰好 2000 ms
+  if (options.sound <= 0) return null;
   const { voice } = parseVoiceCode(text);
   if (voice === null) return null;
   const ms = sound.durationOf('Speaking.mkf', voice);
@@ -9194,7 +9209,7 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (!shopBubbleExpired(ui.bubble, ui.closing, now)) return;
+  if (!shopBubbleExpired(ui.bubble, ui.closing, now, voiceBusy())) return;
   ui.bubble = null;
   // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
   if (ui.closing) dispatch({ type: 'declineDecision' });
@@ -10981,6 +10996,7 @@ function bindInput(): void {
     // ── 还款提醒窗：左键（`0x201`/`0x203`）哪儿都行 —— 音效 1 + 这一句当场收掉 @source 0x00436596 ──
     if (e.button === 0 && reminderUi !== null) {
       sound.play('Effect.mkf', REMINDER_CLICK_SOUND);
+      stopVoice(); // `0x004365a5 push 1 / 0x004365a7 call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
       reminderUi = reminderClick(reminderUi);
       requestRender();
       return;
@@ -11156,6 +11172,9 @@ function bindInput(): void {
         //   原版这一拍是 `fcn_0044ee18(1)`（@source `loc_0042de09`：提前收掉限时訊息框）——
         //   框一收，后续照常推进（状态 2→3→4，`loc_0042e686`）。故道别那一句**改成立刻到期**，
         //   交给 `shopTick` 走同一条关门路；别的气泡照旧直接收。
+        // ★★ 第二十六份 panel #2：`0x44ee18(1)` 收框时连语音一起停（`0x0044ee30 call 0x454493`）——
+        //   否则字框按「语音放完才到期」还会挂着
+        if (ui.bubble !== null) stopVoice();
         ui.bubble = shopBubbleAfterClick(ui.bubble, ui.closing);
         requestRender();
         return;
