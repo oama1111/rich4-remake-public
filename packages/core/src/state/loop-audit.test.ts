@@ -225,3 +225,24 @@ describe('★ startTurn 只在 turnStart 相位受理（回合不能中途重开
     expect(reduce(ok, { type: 'startTurn' }, ring).phase).toBe('awaitingRoll');
   });
 });
+
+describe('★ 几项阻碍同时成立：一扇框、写**最后**那一项（loop F3）@source 0x0040c9a1..0x0040cb98', () => {
+  const box = (blocking: Partial<typeof NO_BLOCK>) => {
+    const s = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, blocking: { ...NO_BLOCK, ...blocking } })],
+      phase: 'turnStart',
+    });
+    const r = reduce(s, { type: 'startTurn' }, ring);
+    expect(r.phase).toBe('turnEnd');
+    return r.notices.filter((n) => n.key.startsWith('confinement.'));
+  };
+  it('住宿 + 坐牢 ⇒ 只有「坐牢中」一扇，天数取坐牢那一格', () => {
+    expect(box({ inHotel: 5, inPrison: 2 })).toEqual([{ key: 'confinement.prison', args: [expect.any(String), 3] }]);
+  });
+  it('消失 + 住院 ⇒ 住院；单项照旧；冬眠只在四项全 0 时', () => {
+    expect(box({ disappearing: 0x42, inHospital: 1 }).map((n) => n.key)).toEqual(['confinement.hospital']);
+    expect(box({ inHotel: 3 }).map((n) => n.key)).toEqual(['confinement.hotel']);
+    expect(box({ inHotel: 3, sleeping: 4 }).map((n) => n.key)).toEqual(['confinement.hotel']);
+    expect(box({ sleeping: 4 })).toEqual([{ key: 'confinement.sleeping', args: [expect.any(String), 5] }]);
+  });
+});
