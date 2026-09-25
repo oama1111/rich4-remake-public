@@ -213,7 +213,7 @@ describe('③ 两台客户端说同一句', () => {
   run('★★ 单机现场 vs 回报重放（`replayTrail`，= `tools/replay-report.ts` / 服务器镜像）：逐条 action 台词全等', () => {
     const map = parseMap(new Uint8Array(readFileSync(MAP)));
     const topo = topoOf(map);
-    for (const seed of [3, 11]) {
+    for (const seed of [1, 2, 3, 4]) {
       const live = play(map, 'single', seed, 60);
       expect(live.trail.length).toBeGreaterThan(200);
       // 回报里存的是序列化后的起点（`flight-recorder.ts`）
@@ -287,8 +287,12 @@ describe('③ 两台客户端说同一句', () => {
     // 第一句还包括 ≥ 9000 那一档（不掷、恒前一句），故第二句占比应落在 (0, 1/2] 里、且是可观的一截
     //   （实测 4 种子 × 2 模式 × 400 回合：6/9 = 99、7/10 = 39；同一句最长连 8 次含 ≥9000 档）
     expect(firsts + seconds).toBeGreaterThan(60);
-    expect(seconds / (firsts + seconds)).toBeGreaterThan(0.2);
+    // ★ 审计 2026-09-24（loop）：回合循环修正（保險到期、禮物/寶箱月重摆、真人开局对半…）改变了随机流与金额分布，
+    //   ≥ 9000 档（恒前一句）占比升了一点，同样 4 种子实测 ≈ 0.19（多种子组合都在 0.18..0.20）⇒ 下限放到 0.15，意图不变：
+    //   第二句确实被掷出来、是可观的一截，且不过半。
+    expect(seconds / (firsts + seconds), `${seconds}/${firsts + seconds}`).toBeGreaterThan(0.15);
     expect(seconds / (firsts + seconds)).toBeLessThan(0.55);
-    expect(longest).toBeLessThan(12);
+    // 审计 2026-09-24：同一组种子现在最长连 12 次（含恒前一句的 ≥ 9000 档）⇒ 上限放到 16；先前的 bug 是「恒取前一句」（整局一直同一句）
+    expect(longest).toBeLessThan(16);
   });
 });

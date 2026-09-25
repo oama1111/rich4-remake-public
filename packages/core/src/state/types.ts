@@ -325,6 +325,21 @@ export interface Player {
    * 可选：旧存档 / 测试工厂造的玩家没有这一格 = 0 = 「不会再落地」。
    */
   landingWhoPlays?: number;
+  /**
+   * 開**工程車**之前的交通方式 / 骰子数 —— 原版借 `+0x64` / `+0x65` 暂存
+   * （`0x00447a49 mov [p+0x64], +0x11` / `0x00447a55 mov [p+0x65], +0x12`，道具 12 那一支）。
+   * 工程車（`+0x11 = 0x1f`）每天 `−4`，`(v & 0xfc) == 0` 那天按它还原（`0x0041ccd0..0x0041cd83`，
+   * 见 `reduce.ts` 的 `tickEngineVehicle`）。缺省 = 0（还原成步行）。
+   * ⚠️ 写入一侧（用道具 12 时存下来）归道具区，审计时尚未接（`docs/audit/provenance-loop.md` 的 cross-area）。
+   */
+  engineSavedTraffic?: number;
+  /** 见 `engineSavedTraffic`（`+0x65`） */
+  engineSavedDice?: number;
+  /**
+   * `+0x1b`：挪去住店 / 关押之前的朝向，「走回棋盘」那一回合收尾时还原（`0x00418f2e`，低 4 位 == 0xf 不还原）。
+   * 住店存朝向（`0x0040d61b` / `0x0040d68e`），关押写哨兵 0xf（`0x0043d637` / `0x0043ece3`）。缺省 = 0xf。
+   */
+  savedFacing?: number;
 }
 
 // ============================================================
@@ -751,6 +766,11 @@ export type NoticeKey =
   | 'points.30'
   | 'points.10'
   | 'points.card'
+  /** 節日送卡（按地图选框文，`[玩家名, 卡名]`）@source 0x004526c5..0x0045272a */
+  | 'holiday.cardGalaxy'
+  | 'holiday.cardDino'
+  | 'holiday.cardNewYearEve'
+  | 'holiday.cardXmas'
   /** 小遊戲「不玩」白拿的點券（`0x00415472 push 0x463797`，2000 ms）—— `args[0]` = 點數 */
   | 'points.minigame'
   | 'object.gift'

@@ -12,6 +12,7 @@ import { MAX_TOOL_ID, TOOL_SLOTS_PER_PLAYER } from './tools.ts';
 import {
   VEHICLE_TOOL,
   cardPrice,
+  conserveCardPool,
   sellAllCards,
   sellAllTools,
   toolPrice,
@@ -151,5 +152,28 @@ describe('★ 两件事都是**纯函数**（不改入参）', () => {
     expect(toolById(99)).toBeUndefined();
     expect(toolPrice(99)).toBe(0);
     expect(cardPrice(99)).toBe(0);
+  });
+});
+
+describe('★ 牌堆守恒 conserveCardPool（手牌只经 0x4412e4 / 0x441343 / 0x441f21 进出）', () => {
+  const pool = (over: Record<number, number> = {}): number[] => {
+    const out = new Array<number>(30).fill(2);
+    for (const [id, n] of Object.entries(over)) out[Number(id) - 1] = n;
+    return out;
+  };
+  it('出牌（手牌 −1）⇒ 牌堆 +1', () => {
+    const before = [makePlayer({ index: 0, cards: [5, 7] })];
+    const after = [makePlayer({ index: 0, cards: [7] })];
+    expect(conserveCardPool(pool(), before, pool(), after)).toEqual(pool({ 5: 3 }));
+  });
+  it('人手之间转手（被抢 / 生日）⇒ 牌堆不动', () => {
+    const before = [makePlayer({ index: 0, cards: [5] }), makePlayer({ index: 1, cards: [] })];
+    const after = [makePlayer({ index: 0, cards: [] }), makePlayer({ index: 1, cards: [5] })];
+    expect(conserveCardPool(pool(), before, pool(), after)).toEqual(pool());
+  });
+  it('★ 幂等：调用点已显式记过账（卖卡 +1）就不再记第二次', () => {
+    const before = [makePlayer({ index: 0, cards: [5] })];
+    const after = [makePlayer({ index: 0, cards: [] })];
+    expect(conserveCardPool(pool(), before, pool({ 5: 3 }), after)).toEqual(pool({ 5: 3 }));
   });
 });

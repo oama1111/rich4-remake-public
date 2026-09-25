@@ -516,6 +516,11 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     //   （实测 SAVE1.DAT：玩家 1..3 `who_plays = 0`、坐标 / 节点全 0、`+0x64 = 2`）
     //   靠它在各自回合开头落地；破产者这一格是 0（Save0.dat 玩家 0/2/3）。
     landingWhoPlays: p.f100,
+    // ★ 审计 2026-09-25（loop）：开着工程車（`+0x11 & 3 == 3`）时 `+0x64/+0x65` 是開車前的交通方式 / 骰子数
+    //   （`0x00447a49` / `0x00447a55` 写，`0x0041ccd0` / `0x0041cd26` 到期还原时读）。
+    ...((p.trafficMethod & 3) === 3 ? { engineSavedTraffic: p.f100, engineSavedDice: p.f101 } : {}),
+    // ★ `+0x1b`：住店 / 关押前的朝向后备（`0x00418f2e` 走回棋盘收尾还原，0xf = 不还原）
+    savedFacing: p.f27,
   }));
 
   // 道具：原版存的是「每人每种道具的数量」，本引擎用一张扁平表

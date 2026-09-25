@@ -9,7 +9,9 @@
  * 机制未明的：有害卡命中时把效果**反弹给出牌者**。
  */
 
+import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { Player } from '../state/types.ts';
+import type { ScapegoatPicker } from './passive.ts';
 import { isAlive } from '../state/types.ts';
 import type { CardTarget, TargetError } from './target.ts';
 import {
@@ -153,6 +155,11 @@ function enterSleepwalk(
   p: Player,
   tools: readonly number[],
   days: number,
+  /**
+   * 累加「倒霉天数」`+0x42`（`0x00444372 add byte [+0x42], 5`）——**只有主效果那一支加**；
+   * 復仇卡反弹给出牌者的那一支（`0x00444414..0x00444499`）没有这一句。
+   */
+  countMisfortune = true,
 ): { player: Player; tools: number[] } {
   const nextTools = [...tools];
 
@@ -172,7 +179,9 @@ function enterSleepwalk(
       ...p,
       blocking: { ...p.blocking, sleepWalking: days },
       // @source 0x00444372 `add byte ptr [eax + 0x496baa], 5`（8 位累加）
-      totalWinterSleepDays: misfortuneDaysAfter(p.totalWinterSleepDays, SLEEPWALK_WINTER_DAYS),
+      totalWinterSleepDays: countMisfortune
+        ? misfortuneDaysAfter(p.totalWinterSleepDays, SLEEPWALK_WINTER_DAYS)
+        : p.totalWinterSleepDays,
       savedTrafficMethod: savedTraffic,
       savedNdices,
       // @source [+0x11] = cl（清零）/ [+0x12] = 1
@@ -211,7 +220,7 @@ export function applySleepwalkCard(
    * 嫁祸卡(19) 改写后的新目标由外部（UI/AI）给出，`-1` 表示放弃转嫁（保持原目标）。
    * 与原版 `0x00444330 cmp eax,-1 / je` 同义。默认不转嫁。
    */
-  scapegoatPicker: (from: number) => number = () => -1,
+  scapegoatPicker: ScapegoatPicker = () => -1,
   /** 物价指数，用于敌意增量 `150 × priceIndex`（`@source 0x004442ea`） */
   priceIndex = 1,
 ): SleepwalkResult {
@@ -290,7 +299,8 @@ export function applySleepwalkCard(
   let victimIndex = target.index;
   let redirected = false;
   if (def.trigger.kind === 'scapegoat') {
-    const picked = scapegoatPicker?.(target.index) ?? -1;
+    // ★ 敌意在 `0x004442ea` 就已写进去了，`0x44476a` 电脑支挑「最恨的人」（`0x40d2d3`）读的是**记过之后**的表
+    const picked = scapegoatPicker(target.index, applyHostilityDeltas(players, hostilityDeltas), 0);
     // @source `cmp eax,-1 / je 保持原目标`
     if (picked !== -1 && picked >= 0 && picked < players.length) {
       victimIndex = picked;
@@ -326,7 +336,8 @@ export function applySleepwalkCard(
     playersAfter = playersAfter.map((p, i) => (i === originalTarget ? holderAfter : p));
     const caster = playersAfter[currentPlayer];
     if (caster !== undefined) {
-      out = enterSleepwalk(caster, out.tools, REVENGE_DAYS);
+      // ★ 反弹这一支**不加** `+0x42`（`0x0044441d mov [+0x37],5` 之后直接存座驾/退车，没有 `add [+0x42]`）
+      out = enterSleepwalk(caster, out.tools, REVENGE_DAYS, false);
       playersAfter = playersAfter.map((p, i) => (i === currentPlayer ? out.player : p));
       reflected = true;
     }

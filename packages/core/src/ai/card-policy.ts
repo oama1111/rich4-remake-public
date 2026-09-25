@@ -111,6 +111,31 @@ export interface CardAiView {
   lands: readonly LandInfo[];
   /** 有效設施 */
   facilities: readonly FacilityInfo[];
+  /**
+   * 出牌主循环（`0x441baa`）填完 8 格候选之后 `esi` 里剩下的值 —— 漲價卡（`0x42040e`）的設施一支
+   * 会把它**原样抄进**「目前最高等级」那个局部变量（`0x004205f6 mov [esp+4], esi`，见 `zhangjia`）。
+   * 缺省 = 手牌 ≤ 8 张时的值 8。由 `policy.ts` 的 `decideCard` 按 `cardLoopEsiAfterFill` 给出。
+   */
+  cardLoopEsi?: number;
+}
+
+/**
+ * 出牌主循环填候选表之后 `esi` 的值。
+ *
+ * @source VA 0x00441d45..0x00441d96：
+ * ```asm
+ * 00441d45  cmp esi, 8 / jle 0x441d5a        ; esi = 张数；≤ 8 ⇒ 起点 0
+ * 00441d4a  call rand / idiv esi / mov esi, edx   ; > 8 ⇒ 起点 rand() % 张数
+ * 00441d7a  mov edx, esi / inc esi            ; 每取一格 esi + 1（共 8 次）
+ * 00441d8b  cmp edi, 8 / jle 继续             ; 张数 ≤ 8：不绕回 ⇒ 结束时 esi = 8
+ * 00441d90  cmp esi, edi / jne / xor esi, edi ; 张数 > 8：到张数就归 0
+ * ```
+ * 之后 `0x441da2..0x441e00` 这段不再写 `esi`，闸门 `0x41e69e` 与各判定函数都保存 `esi`，
+ * 故每张被问到的卡进门时 `esi` 都是这个值。
+ */
+export function cardLoopEsiAfterFill(handCount: number, start: number): number {
+  if (handCount <= 8) return 8;
+  return (start + 8) % handCount;
 }
 
 function nodeOf(topo: MapTopology, nodeId: number): MapNode | undefined {
@@ -150,13 +175,18 @@ export function visibleRivals(view: CardAiView): number[] {
   return rows.sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x || a.index - b.index).map((r) => r.index);
 }
 
-/** 画面里站在地图上的物件（1 基下标），按屏幕行序 */
+/**
+ * 画面里站在地图上的物件（1 基下标），按屏幕行序。
+ *
+ * @source 0x00409e5b..0x00409e93：填屏幕格时，带物件标记（`0x8000 | 下标+1 << 8`）的精灵
+ *   若该物件 `+0x05`（附身于谁）≠ 0 就**不画进格子** —— 附在人身上的神明 / 定時炸彈不在清单里。
+ */
 export function visibleObjects(view: CardAiView): { objectIndex: number; node: MapNode }[] {
   const center = nodeOf(view.topo, view.me.nodeId);
   if (center === undefined) return [];
   const out: { objectIndex: number; node: MapNode }[] = [];
   view.state.objects.forEach((o, i) => {
-    if (o.nodeId === 0) return;
+    if (o.nodeId === 0 || o.attached !== 0) return;
     const n = nodeOf(view.topo, o.nodeId);
     if (n !== undefined && inView(center, n)) out.push({ objectIndex: i + 1, node: n });
   });
@@ -518,32 +548,50 @@ const guaishou: Handler = (view, hated) => {
  * 拆除卡 @source 0x0041f6a9：先按怪獸卡的判法找；找不到再扫画面：
  * 对手的连锁店且他连锁店 ≥ 4 间（乖寶寶不干）；我有座驾时别人的加油站；
  * 对手地上的路障（物件 16）、我地上的地雷（物件 17）。
+ *
+ * ★★ 审计（ai-move）：画面清单是**一趟**扫完的 —— 地块 / 設施 / 物件标记混在同一张
+ *   可见表里（`0x0041f6bf..0x0041f8f5`，逐项按值分三支，第一个命中就停），**按屏幕行序谁先谁中**。
+ *   旧实现先扫完全部地块/設施、再单独扫物件 ⇒ 画面上方的路障会输给下方的连锁店。
+ *   同一坐标（节点近似下，物件与它脚下的地块同点）取地块在前（原版这两张精灵的锚点不同格，D-005）。
  */
 const chaichu: Handler = (view, hated) => {
   const viaMonster = guaishou(view, hated);
   if (viaMonster !== null) return viaMonster;
   const me1 = view.meIndex + 1;
-  for (const ent of visibleEntities(view)) {
-    if (ent.kind === 'land') {
-      const l = landById(view, ent.id);
-      if (l === undefined || view.me.personality === 0) continue;
-      if (l.owner === 0 || l.owner === me1 || l.type === LAND_TYPE_HOUSE) continue;
-      if (chainStoreCount(view.lands, l.owner) >= 4) return land(l.id);
-    } else if (ent.kind === 'facility') {
-      const f = facilityById(view, ent.id);
-      if (f === undefined || (view.me.trafficMethod & 3) === 0) continue;
-      if (f.type === FACILITY_TYPE.gasStation && f.level === 1 && f.owner !== me1) return facility(f.id);
+  type Item =
+    | { kind: 'entity'; ent: VisibleEntity; node: MapNode }
+    | { kind: 'object'; objectIndex: number; node: MapNode };
+  const items: Item[] = [
+    ...visibleEntities(view).map((ent): Item => ({ kind: 'entity', ent, node: ent.node })),
+    ...visibleObjects(view).map((o): Item => ({ kind: 'object', objectIndex: o.objectIndex, node: o.node })),
+  ].sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x);
+  for (const item of items) {
+    if (item.kind === 'entity') {
+      const ent = item.ent;
+      if (ent.kind === 'land') {
+        // @source 0x0041f70a `cmp byte [+0x17], 0 / je 跳过` —— 乖寶寶不拆连锁店
+        const l = landById(view, ent.id);
+        if (l === undefined || view.me.personality === 0) continue;
+        if (l.owner === 0 || l.owner === me1 || l.type === LAND_TYPE_HOUSE) continue;
+        // @source 0x0041f73c call 0x41970f / cmp eax, 4 / jl 跳过
+        if (chainStoreCount(view.lands, l.owner) >= 4) return land(l.id);
+      } else if (ent.kind === 'facility') {
+        // @source 0x0041f781 `test byte [+0x11], 3` / `+0x18 == 3` / `+0x1a == 1` / 主人 ≠ 我
+        const f = facilityById(view, ent.id);
+        if (f === undefined || (view.me.trafficMethod & 3) === 0) continue;
+        if (f.type === FACILITY_TYPE.gasStation && f.level === 1 && f.owner !== me1) return facility(f.id);
+      }
+      continue;
     }
-  }
-  for (const o of visibleObjects(view)) {
-    const obj = view.state.objects[o.objectIndex - 1];
+    // @source 0x0041f7ba..0x0041f8e7：物件标记 → 物件所在节点的地块/設施主人
+    const obj = view.state.objects[item.objectIndex - 1];
     if (obj === undefined) continue;
-    const ref = o.node.ref;
+    const ref = item.node.ref;
     const owner =
       ref.kind === 'land' ? (landById(view, ref.index)?.owner ?? 0) : ref.kind === 'facility' ? (facilityById(view, ref.index)?.owner ?? 0) : -1;
     if (owner < 0) continue;
-    if (obj.type === 16 && owner !== 0 && owner !== me1) return { target: { kind: 'object', objectIndex: o.objectIndex } };
-    if (obj.type === 17 && owner === me1) return { target: { kind: 'object', objectIndex: o.objectIndex } };
+    if (obj.type === 16 && owner !== 0 && owner !== me1) return { target: { kind: 'object', objectIndex: item.objectIndex } };
+    if (obj.type === 17 && owner === me1) return { target: { kind: 'object', objectIndex: item.objectIndex } };
   }
   return null;
 };
@@ -776,11 +824,37 @@ const chashui: Handler = (view, hated) => {
 
 /**
  * 漲價卡 @source 0x0042040e：画面里逐街看：最恨的人不在这條街、我的等级和 ≥ 7、
- * 对手等级和 ≤ 3、我占的间数 ≥ 一半 → 涨；地块没中就挑我的 ≥ 3 级非公園/研究所設施（取最后一个）。
+ * 对手等级和 ≤ 3、我占的间数 ≥ **0.66** → 涨；地块没中就看我的 ≥ 3 级非公園/研究所設施。
+ *
+ * ★★ 审计（ai-move）两处订正：
+ * 1. 比例门槛是 **0.66**，不是 0.5：
+ *    ```asm
+ *    00420542  fild [我的间数] / fild [总数] / fdivp → fstp float [esp]
+ *    0042056e  fld [esp] / fcomp qword [0x463d38] / jb 不涨   ; ★ [0x463d38] = double 0.66
+ *    ```
+ *    旧注释写「0x463d38 (= 0.5)」是误读（`dump` 出来是 0.66）。间数/总数都是小整数，
+ *    float32 舍入翻不过 0.66 这条线（最近的分数 33/50 恰好相等），故用整数 `100×间数 ≥ 66×总数`。
+ * 2. 設施一支比的「目前最高等级」被写成了 **`esi`**（编译产物里就是这样，不是我们的误读）：
+ *    ```asm
+ *    004205e4  cmp bl, 3 / jb 跳过                         ; 等级 ≥ 3
+ *    004205f0  cmp eax, [esp+4] / jle 跳过                   ; 等级 > 「最高」（初值 0，有符号）
+ *    004205f6  mov [esp+4], esi                              ; ★ 写进去的是 esi，不是等级
+ *    004205fa  mov [0x48be58], ecx                           ; 目标 = 这栋設施
+ *    00420610  cmp [esp+4], 0 / je 不出                      ; 收尾：「最高」≠ 0 才算出牌
+ *    ```
+ *    `esi` 此时是：本次调用里处理过地块 ⇒ 那次同街循环的出口下标（扫完 = 地块数 + 1，
+ *    撞到最恨的人 = 那块地的下标）；还没处理过地块 ⇒ 进门时的 `esi`（出牌主循环填表后的值，
+ *    见 `cardLoopEsiAfterFill`，手牌 ≤ 8 时恒为 8）。
+ *    ⇒ 常见情形下「最高」一上来就是 8 或地块数 + 1，**只有第一栋合格的設施**会被选中
+ *    （旧实现取的是最后一栋）；进门 `esi` 恰为 0 时整支落空。
  */
 const zhangjia: Handler = (view, hated) => {
   const me1 = view.meIndex + 1;
+  const lands = [...view.lands].sort((a, b) => a.id - b.id);
+  const numLands = lands.reduce((m, l) => Math.max(m, l.id), 0);
+  let esi = view.cardLoopEsi ?? 8;
   let prevName: string | null = null;
+  let best = 0; // [esp+4]
   let facPick = -1;
   for (const ent of visibleEntities(view)) {
     if (ent.kind === 'land') {
@@ -793,7 +867,9 @@ const zhangjia: Handler = (view, hated) => {
       let myCount = 0;
       let rivalLevels = 0;
       let hatedOwns = false;
-      for (const o of view.lands) {
+      // @source 0x004204b7..0x00420540：`esi` 从 1 数到地块数（含），撞到最恨的人就 break
+      esi = numLands + 1;
+      for (const o of lands) {
         if (!sameStreet(o, l)) continue;
         total++;
         if (o.owner === me1) {
@@ -802,19 +878,24 @@ const zhangjia: Handler = (view, hated) => {
         } else if (o.owner !== 0) rivalLevels += o.level;
         if (hated !== -1 && o.owner === hated + 1) {
           hatedOwns = true;
+          esi = o.id;
           break;
         }
       }
-      // @source fild/fdivp 后与 0x463d38 (= 0.5) 比较 —— 等价写成 2×間数 ≥ 总数，避开除法
-      if (!hatedOwns && myLevels >= 7 && rivalLevels <= 3 && myCount * 2 >= total) return land(l.id);
+      // @source 0x0042056e `fcomp qword [0x463d38]`（= 0.66）/ `jb` —— 比例 ≥ 0.66 才涨
+      if (!hatedOwns && myLevels >= 7 && rivalLevels <= 3 && myCount * 100 >= total * 66) return land(l.id);
     } else if (ent.kind === 'facility') {
       const f = facilityById(view, ent.id);
       if (f === undefined || f.owner !== me1) continue;
       if (f.type === FACILITY_TYPE.park || f.type === FACILITY_TYPE.lab || f.level < 3) continue;
+      // @source 0x004205f0 `cmp eax, [esp+4] / jle` → 0x004205f6 `mov [esp+4], esi`
+      if (f.level <= best) continue;
+      best = esi;
       facPick = f.id;
     }
   }
-  return facPick === -1 ? null : facility(facPick);
+  // @source 0x00420609..0x00420617：地块没中时，「最高」≠ 0 才算出牌
+  return facPick === -1 || best === 0 ? null : facility(facPick);
 };
 
 /**

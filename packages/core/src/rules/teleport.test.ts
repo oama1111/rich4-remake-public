@@ -139,6 +139,17 @@ describe('傳送機', () => {
     expect(after.landLevel[1]).toBe(0);
   });
 
+  it('★★ 到期日随地搬走、源的上次過路費清零；目标必须无主 0 级（0x00447546..0x00447553 / 0x0044658c）', () => {
+    const s0 = withTool();
+    const s = { ...s0, landTenure: s0.landOwner.map((_, i) => (i === 1 ? 777 : 0)), landLastToll: s0.landOwner.map((_, i) => (i === 1 ? 55 : 0)) };
+    const after = teleportLand(s, 1, 2)!;
+    expect(after.landTenure[2]).toBe(777);
+    expect(after.landTenure[1]).toBe(0);
+    expect(after.landLastToll[1]).toBe(0);
+    const owned = { ...s, landOwner: s.landOwner.map((v, i) => (i === 2 ? 3 : v)) };
+    expect(teleportLand(owned, 1, 2)).toBeNull();
+  });
+
   it('空地搬不动，同一块地也搬不动', () => {
     const s = withTool();
     expect(teleportLand(s, 2, 1)).toBeNull(); // 2 是空地
@@ -193,6 +204,19 @@ describe('傳送機', () => {
     expect(after.players[0]!.xpos).toBe(100);
     expect(after.players[0]!.ypos).toBe(100);
     expect(teleportPlayer(after, cross.nodes, 0, 5)).toBeNull(); // 已经在那儿了
+  });
+
+  it('★★ 搬自己：先拍時光機快照、步数清 0、直接进停步结算（0x004477c3..0x004477d6），不再掷骰', () => {
+    const s = withTool();
+    const after = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 1, value: 5 }, cross);
+    expect(after.players[0]!.nodeId).toBe(5);
+    expect(after.phase).toBe('settling');
+    expect(after.stepsRemaining).toBe(0);
+    expect(after.snapshots[0]).toBeTruthy();
+    expect(toolCount(after.tools, 0, TOOL_TELEPORTER)).toBe(0);
+    // 搬别人不改相位
+    const other = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 2, value: 5 }, cross);
+    expect(other.phase).toBe('awaitingRoll');
   });
 
   it('★ 走 useTool 这条路：地產编码 → 搬地產，并扣掉道具', () => {

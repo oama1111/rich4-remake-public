@@ -25,7 +25,6 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 import { PAY_FLAG_CREDIT_TO_CASH, transferMoney } from './payment.ts';
 import { emptyOwnership, ownerOf } from '../places/commercial.ts';
 import { OBJECT_TYPE_DOG } from '../cards/summon.ts';
-import { receiveCard } from './receive-card.ts';
 import { companyParty } from './payment.ts';
 import {
   OBJECT_TYPE_GIFT,
@@ -38,6 +37,8 @@ import {
   giftToolBagEmpty,
 } from './object-landing.ts';
 import { giveTool } from './tools.ts';
+import { giveCard } from '../cards/rob.ts';
+import { conserveCardPool } from './inventory.ts';
 import {
   ACTOR_PLACE,
   idleActor,
@@ -450,7 +451,6 @@ export function applyNpcEvents(
   let pool = state.pool;
   let tools = state.tools;
   let toolStock = state.toolStock;
-  let cardAmount = state.cardAmount;
   let companyFunds = state.companyFunds;
   let companyProfit = state.companyProfit;
   const bankrupted: number[] = [];
@@ -520,16 +520,8 @@ export function applyNpcEvents(
           return { ...p, cards };
         });
         if (!removed) break;
-        const deck = [...cardAmount];
-        deck[e.card - 1] = ((deck[e.card - 1] ?? 0) + 1) & 0xff;
-        const me = players[owner];
-        if (me !== undefined) {
-          const got = receiveCard(me, e.card, deck);
-          players[owner] = got.player;
-          cardAmount = got.cardAmount;
-        } else {
-          cardAmount = deck;
-        }
+        // ★ `0x0041c307 call 0x4412e4`（receive_card）：主人满 15 张先弃最便宜的一张 —— 不是硬塞第 16 张
+        give(owner, (p) => giveCard(p, e.card));
         break;
       }
       case 'robBank': {
@@ -572,6 +564,8 @@ export function applyNpcEvents(
     }
   }
 
+  // ★ 牌堆：偷卡是 `0x441e77`（受害者 remove_card +1）+ `0x4412e4`（主人收 −1、满手弃 +1）—— 按守恒记
+  const cardAmount = conserveCardPool(state.cardAmount, state.players, state.cardAmount, players);
   return {
     state: { ...state, players, objects, pool, tools, toolStock, cardAmount, companyFunds, companyProfit },
     bankrupted,

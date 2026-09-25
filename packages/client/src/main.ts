@@ -95,7 +95,7 @@ import {
   withoutRoomParam,
 } from './foyer.ts';
 import { NetToasts } from './net-toast.ts';
-import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
+import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND, rollsWithoutDice } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
 import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
 import { hideLandingPlayer, landingFilmSpec, landingTrigger, openingLandingPlayer } from './landing-fx.ts';
@@ -2873,6 +2873,13 @@ function requestRoll(): boolean {
   if (diceFx.active) return false;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return false;
+  // ★ 审计 2026-09-25（loop F5）：停留 / 龜行**不进掷骰态** —— 原版起步 `fcn_0040dd1f` 在
+  //   `0x0040dd64`（停留：走子态 0）/ `0x0040dd7e`（龜行：`jne 0x40dd40` 直接走一步）就分走了，
+  //   预动作（`0x0040d975` 的逐帧计数）与滚骰影片（`0x419572`）都轮不到 ⇒ 当场 `rollDice`、不起动画。
+  if (rollsWithoutDice(me)) {
+    dispatch({ type: 'rollDice' });
+    return true;
+  }
   const count = Math.max(1, Math.min(3, me.ndices || 1));
   diceFlicNow(count);
   diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), count);
@@ -4685,7 +4692,13 @@ function applyAction(action: Action): void {
   if (state !== before) {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
-    if (action.type === 'rollDice') {
+    if (action.type === 'rollDice' && state.dice.length === 0) {
+      // ★ 审计 2026-09-25（loop F5）：停留 / 龜行这一「掷」没有骰子（core 给 `dice: []`）——
+      //   原版不进掷骰态、不播滚骰影片（`0x0040dd64` / `0x0040dd7e`）⇒ 不起动画、不放骰子音效。
+      //   （联机旁观端也走这里：谁的回合都一样。）
+      forcedRollSkipFx = false;
+      diceFx.cancel();
+    } else if (action.type === 'rollDice') {
       // ★ 遥控骰子（8）：点数已经由玩家选定 ⇒ **这一掷不播预动作/滚骰**（试玩回报）。
       //   原版这一段仍会播滚骰影片（`fcn_00419572` 的 `call 0x45144f`），
       //   跳过动画是需求方要求的偏离，见 `forcedRollSkipFx` 的注释。

@@ -63,7 +63,10 @@ import {
   FORTUNE_PAY_TAIL_IDS,
   emptyOwnership,
   isAlive,
+  MAX_TOOL_ID,
+  MIN_TOOL_ID,
   ownerOf,
+  toolCount,
   WHO_PLAYS_HUMAN,
   type GameState,
   type MapTopology,
@@ -832,6 +835,24 @@ export function detectHotelStay(before: GameState, after: GameState): DetectedSa
  *   - `0x00452753`：`_rich4_receive_card` 之后取同一個卡片字段
  *   本引擎里对应的量就是 `points` 的增量（商店回购、魔法屋、點數格……）。
  */
+/** 这一拍里第 i 位手上的卡或道具变少了（百貨公司变卖）*/
+function soldInventory(before: GameState, after: GameState, i: number): boolean {
+  const b = before.players[i];
+  const a = after.players[i];
+  if (b === undefined || a === undefined) return false;
+  // 董事長赠礼那一拍就是一趟百貨公司（赠来的卡可能当场又被电脑 S1 卖掉，前后手牌一样）——
+  //   赠礼那句归 `detectShopGift`，其余點券变化都是买卖
+  if (i === after.currentPlayer && (after.lastShopGift ?? null) !== null && after.lastShopGift !== before.lastShopGift) return true;
+  // 逐种比（董事長赠卡 + 同一趟卖卡时张数可能不变）
+  for (const id of new Set(b.cards)) {
+    if (a.cards.filter((c) => c === id).length < b.cards.filter((c) => c === id).length) return true;
+  }
+  for (let id = MIN_TOOL_ID; id <= MAX_TOOL_ID; id++) {
+    if (toolCount(after.tools, i, id) < toolCount(before.tools, i, id)) return true;
+  }
+  return false;
+}
+
 export function detectPointsGained(before: GameState, after: GameState): DetectedSay[] {
   const out: DetectedSay[] = [];
   // ★ 魔法屋「變賣所有卡片 / 道具」：`0x431caa` 那两支直接 `add word [player+0x30], ax`
@@ -845,6 +866,11 @@ export function detectPointsGained(before: GameState, after: GameState): Detecte
   for (let i = 0; i < after.players.length; i++) {
     const amount = delta(before, after, i, 'points');
     if (amount <= 0) continue;
+    // ★ 审计（provenance-ai-econ）：百貨公司**变卖**卡片 / 道具（`0x42d145` / `0x42d1b2`，电脑那一支
+    //   `0x0042ed8d` 起的 S1–S3 与真人的退货）是直接 `mov word [player+0x30], ax` 入帳，不调 `0x44f230`
+    //   （它的调用点只有 `0x40ee46`/`0x41b38c`/`0x41b98b`/`0x41bafa`/`0x42ea23`/`0x452753`）⇒ **不说话**。
+    //   手上的卡或道具变少、點券变多 = 这一笔是变卖。
+    if (soldInventory(before, after, i)) continue;
     const tier = smallGainTierFor(amount, speechCoin(after, i, SPEECH_RAND_SITE.smallGain));
     if (tier === null) continue;
     out.push({ player: i, event: tier });

@@ -205,7 +205,8 @@ function commercialSharesOf(map: Rich4Map, globalMapId: number): number[] {
  *   随后 `0x004072f9` 只写 `+0x64 = 1 / 2`（人 / 电脑）= 本引擎的 `landingWhoPlays`。
  */
 function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, vehicle: number): Player {
-  const money = startingMoney(setup.character, fund);
+  // @source 0x004072ff `test al, 1`：真人对半、电脑按角色比例（见 `startingMoney`）
+  const money = startingMoney(setup.character, fund, setup.kind === 'human');
   return {
     index,
     character: setup.character,

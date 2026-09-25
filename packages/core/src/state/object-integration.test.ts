@@ -483,10 +483,10 @@ describe('★ 确定性没被破坏', () => {
         expect(isAlive(host)).toBe(true);
       }
     }
-    // ★ 六对神明始终在循环；禮物与寶箱是一次性的（原版 `i < 12` 才有搭档）
-    // ★ 2026-09-24：只数**地图物件**（神明 / 惡犬 / 禮物 / 寶箱，type ≤ 15）—— 路障/地雷/定時炸彈（16..18）
-    //   是道具放出来的，终局时盘上留着几颗取决于轨迹（本轮审计换了轨迹后终局恰好留着一颗炸彈 ⇒ 9 > 8）。
-    const alive = s.objects.filter((o) => (o.nodeId !== 0 || o.attached !== 0) && o.type <= 15);
+    // ★ 六对神明始终在循环（原版 `i < 12` 才有搭档）；禮物与寶箱被拿走后**每逢跨月**重新摆出来
+    //   （审计 2026-09-24：`0x0041d0a5..0x0041d0f6`，见 `rules/monthly-objects.ts`）。
+    //   只数唯一物件（種類 1..14）—— 路障/地雷/定時炸彈是道具放出来的，另算。
+    const alive = s.objects.filter((o) => o.type <= 14 && (o.nodeId !== 0 || o.attached !== 0));
     expect(alive.length).toBeGreaterThan(0);
     expect(alive.length).toBeLessThanOrEqual(INITIAL_OBJECT_TYPES.length);
   }, 120_000);

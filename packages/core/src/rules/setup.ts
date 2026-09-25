@@ -82,24 +82,39 @@ export interface StartingMoney {
 }
 
 /**
- * 按角色的 `init_cash_ratio` 分配开局资金。
+ * 分配开局资金 —— **电脑**按角色的 `init_cash_ratio`，**真人**一律对半。
  *
  * ```
- * 现金 = 初始资金 × ratio / 100
+ * 电脑：现金 = trunc(ratio × (初始资金 / 100.0))     真人：现金 = 初始资金 >> 1
  * 存款 = 初始资金 − 现金
  * ```
  *
- * @source 实证（`SAVE1.DAT` 一局刚开始的游戏）：
- *   孫小美 ratio=50 → 150000/150000 ✓
- *   阿土伯 ratio=40 → 120000/180000 ✓
- *   金貝貝 ratio=80 → 240000/ 60000 ✓
+ * @source 开局 `fcn_00406de7` 的逐人循环（审计 2026-09-24 订正真人那一支）：
+ * ```asm
+ * 004072f9  mov  byte [p + 0x64], al        ; al = 1（人）/ 2（电脑）
+ * 004072ff  test al, 1 / je 0x4071d4        ; ★ 电脑 ⇒ 按比例
+ * 00407307  mov  eax, [0x49908c] / sar eax, 1
+ * 0040730e  mov  [p + 0x1c], eax            ; ★ 真人：现金 = 初始资金 >> 1
+ * 00407314  jmp  0x407210                   ;   存款 = 初始资金 − 现金
+ * 004071d4  fild word [p+0x19] × (fild [0x49908c] ÷ f32 [0x463190]=100.0) → 0x457dbc 截断 → 现金
+ * 00407210  mov  [p + 0x20], 初始资金 − 现金
+ * ```
+ * 实证（`SAVE1.DAT` 一局刚开始的游戏）：孫小美 ratio=50 → 150000/150000（两支同值）、
+ *   阿土伯 ratio=40 → 120000/180000、金貝貝 ratio=80 → 240000/60000（电脑）—— 与上面一致。
+ *   ⚠️ 先前不分人机一律按比例，真人选了 ratio≠50 的角色开局现金就错了。
  *
  * @param characterId 角色编号 0..11
  * @param initialFund 初始资金
+ * @param human       这一位由人操作（`+0x64 & 1`）
  */
-export function startingMoney(characterId: number, initialFund: number): StartingMoney {
+export function startingMoney(characterId: number, initialFund: number, human = false): StartingMoney {
   const ch = CHARACTERS[characterId];
   if (ch === undefined) throw new RangeError(`未知角色编号: ${characterId}`);
+  if (human) {
+    // @source 0x0040730c `sar eax, 1`（初始资金恒为正，等于向零取整的一半）
+    const half = initialFund >> 1;
+    return { cash: half, moneyInBank: initialFund - half };
+  }
   // 整数运算（C-DET-3）：先乘后除，向零取整
   const cash = Math.trunc((initialFund * ch.initCashRatio) / 100);
   return { cash, moneyInBank: initialFund - cash };

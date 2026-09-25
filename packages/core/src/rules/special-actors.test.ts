@@ -143,6 +143,7 @@ describe('走几步', () => {
 describe('上路', () => {
   it('機器娃娃从主人脚下起步，位置原样抄一份', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [makePlayer({ index: 0, nodeId: 12, lastNodeId: 11, direction: 5 })],
     });
     const doll = spawnDoll(s, 0);
@@ -159,7 +160,8 @@ describe('上路', () => {
   });
 
   it('主人不在地图上就放不出来', () => {
-    const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 0 })] });
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [makePlayer({ index: 0, nodeId: 0 })] });
     expect(spawnDoll(s, 0)).toBeNull();
     expect(spawnDoll(s, 3)).toBeNull();
   });
@@ -300,6 +302,7 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 
   function withDoll(objects: MapObject[]) {
     const base = makeGameState({
+    phase: 'awaitingRoll',
       players: [makePlayer({ index: 0, nodeId: 1, lastNodeId: 0 })],
       objects,
     });
@@ -377,7 +380,8 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
   });
 
   it('没有这件道具就什么都不发生', () => {
-    const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1 })], objects: objs(2) });
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [makePlayer({ index: 0, nodeId: 1 })], objects: objs(2) });
     expect(reduce(s, { type: 'useTool', toolId: 1 }, topo)).toBe(s);
   });
 

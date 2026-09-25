@@ -63,9 +63,11 @@ export type Action =
   | { type: 'buyFacility' }
   /**
    * 在自己的空地設施上选一种建筑蓋第一级。
-   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所
+   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所；
+   *   `null` = 按**电脑那一支**定种类（付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5` 都是 `rand()%4+1`，
+   *   随机数只能在 reducer 里掷）—— 只收电脑 / 託管座位的（开着窗被托管的真人由 AI 代答）
    */
-  | { type: 'buildFacility'; facilityType: number }
+  | { type: 'buildFacility'; facilityType: number | null }
   /** 给自己的設施加蓋一级 @source 0x0041a2b3 */
   | { type: 'upgradeFacility' }
   /**
@@ -161,6 +163,14 @@ export type Action =
     }
   | { type: 'noticeBoard'; op: 'withdraw'; slot: number }
   | { type: 'noticeBoard'; op: 'buy'; seller: number; slot: number }
+  /**
+   * 打开 / 关上公佈欄（真人从工具列 / 熱鍵，`0x00417dee call 0x4284be`）。
+   * - `open`：进门清理 —— 撤掉挂着却已不归挂牌人的东西（`0x004284c5 call 0x42483e`）；
+   * - `close`：收尾收回特別融資（`0x0042885c push 0 / call 0x436b0a`）。
+   * 没有可做的就原样返回（客户端只在会生效时才发，联机不会被当成非法）。
+   */
+  | { type: 'noticeBoard'; op: 'open' }
+  | { type: 'noticeBoard'; op: 'close' }
 
   /**
    * 百貨公司买卖。买的两种可带 `row` = **货架第几行**（`pending.cards` / `pending.tools` 的下标）：

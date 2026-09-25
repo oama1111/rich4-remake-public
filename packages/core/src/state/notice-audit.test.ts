@@ -20,6 +20,7 @@ const tiny: MapTopology = { nodes: [makeNode({ id: 1, adjacent: [1] })] };
 describe('★ 电脑买卖股 @source 0x0042c78c（買進）/ 0x0042d092（賣出）', () => {
   const base = (whoPlays: number): GameState =>
     makeGameState({
+    phase: 'awaitingRoll',
       year: 1998,
       month: 1,
       day: 5,
@@ -29,18 +30,45 @@ describe('★ 电脑买卖股 @source 0x0042c78c（買進）/ 0x0042d092（賣�
       ),
     });
 
-  it('电脑买 ⇒「%s\\n\\n買進%s%d張」`[玩家, 股名, 张数]`，1500 ms（缺省）', () => {
-    const s = reduce(base(WHO_PLAYS_COMPUTER), { type: 'buyStock', stock: 0, shares: 100 }, tiny);
-    expect(s.holdings[0]![0]!.amount).toBe(100);
-    expect(s.notices).toEqual([
-      { key: 'stock.aiBuy', args: ['約翰喬', stocksOfMap(0)[0]!.name, 100] },
-    ]);
+  /** 让 0 号股票值得买（無企業：近 6 日均价 < 近 24 日均价一半 → +2），调度步停在 `aiStep` */
+  const aiAt = (aiStep: number, rngState: number, held = 0): GameState => {
+    const s = base(WHO_PLAYS_COMPUTER);
+    const history = s.market.history.map((h) => [...h]);
+    for (let d = 120; d < 138; d++) history[0]![d] = 100;
+    for (let d = 138; d < 144; d++) history[0]![d] = 10;
+    const stocks = s.market.stocks.map((x, j) => (j === 0 ? { ...x, f10: x.shares } : x));
+    const holdings = s.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j === 0 ? { amount: held, avgCost: held ? 1 : 0 } : x)) : h));
+    const players = s.players.map((p, i) => (i === 0 ? { ...p, stockRatio: 50 } : p));
+    return { ...s, phase: 'awaitingRoll', aiStep, rngState, players, holdings, market: { ...s.market, history, stocks } };
+  };
+  /** 扫种子直到这一步真的成交（入口闸三分之一、名次闸另算） */
+  const firstTrade = (aiStep: number, held: number): GameState => {
+    for (let seed = 1; seed < 500; seed++) {
+      const s0 = aiAt(aiStep, seed, held);
+      const s = reduce(s0, { type: 'aiNext' }, tiny);
+      if (s.holdings[0]![0]!.amount !== held) return s;
+    }
+    throw new Error('500 个种子都没成交');
+  };
+
+  it('电脑买（调度步 0 → 1，reducer 按 0x42bf03 买）⇒「%s\\n\\n買進%s%d張」`[玩家, 股名, 张数]`，1500 ms（缺省）', () => {
+    const s = firstTrade(0, 0);
+    const n = s.holdings[0]![0]!.amount;
+    expect(n).toBeGreaterThan(0);
+    expect(s.notices).toEqual([{ key: 'stock.aiBuy', args: ['約翰喬', stocksOfMap(0)[0]!.name, n] }]);
   });
 
-  it('电脑卖 ⇒「賣出」同形', () => {
-    const bought = reduce(base(WHO_PLAYS_COMPUTER), { type: 'buyStock', stock: 0, shares: 100 }, tiny);
-    const s = reduce(bought, { type: 'sellStock', stock: 0, shares: 100 }, tiny);
-    expect(s.notices).toEqual([{ key: 'stock.aiSell', args: ['約翰喬', stocksOfMap(0)[0]!.name, 100] }]);
+  it('电脑卖（调度步 1 → 2，reducer 按 0x42c79f 卖**全部**）⇒「賣出」同形', () => {
+    const s = firstTrade(1, 100);
+    expect(s.holdings[0]![0]!.amount).toBe(0);
+    expect(s.notices[0]).toEqual({ key: 'stock.aiSell', args: ['約翰喬', stocksOfMap(0)[0]!.name, 100] });
+  });
+
+  it('★ 电脑不再经 buyStock / sellStock 这条 action（那是真人柜台），故那条路不弹', () => {
+    const s0 = base(WHO_PLAYS_COMPUTER);
+    const s = reduce(s0, { type: 'buyStock', stock: 0, shares: 100 }, tiny);
+    expect(s.holdings[0]![0]!.amount).toBe(100);
+    expect(s.notices).toBe(s0.notices);
   });
 
   it('真人在股市柜台买（`0x0042afc6`）**不弹**', () => {
@@ -77,7 +105,8 @@ describe('★ 电脑贷款 @source 0x0043694b', () => {
 });
 
 describe('★ 惡人那六句 @source 0x0041c255 / 0x0041c2ea / 0x0041c415 / 0x0041c56e / 0x0041c692 / 0x0041c778', () => {
-  const s = makeGameState({ players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i })) });
+  const s = makeGameState({
+    phase: 'awaitingRoll', players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i })) });
 
   it('偷點券 / 奪卡是 1000 ms（`push 0x3e8`），搶銀行 2000 ms（`push 0x7d0`），其余 1500', () => {
     expect(
@@ -247,6 +276,7 @@ describe('★ 卡片函数里的那几扇 @source 0x004425fb / 0x00441ab1 / 0x00
     const node = makeNode({ id: 1, type: HOUSING_TYPE_MIN + 1, adjacent: [1] });
     const land = makeLand({ id: 1, landPrice: 1000, housePrice: 200 });
     const state = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) =>
         makePlayer({ index: i, character: i, nodeId: 1, cash: 100_000, whoPlays: i === 0 ? whoPlays : WHO_PLAYS_COMPUTER }),
       ),

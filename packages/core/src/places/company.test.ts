@@ -23,6 +23,7 @@ import {
 import { WHEEL, WHEEL_TABLE, spinWheel } from '../rules/facility.ts';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
+import { decidePending } from '../ai/policy.ts';
 import { emptyOwnership } from './commercial.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { WHO_PLAYS_HUMAN, type GameState } from '../state/types.ts';
@@ -272,6 +273,19 @@ describe('★ 踩到上市企業', () => {
     expect(done.pending?.kind).toBe('buyShares');
   });
 
+  it('★★ 选地窗开着时被托管：AI 代答走电脑那一支 0x40b455（租金最高的自家住宅地），不是「取第一个」', () => {
+    const s0 = landing(1);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const topo = topoWith(INDUSTRY.construction);
+    const asked = reduce({ ...s0, landOwner }, { type: 'settle' }, topo);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const map = { ...topo, facilities: [], landscapes: [], dataSize: 0 } as never;
+    expect(decidePending(piloted, map)).toEqual({ type: 'buildTarget', entityId: 0x7d0 + 1 });
+    // 电脑挑出来的不在可选里（或挑不出）⇒ 关窗
+    expect(decidePending({ ...piloted, landLevel: [0, 5] }, map)).toEqual({ type: 'declineDecision' });
+  });
+
   it('★ 真人没有可加蓋的地：不弹选地，直接問認購', () => {
     const r = reduce(landing(1), { type: 'settle' }, topoWith(INDUSTRY.construction));
     expect(r.pending?.kind).toBe('buyShares');
@@ -286,14 +300,23 @@ describe('★ 每日：保險期倒数；15 日分紅', () => {
   //   阻碍计数器的 `test 0x80 → 清零+释放` 分支，是整字节递减 ⇒ `0x80 → 0x7f`，
   //   于是 `1 → 0x80 → 0x7f → … → 1 → 0x80…` **永不归零**
   //   （闸门 `+0x3e != 0` 实际等于「买过一次保險就永久理赔」）。
-  it('保險期每回合 −1；到 0 挂 0x80，之后 0x80→0x7f（**永不归零**）', () => {
-    let s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1, insuranceDays: 2 })], phase: 'turnStart' });
-    s = reduce(s, { type: 'startTurn' }, topo);
+  it('★ 审计 2026-09-24：保險期在交接给他时（`0x41c84f`）走一天：2→1→0x80→0（次日停赔）@source 0x41cae3 / 0x41cc4b', () => {
+    let s = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, insuranceDays: 2 }), makePlayer({ index: 1, nodeId: 1 })],
+      phase: 'turnEnd',
+      currentPlayer: 1,
+    });
+    const round = (x: typeof s): typeof s =>
+      reduce({ ...x, currentPlayer: 1, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, topo);
+    s = round(s);
     expect(s.players[0]!.insuranceDays).toBe(1);
-    s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
-    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING);
-    s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
-    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING - 1); // 0x7f，**不是 0**
+    s = round(s);
+    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING); // 0x80 那一天仍非 0（照赔）
+    s = round(s);
+    expect(s.players[0]!.insuranceDays).toBe(0); // ① `0x41cae3` 先清 0x80，② 看到 0 不动
+    // startTurn 本身不再动它
+    const t = reduce({ ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, insuranceDays: 3 } : p)), currentPlayer: 0, phase: 'turnStart' }, { type: 'startTurn' }, topo);
+    expect(t.players[0]!.insuranceDays).toBe(3);
   });
 
   it('★ 推进到 15 日：盈餘按持股分进存款并清零', () => {

@@ -30,8 +30,8 @@
  * 卖卡把牌放回牌堆（`consume_card 0x441343` 的 `inc [卡号 + 0x499197]`），买卡从牌堆扣
  * （`receive_card 0x4412e4` 的 `dec [卡号 + 0x499197]`），买道具走 `receive_tool 0x445a4d`（扣库存）。
  *
- * ⚠️ 已知替身（与 `ai/stock-policy.ts` 的 D-006 同一类）：Watcom 的 `qsort`（`0x457e6c`）不稳定，
- *   同价的卡谁先谁后不可知 —— 本引擎按卡号升序（候选本来就按卡号压入）。
+ * ★ 买卡候选的次序照原版 Watcom `qsort`（`0x457e6c`，不稳定）逐条移植（`rules/watcom-qsort.ts`，
+ *   与原版机器码逐位对过）—— 同价的卡谁先买由那套算法决定（先前按卡号升序当替身，D-006 已撤）。
  * ⚠️ 离店时原版把这次买卖的 `10 × 价` 累加进这家店的营业额（`0x0042ed75` 设施记录 `+0x28/+0x2c`）；
  *   本引擎的商店（真人那一支同样）没有这项统计，不接。
  *
@@ -45,6 +45,7 @@ import { giveTool, MAX_TOOL_COUNT, MAX_TOOL_ID, toolCount } from '../rules/tools
 import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE } from '../rules/tool-effects.ts';
 import { addPoints } from '../rules/points.ts';
 import { cardPrice, sellCard, sellTool, toolPrice } from './shop.ts';
+import { watcomQsort } from '../rules/watcom-qsort.ts';
 
 /** 點券低于这个数才走「变卖」那一段 @source `0x0042eeab cmp word [player+0x30], 0x64 / jae` */
 export const AI_SHOP_LOW_POINTS = 0x64;
@@ -187,9 +188,10 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
       candidates.push(card.id);
     }
   }
-  // @source qsort(候选, n, 1, 0x42d0ef)：价高者先（替身：同价按卡号升序，见文件头）
-  candidates.sort((a, b) => cardPrice(b) - cardPrice(a) || a - b);
-  for (const id of candidates) {
+  // @source `0x0042f0e4 call 0x457e6c(候选, n, 1, 0x42d0ef)`：1 字节元素（枢轴换到段首那一型）；
+  //   比较器 `0x42d0ef` 比 `[卡*8 + 0x47fdf7]`（无符号字节价）：价高者在前，同价的次序照 Watcom 算法
+  const sorted = watcomQsort(candidates, (a, b) => (cardPrice(a) > cardPrice(b) ? -1 : cardPrice(a) < cardPrice(b) ? 1 : 0), true);
+  for (const id of sorted) {
     // @source 0x0042f105 call 0x441262 / cmp eax, 0xf / je 离开这一段
     if (player.cards.length >= MAX_HAND_CARDS) break;
     const price = cardPrice(id);

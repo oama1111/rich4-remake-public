@@ -6,7 +6,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DICE_HOLD_MS, DiceRollFx } from './dice-roll.ts';
+import { DICE_HOLD_MS, DiceRollFx, rollsWithoutDice } from './dice-roll.ts';
+import { makeGameState, makeNode, makePlayer, reduce } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
 
 /** 造一段假影片：`n` 帧、每帧 `ms` 毫秒 */
@@ -370,5 +371,22 @@ describe('★★ 掷骰姿停在哪一帧（第十四份试玩回报 #3「扔完
     expect(render).toContain('input.characterPose ?? null, input.characterPoseFrame ?? null');
     expect(render).toContain('directionalImage(count, dir, frameNow)');
     expect(render).toContain('const frameNow = fixedFrame ?? this.#walkFrame;');
+  });
+});
+
+describe('★ 审计 2026-09-25（loop F5）：停留 / 龜行不起滚骰 —— 与 core 的 rollDice 同源', () => {
+  it('rollsWithoutDice 为真 ⇔ core 这一「掷」没有骰子（dice: []）', () => {
+    const topo = { nodes: [1, 2].map((id) => makeNode({ id, adjacent: [id === 1 ? 2 : 1] })) };
+    const cases = [
+      { stopping: 0, tortoiseWalking: 0 },
+      { stopping: 1, tortoiseWalking: 0 },
+      { stopping: 0, tortoiseWalking: 2 },
+      { stopping: 0x80, tortoiseWalking: 0x80 },
+    ];
+    for (const c of cases) {
+      const p = makePlayer({ index: 0, nodeId: 1, blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0, ...c } });
+      const after = reduce(makeGameState({ players: [p], phase: 'awaitingRoll' }), { type: 'rollDice' }, topo);
+      expect(rollsWithoutDice(p), JSON.stringify(c)).toBe(after.dice.length === 0);
+    }
   });
 });

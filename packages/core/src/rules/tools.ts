@@ -195,3 +195,24 @@ export function initialToolStock(): number[] {
   for (const t of TOOLS) stock[t.id] = t.initAmount;
   return stock;
 }
+
+/**
+ * 道具**直接减一**（不回库存）—— 路障/地雷/定時炸彈/機車/汽車/工程車用掉时原版不走 `take_tool`：
+ * ```asm
+ * 00446c7e  dec byte [p*15 + 0x49915d]   ; 路障（2）
+ * 00446d5f  dec byte [p*15 + 0x49915e]   ; 地雷（3）
+ * 00446e40  dec byte [p*15 + 0x49915f]   ; 定時炸彈（4）
+ * 00446ef9  dec byte [p*15 + 0x499160]   ; 機車（5）
+ * 00446fb1  dec byte [p*15 + 0x499161]   ; 汽車（6）
+ * 00447ac2  dec byte [p*15 + 0x499167]   ; 工程車（12）
+ * ```
+ * 库存要等**物件被收走**（`release_object` `0x0040e17f inc [0x497321..23]`）或**车被毁**（`0x0040cd3b`）
+ * 才还回去 —— 先前这里走 `takeTool`，放下 / 上车那一刻就 +1，收回时再 +1，库存被记两次。
+ */
+export function decTool(tools: readonly number[], player: number, toolId: number): number[] {
+  const next = [...tools];
+  const at = player * TOOL_SLOTS_PER_PLAYER + toolId;
+  const have = next[at] ?? 0;
+  if (have > 0) next[at] = have - 1;
+  return next;
+}

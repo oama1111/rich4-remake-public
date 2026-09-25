@@ -106,6 +106,21 @@ describe('★ 免費卡 / 嫁禍卡 自动使用', () => {
     expect(aiScapegoat(jailed, 0, 9000, 1, () => 5)).toBe(2);
   });
 
+  // ★★ 审计（ai-move）：候选空（没最恨的人、其余人都被关着）时原版 mode 1 **照样掷门槛**
+  //   （`0x004448fc call rand` 在 `0x00444973 cmp ebx,-1` 之前）⇒ 随机流走一格，结果仍是不用
+  it('★★ 没有可嫁禍的人：仍掷一次门槛 rand，返回 −1', () => {
+    const ps = [0, 1, 2].map((i) =>
+      makePlayer({ index: i, cash: 100, blocking: { ...makePlayer().blocking, inHospital: i === 0 ? 0 : 3 } }),
+    );
+    let draws = 0;
+    const rand = (): number => {
+      draws++;
+      return 0;
+    };
+    expect(aiScapegoat(ps, 0, 9000, 1, rand)).toBe(-1);
+    expect(draws).toBe(1);
+  });
+
   it('接到住宅落点：手里有免費卡且費 > 現金 → 免付、扣卡、lastToll 记 0', () => {
     // 付款方是**电脑**（真人那一支是问一句，见下面「D-008 收口」那一组）
     const s = onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20, 3], whoPlays: WHO_PLAYS_COMPUTER } });

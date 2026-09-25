@@ -115,16 +115,21 @@ function fakeStage(): CanvasRenderingContext2D {
 
 interface Harness {
   env: UiScreenEnv;
+  /** 屏上点出来的 action（开 / 关窗那两步另记在 `edges`）*/
   actions: Action[];
+  /** 开窗清理 / 关窗收回（`noticeBoard` 的 `open` / `close`）*/
+  edges: Action[];
   logs: string[];
   renders: number;
 }
 
 function harness(state: GameState, topo: MapTopology = { nodes: [] }): Harness {
   const actions: Action[] = [];
+  const edges: Action[] = [];
   const logs: string[] = [];
   const h: Harness = {
     actions,
+    edges,
     logs,
     renders: 0,
     env: {
@@ -135,7 +140,8 @@ function harness(state: GameState, topo: MapTopology = { nodes: [] }): Harness {
       now: 1000,
       stage: fakeStage(),
       sprite: () => null,
-      dispatch: (a) => actions.push(a),
+      dispatch: (a) =>
+        (a.type === 'noticeBoard' && (a.op === 'open' || a.op === 'close') ? edges : actions).push(a),
       requestRender: () => {
         h.renders += 1;
       },
@@ -886,6 +892,29 @@ describe('開屏 / 關屏 @source VA 0x00417dee（工具列第 10 颗）/ rich4.
     expect(boardScreen.toolbar?.(8, h.env)).toBe(false);
     expect(boardScreen.toolbar?.(9, h.env)).toBe(true);
     expect(boardScreen.active(h.env)).toBe(true);
+  });
+
+  it('★★ 开窗先清理（0x004284c5 call 0x42483e）、关窗收回特別融資（0x0042885c push 0 / call 0x436b0a）—— 只在会生效时才交 action', () => {
+    // 0 号挂着手上已没有的卡 5；1 号欠特別融資（没有銀行董事長 ⇒ 关窗时收回）
+    const base = stateWithBoard([{ seller: 0, slot: 0, kind: 4, id: 5, price: 100, amount: 0 }]);
+    const s = { ...base, players: base.players.map((p, i) => (i === 1 ? { ...p, moneyInBank: 5000, specialFinance: 1000 } : p)) };
+    const h = harness(s);
+    resetBoardScreen();
+    expect(boardScreen.toolbar?.(9, h.env)).toBe(true);
+    expect(h.edges).toEqual([{ type: 'noticeBoard', op: 'open' }]);
+    expect(boardScreen.toolbar?.(9, h.env)).toBe(true); // 再按一次 = 关
+    expect(h.edges).toEqual([{ type: 'noticeBoard', op: 'open' }, { type: 'noticeBoard', op: 'close' }]);
+    // 什么都不欠、没有失效挂牌 ⇒ 开关都不交（空操作在联机里会被当成非法）
+    const idle = harness(makeGameState());
+    resetBoardScreen();
+    boardScreen.toolbar?.(9, idle.env);
+    boardScreen.toolbar?.(9, idle.env);
+    expect(idle.edges).toEqual([]);
+    // 联机旁观端（本机不是回合主人）不交
+    const watch = harness(s);
+    resetBoardScreen();
+    boardScreen.toolbar?.(9, { ...watch.env, localSeat: 2 });
+    expect(watch.edges).toEqual([]);
   });
 
   it('★ 不在 game 屏時不開（也不认领熱鍵）', () => {

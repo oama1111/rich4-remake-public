@@ -21,6 +21,7 @@ import {
   auctionNextBid,
   decideAction,
   decideAtLanding,
+  decidePending,
   isAiTurn,
   toCardTarget,
 } from './policy.ts';
@@ -29,6 +30,7 @@ import { useCard, type UseCardContext } from '../cards/registry.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -239,7 +241,12 @@ describe('★ 电脑回合掷骰前的调度步（aiStep）', () => {
       rngState: 12345,
     });
     const s1 = reduce(ai, { type: 'aiNext' }, { nodes: [] });
-    expect(s1.rngState).toBe(ai.rngState); // 0 → 1 不碰随机
+    // ★★ 审计订正：0 → 1 是买股（0x42bf03），入口 `0x0042bf14 rand()%3` **每回合必掷**一次；
+    //   这里股市没有一支有分 ⇒ 之后不再掷
+    const one = new WatcomRng();
+    one.setState(ai.rngState);
+    one.next();
+    expect(s1.rngState).toBe(one.getState());
     const s2 = reduce(s1, { type: 'aiNext' }, { nodes: [] });
     expect(s2.aiStep).toBe(2);
     expect(s2.rngState).not.toBe(s1.rngState);
@@ -580,5 +587,24 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
       { whoPlays: WHO_PLAYS_COMPUTER },
     ]), phase: 'turnEnd' as const };
     expect(decideAction({ state: s, map: topo })?.type).toBe('auctionBid');
+  });
+});
+
+describe('审计（ai-move）：开着保釋窗被托管的真人', () => {
+  it('★★ 不再自拟「挑最便宜的同伴」—— 按关窗处理（declineDecision，不花點券）', () => {
+    const s = makeGameState({
+      players: [
+        makePlayer({ index: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT, points: 500 }),
+        makePlayer({ index: 1 }),
+      ],
+      phase: 'turnEnd',
+      pending: {
+        kind: 'bail',
+        place: 'prison',
+        candidates: [{ slot: 1, player: 1, name: '沙隆巴斯', cost: 30, affordable: true }],
+        points: 500,
+      },
+    });
+    expect(decidePending(s)).toEqual({ type: 'declineDecision' });
   });
 });

@@ -143,9 +143,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   },
   {
     line: 'cardLine',
-    boxes: ['card.robbed', 'card.useOnStock', 'card.taxed', 'godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo'],
+    boxes: ['card.robbed', 'card.useOnStock', 'card.taxed', 'godSay', 'godSlot', 'god.gotCard', 'god.gotCardTwo', 'insurance.payout'],
     exe: 'lineFirst',
-    va: '出牌台词在卡片函数最前：股票卡 `0x00444f5b` → 框 `0x00444fdb`、`0x00445079` → `0x00445154`；查稅 `0x0044526b` → `0x004453ef`；搶奪 `0x00443e9c` → 取物；請神符 `0x00444e8a` → 飞 `0x00444efa` → 附身（福神得卡框 `0x0040ee2f` 在附身里）',
+    va: '出牌台词在卡片函数最前（陷害卡 `0x00444534 call 0x44ef41` → 入獄 `0x0044461c call 0x43d593` → 理賠 `0x0043d749`）：股票卡 `0x00444f5b` → 框 `0x00444fdb`、`0x00445079` → `0x00445154`；查稅 `0x0044526b` → `0x004453ef`；搶奪 `0x00443e9c` → 取物；請神符 `0x00444e8a` → 飞 `0x00444efa` → 附身（福神得卡框 `0x0040ee2f` 在附身里）',
   },
   {
     line: 'cardLine@afterStage',
@@ -314,9 +314,9 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   {
     // ★ 第 24 份的改动让长局里出现了「推日期那一整屏」与「神明任期到了」同一拍（g20 图 4 第 56 回合）
     line: 'godLeft',
-    boxes: ['shares', 'lotteryDraw'],
+    boxes: ['shares', 'lotteryDraw', 'monthly'],
     exe: 'boxFirst',
-    va: '回合交接 `0x0041902e call 0x41cf67`（推日期：股息 `0x0041d08f call 0x42ba97`、樂透開獎 `0x0041d094 call 0x431712`）在 `0x00419039 call 0x41c84f`（逐人计数，神明任期 `0x0041cc9b call 0x40e32c` → 升天 → 「一場惡夢～」`0x0040e659`）之前',
+    va: '回合交接 `0x0041902e call 0x41cf67`（推日期：股息 `0x0041d08f call 0x42ba97`、樂透開獎 `0x0041d094 call 0x431712`、月結 `0x0041d09e call 0x439bfa`）在 `0x00419039 call 0x41c84f`（逐人计数，神明任期 `0x0041cc9b call 0x40e32c` → 升天 → 「一場惡夢～」`0x0040e659`）之前',
   },
   {
     line: 'godArrived',

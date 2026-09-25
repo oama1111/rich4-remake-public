@@ -17,6 +17,7 @@ import {
   aiWantsToListTool,
   cardListPrice,
   duplicateCards,
+  sweepStaleColumn,
   encodeEstate,
   estateListPrice,
   stockListPrice,
@@ -116,7 +117,23 @@ describe('★ AI 怎么用公佈欄 —— 判据', () => {
   it('卡片只在手牌 > 12 且有重复时挂；重复的挑法', () => {
     expect(AI_CARD_LIST_MIN_HAND).toBe(12);
     expect(duplicateCards([1, 2, 3])).toEqual([]);
-    expect(duplicateCards([1, 2, 2, 3, 3, 3])).toEqual([2, 3]);
+    // ★★ 审计订正（0x004288a9）：双重循环逐对压入、不去重 ⇒ k 张同种卡进表 k·(k−1) 次
+    expect(duplicateCards([1, 2, 2, 3, 3, 3])).toEqual([2, 2, 3, 3, 3, 3, 3, 3]);
+    expect(duplicateCards([5, 7, 5])).toEqual([5, 5]);
+  });
+
+  it('★★ 进门先清理（0x0042483e）：挂着却已不归挂牌人的撤掉；一旦撤过一件，游标就钉在那一格', () => {
+    const col = [
+      { kind: 3, id: 1, price: 1, amount: 0 },
+      { kind: 3, id: 2, price: 1, amount: 0 }, // 失效
+      { kind: 3, id: 3, price: 1, amount: 0 },
+      { kind: 3, id: 4, price: 1, amount: 0 }, // 失效（但游标已钉在 1 号格，看不到它）
+      null, null, null,
+    ] as Parameters<typeof sweepStaleColumn>[0];
+    const out = sweepStaleColumn(col, (it) => it.id !== 2 && it.id !== 4);
+    expect(out.map((x) => x?.id ?? 0)).toEqual([1, 3, 4, 0, 0, 0, 0]);
+    // 没撤过就逐格往后看，全都合格 ⇒ 原样返回
+    expect(sweepStaleColumn(col, () => true)).toBe(col);
   });
 
   it('★ 道具：数量 ≥ 3，或 有货且 f7 − 個性 == 2', () => {
@@ -182,6 +199,19 @@ describe('★ 电脑回合会用公佈欄（在 reducer 里掷，跨进调度第
     }
     return { ...s, tools, toolStock: stock };
   }
+
+  it('★★ 进门先清理（0x004284c5 call 0x42483e）：别人挂着、自己手上已没有的卡，在电脑这一步被撤掉', () => {
+    const s0 = makeGameState({
+      players: [0, 1].map((i) => makePlayer({ index: i, nodeId: 1, cash: 100_000, whoPlays: 2, cards: i === 1 ? [3] : [] })),
+      phase: 'turnStart',
+      rngState: 1,
+    });
+    const col = (ids: number[]) => [...ids.map((id) => ({ kind: LISTING.card, id, price: 100, amount: 0 })), null, null, null, null, null].slice(0, 7);
+    const s = { ...s0, noticeBoard: [col([]), col([5, 3])] };
+    const after = toBoardStep(s);
+    // 1 号挂着卡 5（手上没有）与卡 3（手上有）⇒ 5 撤掉、3 挪到第 0 格
+    expect(after.noticeBoard[1]!.map((x) => x?.id ?? 0)).toEqual([3, 0, 0, 0, 0, 0, 0]);
+  });
 
   it('扫一批种子：总有些回合挂出路障，且價 = 3000 × 物價', () => {
     let listedSeeds = 0;

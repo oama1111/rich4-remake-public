@@ -641,7 +641,8 @@ function auctionGame(cash: number | ((i: number) => number) = 60_000): GameState
   return makeGameState({
     players,
     currentPlayer: 0,
-    phase: 'turnStart',
+    // 卡片只能在按 GO 之前出（`canUseItemsNow`）
+    phase: 'awaitingRoll',
     landOwner: [0, 2],
     landLevel: [0, 0],
   });
@@ -1078,7 +1079,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
     const s0 = makeGameState({
       players,
       currentPlayer: 0,
-      phase: 'turnStart',
+      phase: 'awaitingRoll',
       landOwner: [0, 1], // ★ 1 号编码 = 0 号玩家 ⇒ 0 号卖自己的地
       landLevel: [0, 0],
     });
@@ -1121,7 +1122,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
       makeGameState({
         players,
         currentPlayer: 0,
-        phase: 'turnStart',
+        phase: 'awaitingRoll',
         landOwner: [0, 0],
         landLevel: [0, 0],
       }),
@@ -1395,5 +1396,30 @@ describe('★ Q-AUC-1 soak：4 个电脑跑满 300 回合，拍卖不得卡死',
     expect(auctions).toBeGreaterThanOrEqual(5);
     expect(settled).toBe(auctions);
     expect(bids).toBeGreaterThan(0);
+  });
+});
+
+describe('★★ 审计：心理价位里的系数与缺地系数都存成 f32（0x00439f3b / 0x00439fc7 / 0x0043a011 的 `fstp dword`）', () => {
+  // 在 Unicorn 里执行原版 `0x439f0d` 得到的值（40 块地；地價×物價、起拍价、无主数、同名数、两个 rand）。
+  // 这 6 组都是「按 f64 算会差 1」的边界 —— 旧实现逐组差 1，现在逐组相同。
+  // [等级, 地價, 物價, 起拍价, 无主数, 同名数, rand#1, rand#2, 原版结果]
+  const ORACLE: readonly (readonly number[])[] = [
+    [5, 2181, 1, 334, 13, 3, 18735, 32035, 6324],
+    [3, 6589, 3, 2943, 22, 1, 11152, 28628, 60601],
+    [4, 7432, 2, 669, 15, 5, 7365, 29667, 27332],
+    [2, 6898, 3, 713, 12, 10, 7005, 27414, 69505],
+    [2, 2338, 1, 322, 14, 3, 23405, 5468, 5290],
+    [2, 3896, 2, 571, 18, 4, 16915, 27188, 18845],
+  ];
+  it('与原版机器码逐组相同', () => {
+    for (const [level, landPrice, priceIndex, basePrice, unowned, same, r1, r2, want] of ORACLE) {
+      const seq = [r1! / 32768, r2! / 32768];
+      let k = 0;
+      const got = auctionAiLimit(
+        { level: level!, landPrice: landPrice!, priceIndex: priceIndex!, basePrice: basePrice!, total: 40, unowned: unowned!, sameNameOwned: same!, cash: 1e9 },
+        () => seq[k++]!,
+      );
+      expect(got).toBe(want);
+    }
   });
 });

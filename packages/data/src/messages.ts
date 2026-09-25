@@ -171,6 +171,14 @@ export const MESSAGE_BOX = {
   pointsMinigame: t('得點券%d點', 0x463797),
   /** %s 卡片名 / 道具名 —— 抽卡格与禮物**共用同一个串地址** @source 0x0041b35d / 0x0041b956 */
   got: t('得到%s！', 0x463aa8),
+  /**
+   * 節日送卡（節日表旗标 & 8，每位在场玩家抽一张）—— 框文按**地图**选（`0x004526c5` 起：
+   * 地图 4 / 5 / 6 各一句，其余一律「聖誕節」），`%s` = 玩家名、卡名。@source 0x004526e7 / 0x004526fd / 0x00452713 / 0x0045272a
+   */
+  holidayCardGalaxy: t('銀河系和平日\n\n%s得到%s！', 0x4661c4),
+  holidayCardDino: t('恐龍蛋節\n\n%s得到%s！', 0x4661dd),
+  holidayCardNewYearEve: t('除夕\n\n%s得到%s！', 0x4661f2),
+  holidayCardXmas: t('聖誕節\n\n%s得到%s！', 0x466203),
   /** 寶箱：无占位符，500 是写死在串里的 @source 0x0041bb4e `push 0x463ad3` */
   got500Points: t('得到５００點券！', 0x463ad3),
   /** %d 施捨金额 @source 0x0041b656 `push 0x463ab1` */
