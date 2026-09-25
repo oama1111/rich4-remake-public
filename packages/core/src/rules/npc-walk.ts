@@ -22,7 +22,7 @@ import type { WatcomRng } from '../rng/watcom.ts';
 import { isAlive } from '../state/types.ts';
 import { addPoints } from './points.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
-import { PAY_FLAG_CREDIT_TO_CASH, transferMoney } from './payment.ts';
+import { PAY_FLAG_CREDIT_TO_CASH, PAY_FLAG_DEBIT_FROM_BANK, transferMoney } from './payment.ts';
 import { emptyOwnership, ownerOf } from '../places/commercial.ts';
 import { OBJECT_TYPE_DOG } from '../cards/summon.ts';
 import { companyParty } from './payment.ts';
@@ -79,6 +79,12 @@ export interface NpcWalk {
   path: number[];
   /** 这趟产生的每一笔动作，按发生顺序 —— 供 UI 播报与测试断言 */
   events: NpcEvent[];
+  /**
+   * `events` 里**还没落盘**的那一截 —— 给了 `settle` 时，付款那几笔（以及它们之前的事件）
+   * 已经在付款那一刻应用过了，调用方走完这一趟只能再应用这一截（见 `runNpc` 的 `settle`）。
+   * 没给 `settle` 时就是整个 `events`。
+   */
+  unapplied: NpcEvent[];
 }
 
 export type NpcEvent =
@@ -129,12 +135,33 @@ export type NpcEvent =
   | { kind: 'dog'; node: number; object: number };
 
 /**
+ * 走子里的**付款落盘口** —— 由调用方给（`state/reduce.ts` 的 `settleWalkBatch`）。
+ *
+ * ★ 为什么必须存在：原版 `pay_money` 在**扣款与入账之间**就把付不出钱的人破产掉
+ *   （VA 0x0041d375 `call 0x40cd87`，见 `state/reduce.ts` 的 `payInWalk`），
+ *   而破产清算自己要掷 `rand()`（`release_object` 的搭档挑格、下線拍卖的挑 3 处）。
+ *   不在这里落盘，破产就会拖到整趟走完，那几掷便排到了**后面几步**的随机数之后，
+ *   而且后面几步还会看到一个**本该已经出局**的人（`0x0041c35a` / `0x0041c1d6`
+ *   两处 `cmp byte [player+0x15], 0`）。
+ *
+ * ★ 第二个参数是本趟**此刻**的随机流：原版只有一条流，破产清算那几掷就接在
+ *   走子掷出的数后面。落盘口返回的状态里的 `rngState` 会被写回本趟的 `rng`，
+ *   后面的步子接着它往下掷（漏了这一步，破产清算会从**这一趟开头**的流重掷）。
+ */
+export type NpcSettle = (events: readonly NpcEvent[], rngState: number) => GameState;
+
+/**
  * 走一趟。
  *
  * `advance` 由调用方给（`reduce.ts` 的 `pickNextNode`），与機器娃娃同理 ——
  * 本模块因此不依赖地图拓扑的具体形状。
  *
  * ★ **只算这趟走出去的每一格**，起点那一格不结算（他就是从那儿起步的）。
+ *
+ * ★ `settle` 给了就在**每一笔付款的那一刻**把「已产出但还没落盘的事件」交回去
+ *   （见 `NpcSettle`）；返回的 `NpcWalk.unapplied` 是**还没落盘的那一截**，
+ *   调用方走完这一趟之后再 `applyNpcEvents`。不给 `settle` 时 `unapplied` 就是全部事件
+ *   （旧行为，单测里直接调 `runNpc` 的那些用例照旧）。
  */
 export function runNpc(
   actor: number,
@@ -143,14 +170,38 @@ export function runNpc(
   map: NpcMap,
   advance: (from: number, prev: number) => number,
   rng: WatcomRng,
+  settle?: NpcSettle,
 ): NpcWalk {
   const nodes = map.nodes;
   const owner = start.owner;
   const events: NpcEvent[] = [];
   const path: number[] = [start.nodeId];
 
+  /** 这一趟里**已经交给 `settle` 落盘**的事件条数（`events` 的前缀） */
+  let settled = 0;
+  /**
+   * 付款那一刻落盘 —— 破产清算的随机数因此排在后面几步之前。
+   *
+   * ★ 落盘之后本函数的几处影子记账要一起复位：那些「已经产出但还没应用」的
+   *   差额现在都在状态里了（被偷走的牌 / 點券、被拿走的物件、道具与库存）。
+   */
+  const settleNow = (): void => {
+    if (settle === undefined || settled === events.length) return;
+    live = settle(events.slice(settled), rng.getState());
+    settled = events.length;
+    // ★ 破产清算掷过的那几掷要接回本趟的流 —— 否则后面的步子会从这一趟开头的流重掷
+    rng.setState(live.rngState);
+    takenObjects.clear();
+    pointsTaken.clear();
+    cardsTaken.length = 0;
+    tools = live.tools;
+    stock = live.toolStock;
+  };
+
   let cur = start.nodeId;
   let prev = start.lastNodeId;
+  /** 当前状态 —— 付款落盘之后就是落定后的那一份（后面几步读的是它） */
+  let live: GameState = state;
   // ★★ 2026-09-24（provenance 审计）：「回老家」看的是替身记录 **+11**（`home`），不是 actor 号 ——
   //   `0x0041c7b1 mov cl,[+0x0b] / and cl,0x7f / cmp cl,1`（監獄）/ `cmp cl,2`（醫院），
   //   这一字节只在保釋放人时写（`0x0043d84e` = 1、`0x0043eefd` = 2，门口那一格是監獄/醫院落点格才 |0x80）。
@@ -194,11 +245,11 @@ export function runNpc(
     let hospitalized = false;
 
     // ── ① 格子上的物件（跳表 0x41b3e5，按物件种类分派）──
-    const at = state.objects.findIndex(
+    const at = live.objects.findIndex(
       (o, i) => o.nodeId === cur && o.attached === 0 && !takenObjects.has(i),
     );
     if (at !== -1) {
-      const type = state.objects[at]!.type;
+      const type = live.objects[at]!.type;
       if (actor === NPC.thief && thiefTakes(type)) {
         // @source 禮物 0x0041b995 / 寶箱 0x0041bb9d / 路障 0x0041bd65 / 地雷 0x0041bf16 / 炸彈 0x0041c072：
         //   `cmp [0x49910c],4 / jne` + `cmp byte [+0x498df5],0 / jne`（夢遊不拿），**每一步**都拿
@@ -256,10 +307,10 @@ export function runNpc(
       // ②a 同格有人 → 偷點券（小偷）/ 奪卡（強盜）—— 流氓 / 間諜**不偷**
       //   @source 0x0041c194 `cmp ebp,4 / je` · 0x0041c199 `cmp ebp,5 / jne 0x41c447`
       if (actor === NPC.thief || actor === NPC.robber) {
-        const victim = victimAt(state, cur, owner);
+        const victim = victimAt(live, cur, owner);
         if (victim !== null) {
           if (stealsPoints(actor)) {
-            const have = (state.players[victim]?.points ?? 0) - (pointsTaken.get(victim) ?? 0);
+            const have = (live.players[victim]?.points ?? 0) - (pointsTaken.get(victim) ?? 0);
             const amount = stealPoints(have);
             // @source `test edi, edi / je 结束` —— 偷不到就什么也不发生
             if (amount > 0) {
@@ -268,7 +319,7 @@ export function runNpc(
             }
           } else if (stealsCard(actor)) {
             // 前面这一趟已经从他手里拿走的，**每次只少一张**（`0x441343` 挪掉的是一个槽）
-            const hand = [...(state.players[victim]?.cards ?? [])];
+            const hand = [...(live.players[victim]?.cards ?? [])];
             for (const t of cardsTaken) {
               if (t.victim !== victim) continue;
               const k = hand.indexOf(t.card);
@@ -287,9 +338,14 @@ export function runNpc(
       // @source 0x0041c330 `cmp [0x49910c], 5` + `cmp 格子, 0xe`
       if (actor === NPC.robber && kind === SPECIAL_KIND.BANK) {
         let total = 0;
-        for (const r of bankRobbery(state.players, owner, isAlive)) {
+        // ★★ 2026-09-24（provenance 审计）：逐人 `pay_money`（`0x0041c39b`），
+        //   **每付一笔就落盘** —— 被抢破产的那位在 `pay_money` 里面就出局了（`0x0041d375`），
+        //   破产清算的随机数也排在后面几步之前。金额表照原版一次算好：
+        //   `0x41c377` 读的是**他自己**那一轮的存款，而付款只动付款方自己的口袋。
+        for (const r of bankRobbery(live.players, owner, isAlive)) {
           events.push({ kind: 'robBank', from: r.from, amount: r.amount });
           total += r.amount;
+          settleNow();
         }
         events.push({ kind: 'robBankDone', total });
       }
@@ -298,23 +354,27 @@ export function runNpc(
       //   ★★ 2026-09-24（provenance 审计）：先前每一步都勒索 / 取款。
       if (stopped && actor === NPC.thug && node !== undefined) {
         // @source 地產 0x0041c4df、設施 0x0041c64e
-        const fee = thugFeeAt(state, map, node);
+        const fee = thugFeeAt(live, map, node);
         if (fee !== null && fee.landlord !== owner && fee.amount > 0) {
           events.push({ kind: 'protection', landlord: fee.landlord, amount: fee.amount });
+          // @source 0x0041c576 `call 0x41d2c6` —— 勒索款付不出照样当场破产
+          settleNow();
         }
       }
       if (stopped && actor === NPC.spy && node !== undefined) {
         // @source 地產 0x0041c597 `edi = [land + 0x2c]`；設施 0x0041c6bd `edi = [設施 + 0x30]`（取完不清零）
-        const t = spyTollAt(state, node);
+        const t = spyTollAt(live, node);
         if (t !== null && t.landlord !== owner && t.amount > 0) {
           events.push({ kind: 'toll', landlord: t.landlord, amount: t.amount });
+          // @source 0x0041c64e 那一支的 `call 0x41d2c6` 同理
+          settleNow();
         }
         // @source 0x0041c6e6..0x0041c79e：企業有主（+0x18）、主人不是保釋人、盈餘 +0x28 ≠ 0 ⇒
         //   `pay_money(100 + 企業, 保釋人, 盈餘, 0)` —— ★ **企業自己**付（+0x28 / +0x2c 各减），不是企業主付
         if (node.ref.kind === 'commercial') {
           const cid = node.ref.index;
-          const chairman = ownerOf(state.commercialOwners[cid] ?? emptyOwnership());
-          const surplus = state.companyFunds[cid] ?? 0;
+          const chairman = ownerOf(live.commercialOwners[cid] ?? emptyOwnership());
+          const surplus = live.companyFunds[cid] ?? 0;
           if (chairman >= 0 && chairman !== owner && surplus !== 0) {
             events.push({ kind: 'surplus', landlord: chairman, amount: surplus, company: cid });
           }
@@ -342,6 +402,7 @@ export function runNpc(
             },
             path,
             events,
+            unapplied: events.slice(settled),
           };
         }
         home |= NPC_HOME_LEFT;
@@ -349,14 +410,19 @@ export function runNpc(
     }
 
     if (hospitalized) {
-      return { actor: { ...idleActor(), owner, place: ACTOR_PLACE.hospital }, path, events };
+      return {
+        actor: { ...idleActor(), owner, place: ACTOR_PLACE.hospital },
+        path,
+        events,
+        unapplied: events.slice(settled),
+      };
     }
-    if (ends) return { actor: board(), path, events };
+    if (ends) return { actor: board(), path, events, unapplied: events.slice(settled) };
   }
 
   // ★ 走完**留在原地** —— 下一名行动者的选择（0x00418f93）每輪都会轮到棋盘上（+10 == 0）的惡人，
   //   他下一輪从这儿接着走；只有踩到老家（上面 ③）才回去。
-  return { actor: board(), path, events };
+  return { actor: board(), path, events, unapplied: events.slice(settled) };
 }
 
 /**
@@ -617,4 +683,4 @@ const TRAP_TO_TOOL: Readonly<Record<number, number>> = { 16: 2, 17: 3, 18: 4 };
  *   `bit0` 就是 `PAY_FLAG_CREDIT_TO_CASH`（见 rules/payment.ts）。
  *   这不是笔误——原版两处本来就走不同的入账口。
  */
-const ROB_BANK_FLAGS = PAY_FLAG_CREDIT_TO_CASH | 0x04;
+export const ROB_BANK_FLAGS = PAY_FLAG_CREDIT_TO_CASH | PAY_FLAG_DEBIT_FROM_BANK;
