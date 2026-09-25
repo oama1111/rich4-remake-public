@@ -735,8 +735,10 @@ describe('★ 請神符经统一入口（T-004）', () => {
     // −100 +100（退小財神）−200（大財神）= −200；100 −100（退）+150（新）= 150
     expect(r.players[0]!.misfortune).toBe(-200);
     expect(r.players[0]!.fortune).toBe(150);
-    // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场，nearNode = 旧神记录的节点
-    expect(r.respawns).toEqual([{ partner: 0, nearNode: 10 }]);
+    // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场。
+    // ★★ 2026-09-24（provenance 审计）订正：nearNode = **附身者此刻所在格**（7），不是旧神记录的节点（10）——
+    //   `0x40eb3f call 0x40e32c` → 没被关着 ⇒ `0x0040e3cd mov ax,[host+0x0c] / 0x0040e3d4 mov [obj+0x496d0a],ax` 再放。
+    expect(r.respawns).toEqual([{ partner: 0, nearNode: 7 }]);
   });
 });
 

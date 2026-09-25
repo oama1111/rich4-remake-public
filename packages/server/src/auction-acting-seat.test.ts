@@ -58,8 +58,11 @@ const run = existsSync(MAP) ? it : it.skip;
 //   14 = 電腦回合真人舉牌 8 次，21 = 真人回合電腦舉牌 8 次（原 12 / 18 都掉到 0）。
 // ★ 2026-09-25 換種子（审计 provenance-ai-econ：电脑买股 / 卖股挪进 reducer 按原版掷全局 `rand()`、公佈欄 / 銀行对账补齐 ——
 //   对局走向又变了）：重掃 1..40：12 = 電腦回合真人舉牌 8 次（原 14 掉到 0），21 = 真人回合電腦舉牌 5 次（不用換）。
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 21;
+// ★ 2026-09-25 換種子（events 區審計合入 provenance 之後：神明老虎機自動轉 4 輪、新聞開拍接著同一隨機流、
+//   首次關押倒霉台詞的 rand、惡人只在停步那格勒索…對局走向又變了）：重掃 1..60：
+//   10 = 電腦回合真人舉牌 6 次，18 = 真人回合電腦舉牌 7 次（原 12 / 21 掉到 0）。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 10;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 18;
 const TURNS = 200;
 const HUMANS = 2;
 

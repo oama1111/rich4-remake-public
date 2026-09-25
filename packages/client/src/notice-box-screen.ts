@@ -155,6 +155,7 @@ export const NOTICE_TEXT = {
   'god.gotCardTwo': GOD_MANIFEST.gotCardTwo.text,
   // ★ 2026-09-23：小衰神附身丢卡（`0x0040f148 call 0x440cac`，`0x4633ab`，1500 ms）—— 串里自己写着「小衰神」
   'god.lostCard': GOD_MANIFEST.lostCard.text,
+  'god.lostHalf': GOD_MANIFEST.lostHalf.text,
   'bank.rejected': BANK.rejected.text,
   // ★ ATM 窗 `0x408`：銀行暫停放款期内开 ATM，框盖在 ATM 上（1500 ms）
   'bank.frozen': BANK.frozen.text,

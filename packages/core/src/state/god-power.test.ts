@@ -17,7 +17,10 @@ import { newGame as newGameRaw } from '../rules/new-game.ts';
 import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
-import { placeObjectOfType } from '../rules/object-landing.ts';
+import { placeObjectOfType, tickGod } from '../rules/object-landing.ts';
+import { seizeHostilityDelta } from '../rules/god-manifest.ts';
+import { makePlayer } from '../testing/factories.ts';
+const makePlayerLite = (i: number) => makePlayer({ index: i });
 import { summonableObjects } from '../cards/summon.ts';
 import {
   GOD_ANGEL,
@@ -31,6 +34,7 @@ import {
   GOD_SMALL_POVERTY,
   GOD_SMALL_WEALTH,
   rollGodAmounts,
+  GOD_SLOT_AUTO_ROLLS,
 } from '../rules/god-power.ts';
 import { WatcomRng, drawRandomCard } from '../rng/watcom.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
@@ -136,10 +140,22 @@ function attachViaCard(type: number, over: Partial<GameState> = {}) {
 
 const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
 
+/**
+ * ★★ 2026-09-24（provenance 审计）：本文件的附身者都是**电脑**（who_plays 2 > 1）⇒ 老虎机自动转
+ *   **4 轮**（`0x0043f306 cmp byte [cur+0x15],1 / ja` → 计数 0/10/20/30 各掷一轮），金额取最后一轮。
+ *   先前这些用例按 1 轮断言（那是真人点一次就停的替身）。
+ */
+function autoSlot(rngState: number) {
+  const r = new WatcomRng(rngState);
+  let a = rollGodAmounts(r);
+  for (let k = 1; k < GOD_SLOT_AUTO_ROLLS; k++) a = rollGodAmounts(r);
+  return a;
+}
+
 describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
   run('★ 小財神：每個對手付給附身者（現金），四位數金額 @source 0x0040ec99', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     expect(amount).toBeLessThanOrEqual(999);
     expect(after.players[0]!.godInfo).toBe(1);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash, `玩家 ${i}`).toBe(100_000 - amount);
@@ -150,14 +166,14 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     const { state } = fresh();
     const players = rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p));
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players });
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     expect(after.players[1]!.whoPlays).toBe(0); // 1 号付不起 ⇒ 破产
     for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 照付`).toBe(100_000 - amount);
   });
 
   run('★ 大財神：附身者進帳（現金），三位數 @source 0x0040ed4c', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(amount).toBeLessThanOrEqual(9999);
     expect(after.players[0]!.godInfo).toBe(2);
     expect(after.players[0]!.cash).toBe(100_000 + amount);
@@ -166,7 +182,7 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 小窮神：附身者付給每個對手，進對方**存款** @source 0x0040efd9', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_POVERTY);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     expect(after.players[0]!.cash).toBe(100_000 - amount * 3);
     expect(after.players[0]!.moneyInBank).toBe(0);
     for (const i of [1, 2, 3]) {
@@ -177,7 +193,7 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 大窮神：附身者付給銀行（公庫）@source 0x0040f076', () => {
     const { before, after, rngAtAttach } = stepOnto(GOD_BIG_POVERTY);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(after.players[0]!.cash).toBe(100_000 - amount);
     expect(after.pool).toBe(before.pool + amount);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash).toBe(100_000);
@@ -374,7 +390,7 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
   run('請大財神上身 → 一样進帳', () => {
     const { after, rngAtAttach, handle } = attachViaCard(GOD_BIG_WEALTH);
     expect(after.players[0]!.godInfo).toBe(handle);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(after.players[0]!.cash).toBe(100_000 + amount);
   });
 
@@ -422,11 +438,21 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
 });
 
 describe('★ 附身那一刻的随机数消耗与原版同形', () => {
-  run('金額型取满四个 rand()%10（不是三次、也不是五次）', () => {
+  run('金額型每轮取满四个 rand()%10；电脑自动转 4 轮 = 16 次（0x0043f2d7 ×4 × 计数 0/10/20/30）', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
     const probe = new WatcomRng(rngAtAttach);
-    for (let i = 0; i < 4; i++) probe.below(10);
+    for (let i = 0; i < 4 * GOD_SLOT_AUTO_ROLLS; i++) probe.below(10);
     expect(after.rngState).toBe(probe.getState());
+  });
+
+  run('★ 真人（who_plays == 1、没夢遊）点一次就停 ⇒ 只掷 1 轮（D-003 的替身）', () => {
+    const base = fresh().state;
+    const human = { ...base, players: base.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 1 } : p)) };
+    const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH, { players: rich(human).players });
+    const probe = new WatcomRng(rngAtAttach);
+    const once = rollGodAmounts(probe);
+    expect(after.rngState).toBe(probe.getState());
+    expect(after.players[0]!.cash).toBe(100_000 + once.four);
   });
 
   run('抽卡 / 丢一张各取一次 rand()（那是抽卡与选牌用的，不是金額）', () => {
@@ -458,7 +484,7 @@ describe('★ 附身那一刻的随机数消耗与原版同形', () => {
 describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金额', () => {
   run('★★ 小財神（種類 1）⇒ amount = **三位数**那一个（不是差分总和、不是四位数）', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     const hint = after.lastGodPower;
     expect(hint).toBeTruthy();
     expect(hint!.player).toBe(0);
@@ -472,7 +498,7 @@ describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金�
 
   run('★★ 大財神（種類 2）⇒ amount = **四位数**那一个', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     const hint = after.lastGodPower;
     expect(hint).toBeTruthy();
     expect(hint!.player).toBe(0);
@@ -506,5 +532,46 @@ describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金�
     // ★ 恒等性：`raw === state`（没生效的 action）一律原样返回，连瞬态都不清
     const same = reduce(after, { type: 'endTurn' }, topo);
     if (same === after) expect(same.lastGodPower).toBe(after.lastGodPower);
+  });
+});
+
+// ============================================================
+//  provenance 审计（2026-09-24）补的几条
+// ============================================================
+describe('★★ provenance 审计：神明', () => {
+  run('G-08 小財神：一位付不起破产后，**后面的人照付**（0x0040ec7b 只在终局跳出）', () => {
+    const { state } = fresh();
+    const broke = { ...rich(state), players: rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p)) };
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players: broke.players });
+    const amount = autoSlot(rngAtAttach).three;
+    if (amount === 0) return; // 掷出 0 就没人付得起不起的问题
+    expect(after.players[1]!.whoPlays).toBe(0);
+    for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 仍要付`).toBe(100_000 - amount);
+  });
+
+  run('G-15 大衰神丢一半：弹「大衰神附身\\n\\n遺失一半卡片！」（0x0040f1f6 push 0x5dc / push 0x4633d5）', () => {
+    const { state } = fresh();
+    const withCards = rich(state).players.map((p, i) => (i === 0 ? { ...p, cards: [1, 2, 3, 4] } : p));
+    const { after } = stepOnto(GOD_BIG_MISFORTUNE, { players: withCards });
+    expect(after.players[0]!.cards).toHaveLength(2);
+    expect(after.notices).toContainEqual({ key: 'god.lostHalf', args: [], holdMs: 1500 });
+  });
+
+  it('G-22 土地公強佔的敌意：`A × ((level+2)/5)` 的 double 低 32 位（0x0040f6d4..0x0040f6ff）', () => {
+    expect(seizeHostilityDelta(700, 1, 5)).toBe(-1);
+    expect(seizeHostilityDelta(1001, 1, 2)).toBe(1717986919);
+    expect(seizeHostilityDelta(1000, 1, 3)).toBe(0);
+  });
+
+  it('G-27 神明任期满离身：搭档的参照格 = 附身者**此刻**的格（0x0040e3cd..0x0040e3d4）', () => {
+    const p0 = { ...makePlayerLite(0), nodeId: 42, godInfo: 1 };
+    const objects = [{ type: 1, nodeId: 7, state: 1, attached: 1 }, { type: 2, nodeId: 0, state: 0, attached: 0 }];
+    const r = tickGod({ players: [p0], objects: objects as never, tools: [], toolStock: [] }, 0);
+    expect(r.expired).toBe(true);
+    expect(r.respawn).toEqual({ partner: 1, nearNode: 42 });
+    // 关着的人：用物件表里存着的格（0x0040e356 cmp dword [+0x32],0 / jne → 直接 0x40e14d）
+    const jailed = { ...p0, blocking: { ...p0.blocking, inPrison: 2 } };
+    const r2 = tickGod({ players: [jailed], objects: objects as never, tools: [], toolStock: [] }, 0);
+    expect(r2.respawn).toEqual({ partner: 1, nearNode: 7 });
   });
 });

@@ -996,11 +996,14 @@ export function detectNewsPlaceOwner(before: GameState, after: GameState): Detec
  */
 export function detectBirthdayLine(before: GameState, after: GameState): DetectedSay[] {
   const humanDone = before.pending?.kind === 'birthdayCard' && after.pending?.kind !== 'birthdayCard';
+  // ★★ 2026-09-24（provenance 审计）：电脑寿星那一支没有「搶得」框（`0x0044c46d..0x0044c486` 直接收），
+  //   台词的闸是循环计数 `edi != 0`（`0x0044c57b`）= **至少有一位合格**（不是自己、在场、手上有牌）——
+  //   先前拿那扇（借错出处的）框当信号，框去掉之后改看合格人数。
+  const drawer = after.currentPlayer;
   const computerDone =
     fortuneIdThisAction(before, after) === BIRTHDAY_FORTUNE_ID &&
     after.pending?.kind !== 'birthdayCard' &&
-    after.notices !== before.notices &&
-    after.notices.some((n) => n.key === 'card.robbed');
+    before.players.some((q, i) => i !== drawer && isAlive(q) && q.cards.length > 0);
   if (!humanDone && !computerDone) return [];
   const player = after.currentPlayer;
   const p = after.players[player];
