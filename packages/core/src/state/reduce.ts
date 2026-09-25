@@ -491,7 +491,7 @@ function openAuction(
     topCash: 0,
     // ★ 卖家单列（见 `AuctionPending.seller` 的注释）：出价循环两处都要跳过他
     seller,
-    // ★ 开场席位从 slot 0 起（原版 `loc_0043a365` 把 `[0x48c4a4]` 清 0），
+    // ★ 开场席位是**下标最大**的在场座位（2026-09-24 审计订正，`0x0043af13..0x0043af45`，见 `auctionFirstSeat`），
     //   并跳过卖家与非 active 的座位。找不到返回 -1
     //   （此时已判流标/成交，客户端据此不再等任何人点钮）。见 `auctionFirstSeat`。
     seat: auctionFirstSeat(pending.bidders, status, seller),
@@ -618,6 +618,7 @@ function settleAuctionExplicit(
     const fr = settleFacilityAuction(state.players, fac, { winner: w, price: p }, state.pool, [], {
       payee: pending.seller ?? -1,
       expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+      ...(pending.clearOnPassIn === true ? { clearOnPassIn: true } : {}),
     });
     const facilityOwner = [...state.facilityOwner];
     facilityOwner[entityId] = fr.facility.owner;
@@ -626,6 +627,7 @@ function settleAuctionExplicit(
       players: fr.players,
       facilityOwner,
       ...(fr.tenure === 0 ? {} : { facilityTenure: withTenure(state.facilityTenure, entityId, fr.tenure) }),
+      ...(fr.clearTenure === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
       pool: fr.pool,
       pending: null,
       phase: 'turnEnd',
@@ -641,6 +643,7 @@ function settleAuctionExplicit(
   const r = settleAuction(state.players, land, { winner: w, price: p }, state.pool, [], {
     payee: pending.seller ?? -1,
     expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+    ...(pending.clearOnPassIn === true ? { clearOnPassIn: true } : {}),
   });
   const landOwner = [...state.landOwner];
   landOwner[entityId] = r.land.owner;
@@ -649,6 +652,7 @@ function settleAuctionExplicit(
     players: r.players,
     landOwner,
     ...(r.tenure === 0 ? {} : { landTenure: withTenure(state.landTenure, entityId, r.tenure) }),
+    ...(r.clearTenure === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
     pool: r.pool,
     pending: null,
     phase: 'turnEnd',

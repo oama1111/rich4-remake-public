@@ -86,16 +86,24 @@ describe('★ 起拍价 = trunc(地价 × (1 + 等级×0.5)) × 物价指数', (
 describe('★ 流拍 → 地块变无主', () => {
   it('原主失去地产，且没人付钱', () => {
     const land = makeLand({ id: 1, owner: 2, level: 3 });
-    const r = settleAuction(four(), land, { winner: -1, price: 0 }, 500);
+    const r = settleAuction(four(), land, { winner: -1, price: 0 }, 500, [], { clearOnPassIn: true });
     expect(r.passedIn).toBe(true);
     expect(r.land.owner).toBe(0);
+    expect(r.clearTenure).toBe(true);
     expect(r.pool).toBe(500);
     expect(r.players.map((p) => p.cash)).toEqual([100_000, 100_000, 100_000, 100_000]);
   });
 
   it('★ 这是拍賣卡的要害：即便没人接手，原主也失去它', () => {
     const land = makeLand({ owner: 3 });
-    expect(settleAuction(four(), land, { winner: -1, price: 0 }).land.owner).toBe(0);
+    expect(settleAuction(four(), land, { winner: -1, price: 0 }, 0, [], { clearOnPassIn: true }).land.owner).toBe(0);
+  });
+
+  it('★ 审计订正：别的调用点（魔法屋 0x004324da / 新聞 7 / 破产）丢掉返回值 ⇒ 流拍原样不动', () => {
+    const land = makeLand({ owner: 3 });
+    const r = settleAuction(four(), land, { winner: -1, price: 0 });
+    expect(r.land.owner).toBe(3);
+    expect(r.clearTenure).toBe(false);
   });
 });
 
@@ -214,9 +222,11 @@ describe('★ 設施起拍价与结算（run_auction 設施分支 0x0043bf3a 起
   });
 
   it('流拍 → 設施变无主', () => {
-    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 });
+    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 }, 0, [], { clearOnPassIn: true });
     expect(r.passedIn).toBe(true);
     expect(r.facility.owner).toBe(0);
+    // 不是拍賣卡 ⇒ 不动
+    expect(settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 }).facility.owner).toBe(2);
   });
 
   it('得标：买家付款进公库、設施归得标者', () => {
@@ -1405,5 +1415,17 @@ describe('★ Q-AUC-1 soak：4 个电脑跑满 300 回合，拍卖不得卡死',
     expect(auctions).toBeGreaterThanOrEqual(5);
     expect(settled).toBe(auctions);
     expect(bids).toBeGreaterThan(0);
+  });
+});
+
+describe('★ 2026-09-24 审计：拍賣卡流拍 ⇒ 无主 + 到期日清零（0x0044335b / 0x0044335f）', () => {
+  it('没人买得起（现金 ≤ 底价）⇒ 开拍即流標：1 号失去这块地、到期日归 0', () => {
+    const s0 = auctionGame((i) => (i === 0 ? 60_000 : 1));
+    const landTenure = [...s0.landTenure];
+    landTenure[1] = 0x07cf0101;
+    const after = reduce({ ...s0, landTenure }, { type: 'useCard', cardId: 8 }, topo);
+    const settled = after.pending?.kind === 'auction' ? runAuction(after).state : after;
+    expect(settled.landOwner[1]).toBe(0);
+    expect(settled.landTenure[1]).toBe(0);
   });
 });

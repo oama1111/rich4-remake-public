@@ -191,6 +191,11 @@ export type PendingInteraction =
       seller?: number;
       /** 設施拍卖（拍賣卡踏在設施格上时挂出） */
       facility?: boolean;
+      /**
+       * ★ 2026-09-24 审计补：流拍后清归属与到期日 —— 只有**拍賣卡**（`0x0044335b` / `0x00443486`）这么做；
+       *   魔法屋 / 新聞 7 / 破产清算丢掉 `run_auction` 的返回值，原样不动。见 `AuctionSettlementOptions.clearOnPassIn`。
+       */
+      clearOnPassIn?: true;
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
       price: number;
       /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
@@ -387,7 +392,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'clearOnPassIn'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */

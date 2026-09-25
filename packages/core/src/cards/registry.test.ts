@@ -864,6 +864,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       //   地主反而可以举牌把自己的地买回来。
       bidders: [1, 2],
       seller: 0,
+      clearOnPassIn: true, // 流拍 ⇒ 无主 + 到期日清零（0x0044335b / 0x0044335f）
     });
     // 敌意是 double 压栈的原版 bug：常规地价恒为 0
     expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 0 }]);
@@ -899,6 +900,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       bidders: [1],
       seller: 0,
       facility: true,
+      clearOnPassIn: true,
     });
   });
 

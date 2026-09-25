@@ -196,6 +196,8 @@ export interface AuctionResult {
    *   「该写多少」算好放在这里 —— 见 `AuctionSettlementOptions.expiry`。
    */
   tenure: number;
+  /** 流拍且是拍賣卡（`clearOnPassIn`）⇒ 到期日清零（`0x0044335f` / `0x0044348a`） */
+  clearTenure?: boolean;
 }
 
 export interface FacilityAuctionResult {
@@ -206,6 +208,7 @@ export interface FacilityAuctionResult {
   bankrupted: boolean;
   /** 同 `AuctionResult.tenure`，写进 `facilityTenure[設施号]` @source `0x43c7fe` */
   tenure: number;
+  clearTenure?: boolean;
 }
 
 /**
@@ -246,6 +249,15 @@ export interface AuctionSettlementOptions {
    * 本函数再叠上「原为无主 ∧ 得标者 ≠ 原地主」两道闸门，决定结果里的 `tenure`。
    */
   expiry?: number;
+  /**
+   * ★ 2026-09-24 审计补：**流拍之后清不清归属**，由调用方决定 —— `run_auction`（0x43bde5）自己流拍时
+   *   什么都不写（`0x43c71d cmp esi,-1 / je 0x43c868`），清归属是**拍賣卡**那一个调用点收尾做的：
+   *   `0x00443357 test eax,eax / jne` → `0x0044335b mov byte [land+0x19],0` / `0x0044335f mov [land+0x30],eax(=0)`
+   *   （設施 `0x00443486` / `0x0044348a mov [fac+0x34],eax`）。魔法屋 `0x004324da` 直接丢掉返回值、
+   *   新聞 7 `0x004498a6` / 破产 `0x0040d1e8` 也丢（那两处的地本来就无主）。
+   *   `true` = 拍賣卡：流拍 ⇒ 无主 + 到期日清零；缺省 = 原样不动。
+   */
+  clearOnPassIn?: boolean;
 }
 
 /**
@@ -280,13 +292,14 @@ export function settleAuction(
   if (outcome.winner < 0) {
     return {
       players: [...players],
-      // @source mov byte [land + 0x19], 0
-      land: { ...land, owner: 0 },
+      // @source 拍賣卡 0x0044335b mov byte [land + 0x19], 0（只有拍賣卡这个调用点清，见 `clearOnPassIn`）
+      land: options.clearOnPassIn === true ? { ...land, owner: 0 } : land,
       pool,
       passedIn: true,
       bankrupted: false,
-      // @source 0x43c71d：窗口返回 -1 ⇒ 直接跳过整个结算段（含到期日）
+      // @source 0x43c71d：窗口返回 -1 ⇒ 直接跳过整个结算段（含到期日）；拍賣卡另清 +0x30 见 `clearTenure`
       tenure: 0,
+      clearTenure: options.clearOnPassIn === true,
     };
   }
 
@@ -342,12 +355,13 @@ export function settleFacilityAuction(
   if (outcome.winner < 0) {
     return {
       players: [...players],
-      // @source mov byte [fac + 0x19], 0
-      facility: { ...facility, owner: 0 },
+      // @source 拍賣卡設施支 0x00443486 mov byte [fac + 0x19], 0 / 0x0044348a mov [fac + 0x34], 0
+      facility: options.clearOnPassIn === true ? { ...facility, owner: 0 } : facility,
       pool,
       passedIn: true,
       bankrupted: false,
       tenure: 0,
+      clearTenure: options.clearOnPassIn === true,
     };
   }
 

@@ -712,6 +712,8 @@ export function useCard(
           //   且落槌款 `pay_money(得标者, arg0, …)`（`0x43c855`）归他。
           bidders: eligibleBidders(players, land, cur),
           seller: cur,
+          // @source 0x00443357 test eax,eax / jne → 0x0044335b / 0x0044335f：流拍 ⇒ 无主 + 到期日清零
+          clearOnPassIn: true,
         };
         break;
       }
@@ -733,6 +735,8 @@ export function useCard(
         bidders: eligibleBidders(players, fac, cur),
         seller: cur,
         facility: true,
+        // @source 0x0044347e test eax,eax / jne → 0x00443486 / 0x0044348a
+        clearOnPassIn: true,
       };
       break;
     }
