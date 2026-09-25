@@ -19,6 +19,7 @@ import { OBJECT_COUNT } from '../rules/objects.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { AI_BOMB_FUSE_ONE_DIE, AI_DICE_LOOKAHEAD, aiDiceCount } from './dice-policy.ts';
 import { decideAction } from './policy.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 /** 定時炸彈的第一个物件槽（槽 36..45 = 类型 18）@source `0x0041c025` 一带的槽位表 */
 const BOMB_SLOT = 36;
@@ -150,8 +151,16 @@ describe('闸门：不改的情形', () => {
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 
-describe('★★ decideAction 接线（单机）：起步前先 `setDiceCount`，再掷', () => {
-  run('★★ 电脑开汽車、背着引信 7 的炸彈 ⇒ setDiceCount(1) → rollDice 只掷 1 颗；不来回改', () => {
+/**
+ * ★★ FU-2（2026-09-25 审计）：骰子数那一步现在**在 reducer 的 `aiAdvance` 第 3 步里算**
+ *   （`0x00418e70 call 0x4221c0` 一回合只算一次）。
+ *
+ *   先前策略层出 `setDiceCount`：`aiDiceCount` 里的前瞻岔路与 `rand()&1` 每帧重算一次，
+ *   换成真随机流之后会一次比一次多掷、`ndices` 还会来回改。搬进 reducer 之后
+ *   「算一次、掷一次、写一次」，策略层到这一步只剩 `rollDice`。
+ */
+describe('★★ 骰子数在 reducer 的第 3 步（`aiAdvance`）：算一次、写一次，再掷', () => {
+  run('★★ 电脑开汽車、背着引信 7 的炸彈 ⇒ 第 3 步把 ndices 写成 1 → rollDice 只掷 1 颗；不来回改', () => {
     const map: Rich4Map = parseMap(new Uint8Array(readFileSync(MAP)));
     const s0 = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 3 });
     const objects = s0.objects.map((o) => ({ ...o }));
@@ -160,25 +169,58 @@ describe('★★ decideAction 接线（单机）：起步前先 `setDiceCount`�
     const s1: GameState = {
       ...s0,
       phase: 'awaitingRoll',
-      aiStep: 3,
+      aiStep: 2,
       objects,
       players: s0.players.map((p, i) =>
-        i === s0.currentPlayer ? { ...p, trafficMethod: 2, ndices: 3, f64: BOMB_SLOT + 1 } : p,
+        i === s0.currentPlayer ? { ...p, trafficMethod: 2, ndices: 3, f64: BOMB_SLOT + 1, cards: [], } : p,
       ),
+      // 手里没卡没道具 ⇒ 策略层在第 2 步发 aiNext，reducer 顺势走到第 3 步
+      tools: s0.tools.map(() => 0),
     };
-    const a1 = decideAction({ state: s1, map });
-    expect(a1).toEqual({ type: 'setDiceCount', count: 1 });
-    const s2 = reduce(s1, a1!, map);
+    expect(decideAction({ state: s1, map })).toEqual({ type: 'aiNext' });
+    const s2 = reduce(s1, { type: 'aiNext' }, map);
+    expect(s2.aiStep).toBe(3);
     expect(s2.players[s2.currentPlayer]!.ndices).toBe(1);
     expect(s2.players[s2.currentPlayer]!.trafficMethod).toBe(2); // 车照开（原版汽車判定不看炸彈）
-    // 同一局面答案固定（`aiRoll` 只看 rngState，setDiceCount 不动它）⇒ 下一手就是掷骰
+    // 下一步就是掷骰（骰子数已定，不会再改）
     const a2 = decideAction({ state: s2, map });
     expect(a2).toEqual({ type: 'rollDice' });
     const s3 = reduce(s2, a2!, map);
     expect(s3.dice).toHaveLength(1);
+    expect(s3.players[s3.currentPlayer]!.ndices).toBe(1);
+    // 再走一次第 3 步也不重算（`s.aiStep < 3` 的闸门）—— 掷数与 ndices 都不动
+    const again = reduce(s3, { type: 'aiNext' }, map);
+    expect(again.players[again.currentPlayer]!.ndices).toBe(1);
   });
 
-  run('步行的电脑背着炸彈 ⇒ 不出 setDiceCount，直接掷（`0x0042231c jne 0x422440`）', () => {
+  run('★ 第 3 步在 reducer 里**现掷**：rngState 恰好前进「决策掷数」（前瞻岔路 + `rand()&1`）', () => {
+    // 一条直线 1→2→…→10，前方 5 格全是别人的 ⇒ `0x004222d8` 那支：先前瞻（`0x0042221e`），
+    // 再 `rand()&1`（`0x004222e1`）。起点/终点都只有一条路 ⇒ 前瞻不掷；这里只钉「掷数一致」。
+    const { state, topo, lands, facilities } = scene({ traffic: 2, ahead: ['theirs', 'theirs', 'theirs', 'theirs', 'theirs'] });
+    const s1: GameState = {
+      ...state,
+      phase: 'awaitingRoll',
+      aiStep: 2,
+      aiBranch: 0,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2, cards: [] } : p)),
+      tools: state.tools.map(() => 0),
+    };
+    // 决策掷了几次（记账脚本）
+    let calls = 0;
+    const counting = new WatcomRng();
+    counting.setState(s1.rngState);
+    const want = aiDiceCount(s1, topo, lands, facilities, () => (calls++, counting.next()));
+    expect(want).not.toBeNull();
+    const after = reduce(s1, { type: 'aiNext' }, topo);
+    expect(after.aiStep).toBe(3);
+    expect(after.players[after.currentPlayer]!.ndices).toBe(want);
+    const replay = new WatcomRng();
+    replay.setState(s1.rngState);
+    for (let i = 0; i < calls; i++) replay.next();
+    expect(after.rngState).toBe(replay.getState());
+  });
+
+  run('步行的电脑背着炸彈 ⇒ 第 3 步不改 ndices（`0x0042231c jne 0x422440`），策略层直接掷', () => {
     const map: Rich4Map = parseMap(new Uint8Array(readFileSync(MAP)));
     const s0 = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 3 });
     const objects = s0.objects.map((o) => ({ ...o }));
@@ -187,10 +229,13 @@ describe('★★ decideAction 接线（单机）：起步前先 `setDiceCount`�
     const s1: GameState = {
       ...s0,
       phase: 'awaitingRoll',
-      aiStep: 3,
+      aiStep: 2,
       objects,
-      players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, f64: BOMB_SLOT + 1 } : p)),
+      players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, f64: BOMB_SLOT + 1, cards: [] } : p)),
+      tools: s0.tools.map(() => 0),
     };
-    expect(decideAction({ state: s1, map })).toEqual({ type: 'rollDice' });
+    const s2 = reduce(s1, { type: 'aiNext' }, map);
+    expect(s2.players[s2.currentPlayer]!.ndices).toBe(s1.players[s1.currentPlayer]!.ndices);
+    expect(decideAction({ state: s2, map })).toEqual({ type: 'rollDice' });
   });
 });

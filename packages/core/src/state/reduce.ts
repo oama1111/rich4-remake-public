@@ -23,6 +23,8 @@ import type {
 } from './types.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 import { isAiControlled, isAlive, isInGame, isUnplaced } from './types.ts';
+import { decideAction } from '../ai/policy.ts';
+import { aiDiceCount } from '../ai/dice-policy.ts';
 import { WatcomRng, drawRandomCard, rollDice } from '../rng/watcom.ts';
 import { ROB_BANK_FLAGS, applyNpcEvents, runNpc, type NpcEvent } from '../rules/npc-walk.ts';
 import {
@@ -1605,7 +1607,18 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   let raw: GameState;
   let rolls: SpeechRoll[] | null = null;
   try {
-    raw = reduceCore(state, action, topo);
+    // ★★ FU-2（2026-09-25 审计）：电脑 / 托管这一手在原版里掷过的全局 `rand()` 在这里补上 ——
+    //   策略层是纯函数（C-DET-1），只发一条和真人一样的 action，不碰 `rngState`；
+    //   于是「出牌起点 / 個性闸门 %3 / 卡与道具判定里的 %4 / %n / 前瞻岔路」这些掷数
+    //   先前一个都没落到全局序列上，电脑回合之后整条流与原版错位。
+    //   现在按**同一个局面、同一个函数、同一份流**复算这一手（`decideAction` 与调用方
+    //   客户端 / 服务器用的是它），把复算消耗的掷数写回 `state.rngState`。
+    //   只在最外层（`reduceDepth === 0`，即真正的 action 边界）补；被拒的 action 不补。
+    const advance = reduceDepth === 1 ? aiDecisionRollAdvance(state, action, topo) : null;
+    const base = advance === null ? state : { ...state, rngState: advance };
+    const out = reduceCore(base, action, topo);
+    // 原样退回 = 这一条 action 没生效（如失败的 `useCard`）⇒ 随机数也不推进
+    raw = advance !== null && out === base ? state : out;
   } finally {
     reduceDepth--;
     if (reduceDepth === 0) rolls = endSpeechRolls();
@@ -1829,6 +1842,39 @@ export function rollBlockedSays(
   }
   return { rngState: rng.getState(), says };
 }
+
+/**
+ * 电脑 / 托管这一手在原版里掷掉的全局 `rand()` —— 见 `reduce()` 里的调用点（FU-2）。
+ *
+ * 只有**策略层会掷随机数的那三手**要补（`0x441baa` 出牌 / `0x447d97` 用道具 / 两者都没找到时
+ * 那条「推进一步」的 `aiNext`）；骰子数那一段（`0x4221c0`）已由 `aiAdvance` 的第 3 步在
+ * reducer 里现掷现写（`ndices`），不在这里。
+ *
+ * 复算用的流从 `state.rngState` 播种、**用完即弃** —— 目的是「掷了几个数」，不是取值。
+ * 但因为这个复算与调用方是同一个函数、同一份局面、同一串数，取到的值与调用方一致，
+ * 于是「客户端算出来的那一手」与「reducer 记下的掷数」永远对得上。
+ *
+ * @returns 补掷之后的 `rngState`；不该补（相位 / 座位 / action 类型不符）或一个数都没掷时 `null`
+ */
+function aiDecisionRollAdvance(state: GameState, action: Action, topo: MapTopology): number | null {
+  if (state.phase !== 'awaitingRoll') return null;
+  if (!AI_DECISION_ROLL_ACTIONS.has(action.type)) return null;
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAiControlled(me)) return null;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  // 与调用方同一条路：`decideAction` 缺省也是从 `state.rngState` 播种一条本地流
+  decideAction({ state, map: topo, roll: () => rng.next() });
+  const next = rng.getState();
+  return next === state.rngState ? null : next;
+}
+
+/** 策略层会掷随机数的那三手 —— 见 `aiDecisionRollAdvance` */
+const AI_DECISION_ROLL_ACTIONS: ReadonlySet<Action['type']> = new Set([
+  'aiNext',
+  'useCard',
+  'useTool',
+] as const);
 
 function reduceCore(state: GameState, action: Action, topo: MapTopology): GameState {
   switch (action.type) {
@@ -8153,6 +8199,31 @@ function aiAdvance(state: GameState, topo: MapTopology, step: number): GameState
     const branch = rng.next() & 1;
     s = { ...s, rngState: rng.getState(), aiBranch: branch };
   }
+  // ── 第 3 步：起步前按 `fcn_004221c0` 改骰子数（`0x00418e70`，紧接着才 `0x00418e75 call 0x40dd1f`）──
+  //   ★★ FU-2：这一步**挪进 reducer** 现掷现写。原版 `0x4221c0` 一回合只算一次；
+  //   先前由策略层出 `setDiceCount`，而策略层是纯函数 ⇒ 要么用不推进序列的替身
+  //   （流与原版错位），要么每一帧重算一次（`aiDiceCount` 里的前瞻岔路与 `rand()&1`
+  //   会一次比一次多掷，`ndices` 还会来回改）。搬进来之后「算一次、掷一次、写一次」。
+  if (s.aiStep < 3 && step >= 3) {
+    if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
+    const rng = new WatcomRng();
+    rng.setState(s.rngState);
+    const want = aiDiceCount(
+      s,
+      topo,
+      allEffectiveLands(s, topo),
+      allEffectiveFacilities(s, topo),
+      () => rng.next(),
+    );
+    s = { ...s, rngState: rng.getState() };
+    const me = s.players[s.currentPlayer];
+    if (want !== null && me !== undefined && want !== me.ndices) {
+      // @source `0x00418e70 call 0x4221c0` → `0x004221d8/0x00422322 mov byte [player+0x12], N`
+      s = withPlayer(s, s.currentPlayer, (p) => {
+        p.ndices = want;
+      });
+    }
+  }
   return s.aiStep >= step ? s : { ...s, aiStep: step };
 }
 
@@ -8681,7 +8752,11 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
       toolStock: next.toolStock,
       cardAmount: next.cardAmount,
     });
-    return {
+    // ★★ L48（2026-09-25 审计）：电脑 / 托管那一支**也**把这一趟营业额记进企業帳 ——
+    //   原版两支在离店时汇合到同一段（`0x0042f24f cmp eax,6 / jge 0x42ed50`），
+    //   `ebp` = 这一趟累计额，`0x42ed75/0x42ed7e` 加进 `[企業+0x28] / [+0x2c]`。
+    //   真人那一支见 `shopAction` 的 `commit(..., revenue)`（同一个 `shopRevenueTo`）。
+    const shopped: GameState = {
       ...next,
       players: next.players.map((p, i) => (i === me ? visit.player : p)),
       tools: visit.tools,
@@ -8695,6 +8770,7 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
             lastShopGift: { kind: gift.kind, id: gift.id, points: gift.points },
           }),
     };
+    return shopRevenueTo(shopped, topo, visit.revenue);
   }
 
   // ② ③ 货架
@@ -8767,15 +8843,21 @@ function poolDelta(cardAmount: readonly number[], cardId: number, delta: number)
 }
 
 /**
- * ★ 2026-09-24 审计补（ai-econ 审计转来）：百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。
+ * 百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。**真人 / 电脑两支共用**。
  *
  * @source 真人那一支每一笔都把返回值累加进 `[0x48c343]`（进店 `0x0042d441` 清零）：
  *   买卡 `0x0042e214`（`0x42d237` 返回 **標價 × 10**，`0x0042d267..0x0042d26e`）、
  *   买道具 `0x0042e498`（`0x42d272` 同一尾巴，× 10）、卖卡 `0x0042e0c5`（`0x42d145` 返回 **標價**）、
  *   卖道具 `0x0042e126`（`0x42d1b2` 返回 **標價 × 个数**）；关窗 `0x0042e8b2 call 0x401966([0x48c343])` 交回，
  *   `0x0042ed0d mov ebp, eax` → 节点格值在 (0x1770, 0x1f40) 之间（百貨格的格值 = 百貨企業的实体码）⇒
- *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。电脑那一支（`0x0042ed8d` 起）不记。
- *   窗是模态的、期间没人读盈餘 ⇒ 这里每成交一笔就加一笔，与关窗时一次加总等价。
+ *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。
+ *   ★ 2026-09-25 审计订正：**电脑那一支也记**——它把同一趟的累计额留在 `ebp`
+ *   （买卡 `0x0042f143` / 买道具 `0x0042f1bc` / `0x0042f222` / `0x0042f2df`、卖卡/卖道具各处 `add ebp,eax`），
+ *   循环走完 `0x0042f23d..0x0042f24f cmp eax,6 / jge 0x42ed50` **跳进真人支的同一段收尾**。
+ *   电脑那一支的每笔金额由 `places/ai-shop.ts` 的 `revenue` 交上来（同一组返回值）。
+ *
+ *   真人那扇窗是模态的、期间没人读盈餘 ⇒ 真人支每成交一笔就加一笔，与关窗时一次加总等价；
+ *   电脑那一支本来就是离店时一次性记。
  */
 function shopRevenueTo(state: GameState, topo: MapTopology, amount: number): GameState {
   const me = state.players[state.currentPlayer];

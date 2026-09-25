@@ -111,7 +111,13 @@ describe('★★ 联机：第二十一份三条与单机同一条路', () => {
     for (const p of room.state.players) expect(p.blocking.inHospital).toBe(0);
   });
 
-  run('★★ ② 电脑开汽車背引信 7 的炸彈：服务器先出 setDiceCount(1) 再掷，只掷 1 颗；客户端重放一致', () => {
+  /**
+   * ★★ FU-2（2026-09-25 审计）：骰子数那一步（`0x00418e70 call 0x4221c0`）现在在 **reducer 的
+   *   `aiAdvance` 第 3 步**里算（「算一次、掷一次、写一次」，掷的是全局流）。先前由策略层出
+   *   `setDiceCount` —— 一换成真随机流就会每帧重算、越掷越多，还会把 `ndices` 改来改去。
+   *   服务器与各客户端仍是同一个 reducer ⇒ 写进去的骰子数一致。
+   */
+  run('★★ ② 电脑开汽車背引信 7 的炸彈：第 3 步把 ndices 写成 1，服务器与重放端都只掷 1 颗', () => {
     const map = loadMap();
     const topo = topoOf(map);
     const s0 = baseGame(map);
@@ -122,24 +128,29 @@ describe('★★ 联机：第二十一份三条与单机同一条路', () => {
       ...s0,
       currentPlayer: 1,
       phase: 'awaitingRoll',
-      aiStep: 3,
+      aiStep: 2,
       pending: null,
       objects,
-      players: s0.players.map((p, i) => (i === 1 ? { ...p, trafficMethod: 2, ndices: 3, f64: BOMB_SLOT + 1 } : p)),
+      players: s0.players.map((p, i) =>
+        i === 1 ? { ...p, trafficMethod: 2, ndices: 3, f64: BOMB_SLOT + 1, cards: [] } : p,
+      ),
+      tools: s0.tools.map(() => 0),
     };
     const room = roomFrom(map, state);
     const mirror = { s: state };
+    // 手里没卡没道具 ⇒ 第 2 步发 aiNext，reducer 顺势走到第 3 步（骰子数）
     const a1 = room.decideForCurrent();
-    expect(a1).toEqual({ type: 'setDiceCount', count: 1 });
-    // 单机同一个局面给出同一手
+    expect(a1).toEqual({ type: 'aiNext' });
     expect(decideAction({ state, map })).toEqual(a1);
     expect(submitBoth(room, mirror, topo, 1, a1!).ok).toBe(true);
     expect(room.state.players[1]!.ndices).toBe(1);
+    expect(mirror.s.players[1]!.ndices).toBe(1);
     const a2 = room.decideForCurrent();
     expect(a2).toEqual({ type: 'rollDice' });
     expect(submitBoth(room, mirror, topo, 1, a2!).ok).toBe(true);
     expect(room.state.dice).toHaveLength(1);
     expect(mirror.s.dice).toEqual(room.state.dice);
+    expect(room.state.players[1]!.ndices).toBe(1);
   });
 
   run('★ ③ 电脑骑機車、前方有惡犬 ⇒ 服务器照样出 useTool(機器娃娃)（原版 0x00420efa 不看交通方式）', () => {

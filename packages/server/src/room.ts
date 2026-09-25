@@ -179,7 +179,14 @@ export class Room {
     return this.#fingerprints.get(seq) ?? null;
   }
 
-  /** 让 core 的 AI 替当前座位拿主意（电脑座位或掉线代打） */
+  /**
+   * 让 core 的 AI 替当前座位拿主意（电脑座位或掉线代打）。
+   *
+   * ★★ FU-2（2026-09-25 审计）：`decideAction` 自己从镜像的 `rngState` 播种**真随机流** ——
+   *   原版电脑那一支的每次 `rand()`（出牌起点、個性闸门 `%3`、卡/道具判定里的 `%4`/`%n`、
+   *   前瞻岔路）都走全局序列。掷掉的数由 `reduce` 在**同一个局面**上复算并写回
+   *   （`aiDecisionRollAdvance`）⇒ 服务器与各客户端看到的是同一条流、同一个末态。
+   */
   decideForCurrent(): Action | null {
     return decideAction({ state: this.#mirror, map: this.#map });
   }

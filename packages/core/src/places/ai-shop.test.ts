@@ -7,7 +7,7 @@
  * 先買機車、价 < 预算、手里没有这种车」。逐段取证见 `ai-shop.ts` 文件头。
  */
 import { describe, expect, it } from 'vitest';
-import { CARDS } from '@rich4/data';
+import { CARDS, TOOLS } from '@rich4/data';
 import { makePlayer } from '../testing/factories.ts';
 import { initialCardAmounts } from '../rules/new-game.ts';
 import { emptyTools, initialToolStock, toolCount, TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
@@ -177,5 +177,60 @@ describe('★ 买卡（C 段）', () => {
     });
     expect(r.tools[2 * TOOL_SLOTS_PER_PLAYER + 6]).toBe(1);
     expect(r.tools[0 * TOOL_SLOTS_PER_PLAYER + 6]).toBe(0);
+  });
+});
+
+/**
+ * ★ 2026-09-25 审计（L48）：这一趟的營業額。
+ *
+ * 原版电脑那一支把每次买卖函数的**返回值**累加进 `ebp`，离店时
+ * `0x0042f24f cmp eax,6 / jge 0x42ed50` 跳进真人支的同一段收尾，由
+ * `0x42ed75/0x42ed7e` 记进那家企業的 `+0x28 / +0x2c`：
+ *   买卡 `0x42d237` / 买道具 `0x42d272` 返回 **標價 × 10**、
+ *   卖卡 `0x42d145` 返回 **標價**（不是到手的那 0.9 倍）、卖道具 `0x42d1b2` 返回 **標價 × 数量**。
+ */
+describe('★ L48 營業額（原版 ebp）', () => {
+  const revenueOf = (r: ReturnType<typeof aiShopVisit>): number =>
+    r.log.reduce((sum, s) => {
+      if (s.op === 'buyCard' || s.op === 'buyTool') {
+        const p = s.op === 'buyCard' ? CARDS.find((c) => c.id === s.id)!.price : TOOLS.find((t) => t.id === s.id)!.price;
+        return sum + 10 * p;
+      }
+      if (s.op === 'sellCard') return sum + CARDS.find((c) => c.id === s.id)!.price;
+      return sum + TOOLS.find((t) => t.id === s.id)!.price * s.count;
+    }, 0);
+
+  it('买道具 ⇒ 每件 標價 × 10；与 log 逐条算出来的一致', () => {
+    const r = visit({ points: 461 });
+    expect(r.log.some((s) => s.op === 'buyTool')).toBe(true);
+    expect(r.revenue).toBeGreaterThan(0);
+    expect(r.revenue).toBe(revenueOf(r));
+    // 461 → 預算 231 → 機車（80）+ 汽車（150）… 逐件都是 10 × 標價
+    expect(r.revenue % 10).toBe(0);
+  });
+
+  it('卖卡 / 卖道具记的是**標價**（全额），不是到手的 0.9 倍', () => {
+    // 點券 < 100 ⇒ 走 S3 变卖：手里两张卡（先卖最便宜的）+ 一件多出来的道具
+    const cards = [CARDS[0]!.id, CARDS[1]!.id];
+    const r = aiShopVisit({
+      player: makePlayer({ index: 0, personality: 2, points: 0, cards }),
+      tools: withTool(1, 2),
+      toolStock: initialToolStock(),
+      cardAmount: noCards(),
+    });
+    const soldCard = r.log.find((s) => s.op === 'sellCard');
+    expect(soldCard).toBeDefined();
+    if (soldCard === undefined || soldCard.op !== 'sellCard') return;
+    const price = CARDS.find((c) => c.id === soldCard.id)!.price;
+    // 到手 = trunc(價 × 0.9)，营业额 = 全额 價 —— 两者必须不同（除不尽时才等）
+    expect(r.revenue).toBe(revenueOf(r));
+    expect(r.revenue).toBeGreaterThanOrEqual(price + TOOLS.find((t) => t.id === 1)!.price);
+    expect(r.player.points).toBeLessThan(r.revenue);
+  });
+
+  it('什么都不做 ⇒ 營業額 0（不凭空记一笔）', () => {
+    const r = visit({ points: 0 });
+    expect(r.log).toEqual([]);
+    expect(r.revenue).toBe(0);
   });
 });

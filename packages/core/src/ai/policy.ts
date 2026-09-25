@@ -17,8 +17,9 @@
  */
 
 import { cardPassiveHolder } from '../rules/interaction.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 import type { GameState } from '../state/types.ts';
-import type { LandInfo, Rich4Map } from '../loaders/map.ts';
+import type { LandInfo } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 import { isAiControlled } from '../state/types.ts';
@@ -50,16 +51,17 @@ function initialFundOf(state: { initialFund?: number }): number {
   return state.initialFund ?? DEFAULT_INITIAL_FUND;
 }
 import { CARDS, TOOLS } from '@rich4/data';
-import { aiCanUseCards, aiCanUseTools, personalityAllows } from './personality.ts';
+import { aiCanUseCards, aiCanUseTools, personalityAllowsLazy } from './personality.ts';
 import {
   aiCardChoice,
-  aiRoll,
+  type AiRoll,
   cardLoopEsiAfterFill,
   cardsToConsider,
   type AiCardChoice,
   type CardAiView,
 } from './card-policy.ts';
 import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
+import { aiRand } from './rand.ts';
 import {
   allEffectiveFacilities,
   allEffectiveLands,
@@ -71,7 +73,6 @@ import {
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { placementBlockedAt } from '../rules/object-landing.ts';
-import { aiDiceCount } from './dice-policy.ts';
 
 /**
  * 性格参数。
@@ -96,8 +97,22 @@ export const DEFAULT_PERSONALITY: AiPersonality = { aggression: 0.6, cashReserve
 
 export interface AiContext {
   state: GameState;
-  map: Rich4Map;
+  /**
+   * 地图拓扑。策略层只读 `nodes` / `lands` / `facilities` / `commercials` / `landscapes`
+   * （`MapTopology` 那几项）—— 取 `MapTopology` 而不是 `Rich4Map`，是为了让 **reducer**
+   * 也能在同一局面复算这一手（FU-2：reducer 里补掷时手上只有 `topo`）。
+   */
+  map: MapTopology;
   personality?: AiPersonality;
+  /**
+   * ★★ FU-2（2026-09-25 审计）：这一次决策的**真随机流**（`WatcomRng` 的包装）。
+   *
+   * 原版电脑那一支的每一次 `rand()`（出牌起点、個性闸门 `%3`、卡/道具判定里的 `%4`/`%n`、
+   * 前瞻岔路、骰子数 `&1`）都走**全局序列**。生产路径（客户端 / 服务器 / reducer 的补掷）
+   * 必传它 —— 流从 `state.rngState` 播种，掷完由调用方把末态写回；直接单测某个判定函数时
+   * 才可以不给（那时退回 `aiRoll` 的确定性替身，见 `ai/rand.ts`）。
+   */
+  roll?: AiRoll;
 }
 
 /**
@@ -118,7 +133,12 @@ export function isAiTurn(state: GameState): boolean {
  * 返回 null 表示「此刻不该由 AI 动」（例如轮到人类）。
  */
 export function decideAction(ctx: AiContext): Action | null {
-  const { state, map } = ctx;
+  // ★★ FU-2（2026-09-25 审计）：没显式给流时**自己从 `state.rngState` 播种一条真随机流** ——
+  //   原版电脑那一支的每次 `rand()` 都走全局序列，单机 / 联机 / reducer 的补掷必须同一条。
+  //   流是本地的、用完即弃：掷掉的数由 `reduce` 的 `aiDecisionRollAdvance` 在**同一局面**
+  //   上复算并写回。（显式传 `roll` 只留给想钉住某一串掷数的测试。）
+  const ctx2: AiContext = ctx.roll === undefined ? { ...ctx, roll: localAiRoll(ctx.state) } : ctx;
+  const { state, map } = ctx2;
   // ⚠️ 落点那两支（買地/買設施/加蓋）**不读性格** —— 原版那层是
   //   `fcn_0041d7d4` 的一条线，见 `rules/purchase.ts`。性格在
   //   `decideCard`/`decideTool`（`personalityAllows`）与借贷比例里起作用。
@@ -173,12 +193,14 @@ export function decideAction(ctx: AiContext): Action | null {
         case 1:
           return { type: 'aiNext' };
         case 2:
-          return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
+          return (state.aiBranch === 1 ? decideCard(ctx2) : decideTool(ctx2)) ?? { type: 'aiNext' };
         default:
-          // ★ 第二十一份：起步前先按 `fcn_004221c0` 改骰子数（VA 0x00418e70，紧接着才
+          // ★ 第二十一份：起步前按 `fcn_004221c0` 改骰子数（VA 0x00418e70，紧接着才
           //   `0x00418e75 call 0x40dd1f` 起步）—— 背着定時炸彈、引信 < 15 只掷 1 颗等，见 `dice-policy.ts`。
-          //   只在**真要改**时出 `setDiceCount`（同值 reduce 原样退回 ⇒ 会活锁）。
-          return decideDiceCount(state, map) ?? { type: 'rollDice' };
+          //   ★★ FU-2（2026-09-25 审计）：这一步**在 reducer 的 `aiAdvance` 第 3 步里算**
+          //   （`0x4221c0` 一回合只算一次：前瞻岔路与 `rand()&1` 都掷全局流）；
+          //   策略层到这里只剩「掷骰」这一手。
+          return { type: 'rollDice' };
       }
     case 'moving':
       // ★ 路过銀行的 ATM 窗（`pending.kind === 'atm'`）只给**恰好** who_plays == 1 的真人开；
@@ -224,19 +246,6 @@ export function decideAction(ctx: AiContext): Action | null {
 }
 
 /**
- * 电脑起步前要不要改骰子数（`fcn_004221c0`，见 `dice-policy.ts`）。
- * 要改就给 `setDiceCount`，否则 null（照常掷骰）。
- */
-export function decideDiceCount(state: GameState, map: Rich4Map): Action | null {
-  const me = state.players[state.currentPlayer];
-  if (me === undefined) return null;
-  const topo: MapTopology = map;
-  const want = aiDiceCount(state, topo, allEffectiveLands(state, topo), allEffectiveFacilities(state, topo));
-  if (want === null || want === me.ndices) return null;
-  return { type: 'setDiceCount', count: want };
-}
-
-/**
  * 该不该出张牌，出哪张。
  *
  * ★ 这是**策略**不是规则：能不能出、出了会怎样一律由
@@ -276,17 +285,28 @@ export function decideCard(ctx: AiContext): Action | null {
     canUseCard(state, topo, cardId, target);
 
   // ★ 個性闸门（VA 0x0041e69e）：f7 − 個性 ≥ 2 从不、== 1 三分之一、≤ 0 照做
+  //   ★ FU-2：那次 `rand() % 3` **只在差一档时掷**（`0x0041e6c9 cmp edx,1 / jne`），
+  //   故用懒求值版本 —— 急切求值会多掷、与原版错位。
   const gated = (cardId: number): boolean => {
     const f7 = CARDS.find((c) => c.id === cardId)?.f7 ?? 0;
-    return personalityAllows(f7, me.personality, gateRoll(state, cardId));
+    return personalityAllowsLazy(f7, me.personality, () => gateRand(state, ctx.roll, cardId));
   };
 
   // @source 0x00441d4a：手牌 > 8 时 `rand() % 张数` 当起点
-  const roll = aiRoll(state, 0x441d4a, me.cards.length);
+  const roll = aiRand(state, ctx.roll, 0x441d4a, me.cards.length);
   const hand = cardsToConsider(me.cards, roll);
   // 填表之后 `esi` 的残值 —— 漲價卡的設施一支会读到它（见 card-policy.ts 的 `zhangjia`）
   const cardLoopEsi = cardLoopEsiAfterFill(me.cards.length, me.cards.length > 8 ? roll % me.cards.length : 0);
-  const view: CardAiView = { state, topo, meIndex: state.currentPlayer, me, lands, facilities, cardLoopEsi };
+  const view: CardAiView = {
+    state,
+    topo,
+    meIndex: state.currentPlayer,
+    me,
+    lands,
+    facilities,
+    cardLoopEsi,
+    ...(ctx.roll === undefined ? {} : { roll: ctx.roll }),
+  };
   for (const cardId of hand) {
     if (!gated(cardId)) continue;
     const choice = aiCardChoice(cardId, view);
@@ -375,15 +395,17 @@ export function decideTool(ctx: AiContext): Action | null {
     me,
     lands: allEffectiveLands(state, topo),
     facilities: allEffectiveFacilities(state, topo),
+    ...(ctx.roll === undefined ? {} : { roll: ctx.roll }),
   };
 
   // ★ 同一道個性闸门也管道具（0x420e9a：f7 − 個性，≥2 从不、==1 时三分之一）
+  //   ★ FU-2：与卡片同一句 `0x420eca call rand / idiv 3`，同样只在差一档时掷。
   const gatedTool = (toolId: number): boolean => {
     const f7 = TOOLS.find((t) => t.id === toolId)?.f7 ?? 0;
-    return personalityAllows(f7, me.personality, gateRoll(state, 30 + toolId));
+    return personalityAllowsLazy(f7, me.personality, () => gateRand(state, ctx.roll, 30 + toolId));
   };
 
-  for (const toolId of toolsToConsider(owned, aiRoll(state, TOOL_RING_SALT, owned.length))) {
+  for (const toolId of toolsToConsider(owned, aiRand(state, ctx.roll, TOOL_RING_SALT, owned.length))) {
     if (!gatedTool(toolId)) continue;
     const choice = aiToolChoice(toolId, view);
     if (choice === null) continue;
@@ -464,15 +486,19 @@ function toToolAction(toolId: number, choice: AiToolChoice, ctx: AiContext): Act
   }
 }
 
+/** 从 `state.rngState` 播种一条本地真随机流（生产路径的默认值，见 `decideAction`） */
+function localAiRoll(state: GameState): AiRoll {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  return () => rng.next();
+}
+
 /**
- * 闸门里那次 `rand() % 3` 的**确定性替身**。
- *
- * ⚠️ 策略层是纯函数、碰不得随机源（否则 reducer 拒一次它就原样重提）。这里用
- *   `(rngState ^ action) % 3` —— 同一状态下同一张牌的结论固定，重放一致（C-DET-4），
- *   分布上也是三分之一，但**不是**原版那次 `rand()` 的序列。记 D-004。
+ * 闸门里那次 `rand() % 3`（`0x0041e6ce call 0x456f2d / idiv 3`）——
+ * 有真随机流就掷它，没有才退回替身（`ai/rand.ts` 的 `aiRand`）。记 D-004 / FU-2。
  */
-function gateRoll(state: GameState, action: number): number {
-  return (((state.rngState >>> 0) ^ (action * 0x9e3779b1)) >>> 0) % 3;
+function gateRand(state: GameState, roll: AiRoll | undefined, action: number): number {
+  return aiRand(state, roll, action, 3);
 }
 
 /**
@@ -536,7 +562,7 @@ export function auctionNextBid(
  * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
  *   未实现的场所会以 `unimplemented` 留在 `pending` 里，上层看得见。
  */
-export function decidePending(state: GameState, map?: Rich4Map): Action | null {
+export function decidePending(state: GameState, map?: MapTopology): Action | null {
   const p = state.pending;
   if (p === null) return null;
   // ★ 落点那台 ATM（`landing`，phase = turnEnd）只给**恰好** who_plays == 1 的真人开；走到这里说明他开着窗
@@ -609,8 +635,8 @@ export function decidePending(state: GameState, map?: Rich4Map): Action | null {
     //   挑不出（或不在可选里）就关窗。
     if (map === undefined) return { type: 'declineDecision' };
     const t = aiPickConstructionTarget(
-      state.currentPlayer, map.lands, state.landOwner, state.landLevel, state.landType,
-      map.facilities, state.facilityOwner, state.facilityLevel, state.facilityType,
+      state.currentPlayer, map.lands ?? [], state.landOwner, state.landLevel, state.landType,
+      map.facilities ?? [], state.facilityOwner, state.facilityLevel, state.facilityType,
     );
     return t !== 0 && p.choices.includes(t) ? { type: 'buildTarget', entityId: t } : { type: 'declineDecision' };
   }
@@ -648,7 +674,7 @@ export function decidePending(state: GameState, map?: Rich4Map): Action | null {
  *   ⚠️ 原版这一层**没有性格、没有"值不值得"**（`fcn_0041d7d4` 只收一个价），
  *   早先那套 `landAttractiveness` + `reserveFloor` 是自造的，已去掉。
  */
-export function decideAtLanding(state: GameState, map: Rich4Map): Action {
+export function decideAtLanding(state: GameState, map: MapTopology): Action {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return { type: 'declineDecision' };
   const node = map.nodes[me.nodeId - 1];
@@ -657,7 +683,7 @@ export function decideAtLanding(state: GameState, map: Rich4Map): Action {
   const idx = housingIndexOf(node.type);
   if (idx === null) return { type: 'declineDecision' };
 
-  const tpl = map.lands.find((l) => l.id === idx);
+  const tpl = (map.lands ?? []).find((l) => l.id === idx);
   if (tpl === undefined) return { type: 'declineDecision' };
 
   const land: LandInfo = {

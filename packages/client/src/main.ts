@@ -5594,6 +5594,9 @@ function scheduleAi(): void {
     ) {
       return;
     }
+    // ★★ FU-2（2026-09-25 审计）：`decideAction` 自己从 `state.rngState` 播种真随机流
+    //   （原版电脑那一支的每次 `rand()` 都走全局序列）；掷掉的数由 `reduce` 在同一局面上
+    //   复算并写回（`aiDecisionRollAdvance`）。
     const action = decideAction({ state, map });
     if (action === null) {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，

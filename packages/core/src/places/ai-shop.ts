@@ -32,8 +32,17 @@
  *
  * ★ 买卡候选的次序照原版 Watcom `qsort`（`0x457e6c`，不稳定）逐条移植（`rules/watcom-qsort.ts`，
  *   与原版机器码逐位对过）—— 同价的卡谁先买由那套算法决定（先前按卡号升序当替身，D-006 已撤）。
- * ⚠️ 离店时原版把这次买卖的 `10 × 价` 累加进这家店的营业额（`0x0042ed75` 设施记录 `+0x28/+0x2c`）；
- *   本引擎的商店（真人那一支同样）没有这项统计，不接。
+ *
+ * ★★ 2026-09-25 审计（L48）：这一支的营业额**也进企業帳**。原版两支在离店那一刻**汇合**到同一段
+ *   （电脑支 `0x0042f23d..0x0042f24f cmp eax,6 / jge 0x42ed50` ⇒ 落到真人支的收尾），
+ *   `ebp` 就是这一趟的累计额：每次买卖把那几个函数的**返回值**加进去 ——
+ *   买卡/买道具 `0x42d237` / `0x42d272` 返回 **標價 × 10**
+ *   （`0x0042d267..0x0042d26e`：`eax=價; eax=eax*4; eax+=edx; eax+=eax`；`0x42d272 jmp 0x42d25c` 同一尾巴），
+ *   卖卡 `0x42d145` 返回 **標價**（`0x0042d1a5..0x0042d1b1`，★ 不是到手的那 0.9 倍），
+ *   卖道具 `0x42d1b2` 返回 **標價 × 数量**（`0x0042d22f mov eax,ebx`，ebx = 價×数量）。
+ *   收尾 `0x42ed50 mov ebx,[esp+0x148]`（= 本格的企業编码）→ `(0x1770,0x1f40)` 内 ⇒
+ *   `0x42ed75 add [企業+0x28], ebp` / `0x42ed7e add [企業+0x2c], ebp`。
+ *   见 `state/reduce.ts` 的 `shopRevenueTo`（真人支那一份，两支共用同一个落账）。
  *
  * 纯函数（C-DET-1/2）：不掷随机数、不读时钟。
  */
@@ -74,6 +83,12 @@ export interface AiShopResult {
   cardAmount: number[];
   /** 这一趟按次序做了什么（测试 / 日志用；不进状态）*/
   log: AiShopStep[];
+  /**
+   * 这一趟的**營業額**（原版 `ebp`）＝ Σ 每次买卖那几个函数的返回值：
+   * 买卡 / 买道具 `標價 × 10`、卖卡 `標價`、卖道具 `標價 × 数量`。
+   * 由调用方按本格的企業编码记进 `+0x28 / +0x2c`（`state/reduce.ts` 的 `shopRevenueTo`）。
+   */
+  revenue: number;
 }
 
 export type AiShopStep =
@@ -100,6 +115,8 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
   let toolStock = [...world.toolStock];
   const cardAmount = [...world.cardAmount];
   const log: AiShopStep[] = [];
+  // ★ L48：这一趟的營業額（原版 `ebp`，逐笔累加、离店时一次性记进企業帳）
+  let revenue = 0;
   const pers = player.personality;
   const me = player.index;
 
@@ -109,6 +126,8 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
     player = r.player;
     // @source consume_card `0x004413a2 inc byte [卡号 + 0x499197]` —— 卖掉的牌回牌堆
     cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) + 1;
+    // @source `0x42d145` 返回 **標價**（`0x0042d1a5 xor eax,eax / mov al,[卡*8+0x47fdef]`）
+    revenue += cardPrice(id);
     log.push({ op: 'sellCard', id });
   };
   const doSellTool = (id: number, count: number): void => {
@@ -117,6 +136,9 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
     player = r.player;
     tools = r.tools;
     toolStock = r.stock;
+    // @source `0x42d1b2` 返回 **標價 × 数量**（`0x0042d1bf mov bl,[id*8+0x47fedf] / 0x0042d1c6 imul ebx,[数量]`
+    //   → `0x0042d22f mov eax,ebx`）
+    revenue += toolPrice(id) * count;
     log.push({ op: 'sellTool', id, count });
   };
   const doBuyTool = (id: number): void => {
@@ -126,6 +148,8 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
     tools = g.tools;
     toolStock = g.stock;
     player = { ...player, points: addPoints(player.points, -toolPrice(id)) };
+    // @source `0x42d272 jmp 0x42d25c` → 与买卡同一尾巴，返回 **標價 × 10**
+    revenue += 10 * toolPrice(id);
     log.push({ op: 'buyTool', id });
   };
 
@@ -172,7 +196,7 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
 
   // @source 0x0042f033 test bx, bx / je 离店
   const points = player.points;
-  if (points === 0) return { player, tools, toolStock, cardAmount, log };
+  if (points === 0) return { player, tools, toolStock, cardAmount, log, revenue };
   // @source 0x0042f043 `sar edi, 1`（卡预算）/ `sub eax, edi`（道具预算 = 另一半，向上取整）
   let cardBudget = points >> 1;
   let toolBudget = points - cardBudget;
@@ -200,6 +224,8 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
     // @source receive_card `0x0044133b dec byte [卡号 + 0x499197]`
     cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) - 1;
     cardBudget -= price;
+    // @source `0x42f13b call 0x42d237` → 返回 **標價 × 10**，也进这一趟的 `ebp`
+    revenue += 10 * price;
     log.push({ op: 'buyCard', id });
   }
 
@@ -237,5 +263,5 @@ export function aiShopVisit(world: AiShopWorld): AiShopResult {
     toolBudget -= price;
   }
 
-  return { player, tools, toolStock, cardAmount, log };
+  return { player, tools, toolStock, cardAmount, log, revenue };
 }

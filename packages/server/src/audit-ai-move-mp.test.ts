@@ -13,10 +13,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   LOBBY_DEFAULT_OPTIONS,
   WHO_PLAYS_AUTOPILOT,
+  WHO_PLAYS_COMPUTER,
   WHO_PLAYS_HUMAN,
   decideAction,
   newGame,
   parseMap,
+  WatcomRng,
   reduce,
   stateFingerprint,
   type Action,
@@ -156,5 +158,52 @@ describe('★★ 联机：ai-move 审计订正与单机同一条路', () => {
     expect(submitBoth(room, mirror, topo, 0, act!).ok).toBe(true);
     expect(room.state.pending).toBeNull();
     expect(room.state.players[0]!.points).toBe(500);
+  });
+
+  /**
+   * ★★ FU-2（2026-09-25 审计）：电脑那一手在原版里掷的全局 `rand()` 落到 `rngState` 上。
+   *
+   * 原版出牌段先掷「手牌 > 8 的起点」（`0x00441d4a`）、再逐张过個性闸门（`0x0041e6ce`）、
+   * 判定函数里还要掷（如改建卡 `0x0041eec4` 的 `%4+1`）—— 都走全局序列。
+   * 本引擎策略层是纯函数，掷数由 `reduce` 在同一局面上复算并写回（`aiDecisionRollAdvance`）；
+   * 这里同时钉住「掷了几次」与「服务器 = 旁观端重放」。
+   */
+  run('★★ ③ 电脑出牌吃全局随机流：rngState 恰好前进决策掷数，服务器与重放端逐字段一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = baseGame(map);
+    // 手牌塞满 ⇒ `0x00441d4a` 的起点那次一定掷；個性 1 让闸门也走「差一档」那一支
+    const cards = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const state: GameState = {
+      ...s0,
+      currentPlayer: 0,
+      phase: 'awaitingRoll',
+      aiStep: 2,
+      aiBranch: 1,
+      pending: null,
+      players: s0.players.map((p, i) =>
+        i === 0 ? { ...p, whoPlays: WHO_PLAYS_COMPUTER, cards, aiFlags: 3, personality: 1 } : p,
+      ),
+    };
+    const room = roomFrom(map, state);
+    const mirror = { s: state };
+
+    // 决策实际掷了几次（记账脚本数出来）
+    let calls = 0;
+    const counting = new WatcomRng();
+    counting.setState(state.rngState);
+    const planned = decideAction({ state, map, roll: () => (calls++, counting.next()) });
+    expect(planned).not.toBeNull();
+    expect(calls).toBeGreaterThan(0);
+    expect(room.decideForCurrent()).toEqual(planned);
+
+    const act = planned!.type === 'useCard' ? planned! : ({ type: 'aiNext' } as const);
+    expect(submitBoth(room, mirror, topo, 0, act).ok).toBe(true);
+    // 掷数逐次相等：从旧 `rngState` 走 calls 步 = 服务器记下的那一个
+    const replay = new WatcomRng();
+    replay.setState(state.rngState);
+    for (let i = 0; i < calls; i++) replay.next();
+    expect(room.state.rngState).toBe(replay.getState());
+    expect(mirror.s.rngState).toBe(room.state.rngState);
   });
 });

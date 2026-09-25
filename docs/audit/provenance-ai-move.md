@@ -14,9 +14,9 @@
 | 状态 | 条数 |
 |---|---|
 | verified | 47 |
-| fixed | 9（台账行；对应 7 处修复，V-10/C-27b、V-19/C-12 各是同一修复的两面） |
+| fixed | 10（台账行；对应 8 处修复，V-10/C-27b、V-19/C-12 各是同一修复的两面） |
 | approx | 6 |
-| follow-up | 5（FU-1..FU-5，列在「跟进」一节） |
+| follow-up | 4（FU-1 / FU-3 / FU-4 / FU-5，列在「跟进」一节；FU-2 已结项） |
 | n/a | 2 |
 
 **修复（均已提交，均改变对局状态 ⇒ 需协调方统一升 PROTOCOL_VERSION）：**
@@ -28,8 +28,14 @@
 5. **路障阶段一**的「空格」按运行位：关押 / 住店 / 消失的人不占格 — `293b6ce`
 6. **嫁禍卡（电脑）**无人可嫁时照样掷门槛 `rand()`（旧：少掷一次，随机流错位）— `1b3c7eb`
 7. **开着保釋窗被托管的真人**：删掉自拟的「挑最便宜同伴」，按关窗处理 — `0e14efc`
+8. **FU-2：电脑 / 托管决策的随机数改吃全局序列**（见 V-21）—— 出牌起点 `0x441d4a`、個性闸门 `0x41e6ce`（且改成
+   **只在差一档时掷**）、卡/道具判定里的 `%4`/`%n`、前瞻岔路 `0x40b221`/`0x40b343`、骰子数 `0x4221c0`；
+   掷数由 reducer 在同一局面上复算写回（真人座位不补、被拒的 action 不补），骰子数那一步同时搬进
+   `aiAdvance` 第 3 步 — `81e1940`
 
-联机镜像测试：`packages/server/src/audit-ai-move-mp.test.ts`（漲價卡 esi 残值 / 保釋关窗，服务器 = 单机同一手、重放指纹一致）。
+联机镜像测试：`packages/server/src/audit-ai-move-mp.test.ts`（漲價卡 esi 残值 / 保釋关窗 / ③ 出牌吃全局随机流：
+服务器 = 旁观端重放、`rngState` 恰好前进决策掷数）；`packages/server/src/pt21-ai-mp.test.ts` ② 按新接线改
+（骰子数由 reducer 第 3 步写，不再出 `setDiceCount`）。
 
 ## 台账
 
@@ -41,8 +47,8 @@
 | V-2 | 谁由 AI 出手（who_plays 分派） | `state/types.ts:1829` `isAiControlled`（掩码 6）；`ai/policy.ts:109` | 0x40c912 返回 who_plays → 跳表 0x418c3d：1 真人 / 2、5 电脑支 0x418dc6 / 3、4、>5 什么都不做 | verified | 2 与 5（真人+託管）都进 0x418dc6 ✓。`whoPlays = 3` 原版不动、TS 当电脑 —— 只有读档可达，见 FU-4 |
 | V-3 | 性格表 / f7 表逐字节 | `packages/data/src/characters.ts:134-145`、`cards.ts`、`tools.ts` | 角色表 0x47e80c（步长 0x68，+0x11 +0x12 +0x16..+0x1a）；卡片 0x47fdea+id×8 的 +7；道具 0x47fee1+id×8 | verified | 脚本 dump 对比：12 角色 × 7 字节、30 张卡 f7、13 件道具 f7 全等 |
 | V-4 | 能力位：会出牌 / 会用道具 | `ai/personality.ts:62,65`；`ai/policy.ts:248,346` | 0x00441d09 `test [+0x16],1`；0x00447f87 `test [+0x16],2`（其前 `test dl,6`） | verified | |
-| V-5 | 個性闸门 f7 − 個性 | `ai/personality.ts:198`；`ai/policy.ts:266,368`（`gateRoll`） | 卡 0x41e69e（[0x47fdf1+id×8]）；道具 0x420e9a（[0x47fee1+id×8]）；≥2 不做、==1 `rand()%3==0` 才做 | verified | 那次 `rand()%3` 用确定性替身（D-004，归 FU-2） |
-| V-6 | AI 回合调度顺序 | `ai/policy.ts:154-169`；`state/reduce.ts:6811` `aiAdvance` | 0x00418dc6：`test [+0x15],0x30` → 0x42bf03 买股 → 0x42c79f 卖股 → 0x436b0a(0) → [0x46caf8] 终局码 → 0x4284be 公佈欄 → `rand()&1`：1 卡 0x441baa / 0 道具 0x447d97 → 0x4221c0 → 0x40dd1f | verified | 随机数消费点见 D-007 / FU-2 |
+| V-5 | 個性闸门 f7 − 個性 | `ai/personality.ts` `personalityAllows` / `personalityAllowsLazy`；`ai/policy.ts` `gateRand` | 卡 0x41e69e（[0x47fdf1+id×8]）；道具 0x420e9a（[0x47fee1+id×8]）；≥2 不做、==1 `rand()%3==0` 才做 | verified | ★ 那次 `rand()%3` 现在吃全局流、且只在差一档时掷（V-21 / 81e1940） |
+| V-6 | AI 回合调度顺序 | `ai/policy.ts:154-169`；`state/reduce.ts:6811` `aiAdvance` | 0x00418dc6：`test [+0x15],0x30` → 0x42bf03 买股 → 0x42c79f 卖股 → 0x436b0a(0) → [0x46caf8] 终局码 → 0x4284be 公佈欄 → `rand()&1`：1 卡 0x441baa / 0 道具 0x447d97 → 0x4221c0 → 0x40dd1f | verified | 随机数消费点见 V-21（已全部吃全局流） |
 | V-7 | 用完卡/道具后被挡则不掷骰 | （无显式步骤） | 0x00418e36 `+0x32` dword / `+0x37` / `+0x36` 非 0 ⇒ 置 0x80 返回；0x00418e67 `[0x498ea2+cur×0x34]==1`（已在走）⇒ 跳过 | verified | 不可达：没有一张 AI 会出的卡/道具会把**自己**置进这几种状态；遙控骰子的「已在走」由 reducer 直接进 moving |
 | V-8 | 出牌主循环 | `ai/card-policy.ts:1107` `cardsToConsider`；`ai/policy.ts:242` | 0x441262 数 15 格非空；0x00441d45 >8 张 `rand()%张数` 起环形、≤8 张从头；取 8 格、遇空停；第一张过闸即 `call [0x475d5c+id×4]` 后返回（一回合一张） | verified | |
 | V-9 | 出牌前预演（`willWork`），接不住顺延 | `ai/policy.ts:262` | 原版 0x441e00 调效果后不看返回值直接结束 | approx | 既有偏差（同 Q-CARD-2 口径）：防活锁，见 FU-5 |
@@ -50,13 +56,14 @@
 | V-11 | 道具主循环 | `ai/tool-policy.ts:757` `toolsToConsider`；`ai/policy.ts:342` | 0x00447f90..0x00448085：13 格跳过槽 9（時光機）、>4 种 `rand()%种类` 起环形、最多试 4、遇空停、第一件过闸即执行 | verified | |
 | V-12 | 用道具前预演（`toToolAction`） | `ai/policy.ts:393` | 原版过闸即 `call [0x475dd5+id×4]` | approx | 既有偏差：防活锁（同 V-9） |
 | V-13 | 跳表缺席项 | `ai/card-policy.ts` `AI_NEVER_PLAYS`；`ai/tool-policy.ts` `AI_NEVER_USES` | 0x475324 第 5/6/18..21 项 = 0x41e6e3、第 40 项 = 0x420edf（`xor eax,eax; ret`） | verified | |
-| V-14 | 前瞻 / 反瞻 | `ai/card-policy.ts:240` `lookahead`；`ai/tool-policy.ts:148` `backtrack`；`state/reduce.ts` `nextCandidates` | 0x40b221 / 0x40b343：n 封顶 8、邻接 4 槽跳 0 / 来路 / 封路位 0x40000000>>k；0 个回来路、1 个直走、>1 `rand()%n` 且置岔路 | verified | 岔路那次 rand 用替身（FU-2） |
+| V-14 | 前瞻 / 反瞻 | `ai/card-policy.ts:240` `lookahead`；`ai/tool-policy.ts:148` `backtrack`；`state/reduce.ts` `nextCandidates` | 0x40b221 / 0x40b343：n 封顶 8、邻接 4 槽跳 0 / 来路 / 封路位 0x40000000>>k；0 个回来路、1 个直走、>1 `rand()%n` 且置岔路 | verified | 岔路那次 rand 见 V-21（已吃全局流） |
 | V-15 | 最恨的人 | `ai/card-policy.ts:83` `mostHated` | 0x40d2d3：who_plays≠0、非我、hostility 有符号严格大于（起点 0） | verified | |
 | V-16 | 随机活跃对手 | `ai/tool-policy.ts:364` 内；`rules/toll-flow.ts:97` 内 | 0x40d31c：非我、who_plays≠0、`+0x32` dword == 0；空则 −1 且不掷 | verified | |
 | V-17 | 值得拿 | `ai/card-policy.ts:295` `worthTaking` | 0x41e8e6 | verified | 同街扫 1..地块数，TS 地块本就 1 基 |
 | V-18 | 同街住宅过路费 / 连锁店数 | `ai/card-policy.ts:215,230` | 0x419744（名字支，Σ租金[等级] × 物價 0x004197d8）；0x41970f | verified | 0x419744 名字为 0 的「连锁店×2000」支 AI 从不走（调用方都传名字） |
 | V-19 | 可见物件排除附身物件 | `ai/card-policy.ts:184` | 0x00409e5b..0x00409e93（物件标记且 `+0x05`≠0 不画） | fixed | aad6335 |
 | V-20 | 岔路选边 | `state/reduce.ts:824` `pickNextNode` | 0x0040c12c..0x0040c1a5：无 who_plays 分支，人机同一条 `rand()%候选` | verified | 归 loop；AI 无独立决策 |
+| V-21 | **AI 决策的随机数来源 = 全局 `rand()`**（原 FU-2 / D-004 / D-007） | `ai/rand.ts` `aiRand`；`ai/policy.ts` 的 `AiContext.roll` / `localAiRoll`；`state/reduce.ts` 的 `aiDecisionRollAdvance`、`aiAdvance` 第 3 步；`personality.ts` 的 `personalityAllowsLazy` | 出牌起点 `0x00441d4a call 0x456f2d / idiv 张数`（只 >8 张掷）；個性闸门 `0x0041e6ce call 0x456f2d / idiv 3`（**只在 f7−個性==1 那一档**：`0x0041e6c1 cmp edx,2 / jl` → `0x0041e6c9 cmp edx,1 / jne`）；道具闸门同形 `0x00420eca`；卡/道具判定里的 `%n`（VA = `call 0x456f2d` 那一条）：改建 `0x0041eec4`、天使 `0x0041f172`、冬眠 `0x0041fe51`、夢遊/陷害 `0x0041ff48`、地雷/炸彈 `0x0042153e`、機車 `0x00421657` / 汽車 `0x0042168d`、飛彈随机对手 `0x0040d355`、工程車 `0x00421e43`、核彈 10 次 `0x0042216f`；道具环形起点 `0x00447ff5`；前瞻岔路 `0x0040b221` / `0x0040b343`；骰子数 `0x004222e1 rand()%2`（调用点 `0x00418e70`） | fixed | 81e1940（旧：`aiRoll` 的 `rngState ^ 盐` 替身，一个数都不推进）。`decideAction` 缺省自己从 `state.rngState` 播种；掷掉的数由 `reduce` 在同一局面、同一函数上复算写回（补掷的三手 = `aiNext`/`useCard`/`useTool`；真人座位不补、被拒的 action 不补）；骰子数一步搬进 `aiAdvance` 第 3 步「算一次、掷一次、写一次」；替身只留给直接单测判定函数的调用点 |
 
 ### C · 三十张卡（跳表 0x475324 第 1..30 项）
 
@@ -124,22 +131,63 @@
 
 ## 跟进（未修，附证据）
 
-- **FU-1 画面投影**（V-1、T-7、T-13）：要复刻得把镜头位置、旋转 `[0x499088]`、投影表 `0x46ccf0`（4×29×29×(int16,int16)）、
-  `0x407a2c` 的格内偏移、精灵锚点（地块记录坐标 / `xpos,ypos` / 节点，y−0x28）、屏幕 440×440 截取与格子 OR 合并都搬进 core，
-  并决定联机时旋转/镜头怎样进入确定性状态（原版 AI 的取舍随玩家视角变）。影响约 20 个判定函数的候选成员与「第一个」次序。> 半天。
-- **FU-2 AI 的随机数不消费全局序列**（D-004 / D-007）：個性闸门 `rand()%3`、手牌 >8 / 道具 >4 的起点、前瞻岔路、
-  冬眠 `%4`、天使 `%组`、改建 `%4+1`、夢遊 `%n`、機車/汽車 `%4`、工程車 `%15`、地雷/炸彈 `%候选`、飛彈随机对手、核彈 10 次、
-  骰子数 `rand()&1` —— 原版都走全局 `rand()`，本引擎用 `aiRoll` 替身 ⇒ 电脑回合之后随机流与原版不同步。
-  要把 AI 出牌/用道具/骰子数整段搬进 reducer（掷真随机数）才能消掉。> 半天。
-- **FU-3 `0x4216ab` 的垃圾返回值**：「不是我的」出口 `mov eax, edx` 返回调用方的 `edx`。飛彈（0x004217f9）与核彈（0x00421ff7）
-  对清单**第一项**调用时 `edx` 是 `0x40a0b1 → 0x409b18` 出口留下的值；若恰为 1，整窗都被当成「我的」⇒ 永不发射。
-  需用 Unicorn 跑 0x409b18 的出口路径定值。
-- **FU-4 `whoPlays == 3`**：原版分派表 0x418c3d 第 3 项 = 0x418e7a（什么都不做），`isAiControlled` 当电脑。只有读档可达。
-- **FU-5 预演顺延**（V-9 / V-12）：原版过闸即出、效果失败也算用过这一手；复刻预演不过就试下一张/件。改成「照出、失败即止」需 reducer 对失败 action 有非活锁的收口。
+- **FU-1 画面投影**（V-1、T-7、T-13）—— 未修，**明确不做**（>半天、且是纯保真度：差异只在屏幕边缘几格）。
+  原版 AI 的候选集与「第一个」次序 = **投影到屏幕之后**落在 `0..0x1b8`（440）方窗里的东西
+  （`0x409ef9` / `0x409de7` / `0x40a45c` / `0x40a0b1`），本引擎是「±220 像素方窗 + (y,x) 排序」。
+  要复刻得搬进 core 的件（逐件都已定位）：
+  1. 取景原点：视图扫描用**相机像素坐标** `[0x48b2ac]` / `[0x48b2b0]`（`0x409b44` / `0x409b4e`，
+     随后 `0x409b5c sar ecx,5` 得格号）；窗口函数 `0x40a0b1(xpos, ypos, 半径)` 另取**当前玩家**的
+     `xpos/ypos`（`0x40a125 mov dx,[eax+0x496b70]` = +0x08、`0x40a138 mov ax,[eax+0x496b72]` = +0x0a；
+     其前 `0x40a117` 判 `+0x32` 起的阻碍四字节，挡下就不画自己的标记）。
+  2. 格窗：`lea …,+0xe` / `cmp …,0x1c`（`0x409bd9` / `0x409bf0`、`0x40a326` / `0x40a341`）⇒
+     ±14 格的 29×29 窗口；像素余量 `add [esp+0xc],0xdc`（+220）后只留 `0..0x1b8`（440）。
+  3. **旋转** `[0x499088]`（4 档）→ 投影表 `0x46ccf0` 的基址：`0x40a186 imul eax,[0x499088],0xd24` /
+     `0x40a190 imul edx,ebp,0x74`（4×29×29 个 (int16,int16)，本仓库已逐字节 dump）；
+     `0x407a2c` 给的是「像素 → 投影格内偏移」。
+  4. 精灵锚点：地块记录 `(x,y)`、玩家 `xpos/ypos`、物件取**节点**且 `y−0x28`（见 D-005）。
+  5. 屏幕格 OR 合并（同一次调用里逐类写）：玩家 `0x40a1bb..0x40a202` 写 `cx = 0x8000 | 1<<当前玩家`
+     （其前 `0x40a1cd` / `0x40a1d9` 判 0..0x1b8 越界）、地块 `0x40a2c8 add ecx,0x7d0`、
+     設施 `0x40a3ba add ecx,0xfa0`；物件那一趟与 V-1 编码表一致（`(槽+1)<<8`）。
+  影响 V-1 / T-1 / T-2a / T-7 / T-13 等约 20 个判定函数的候选成员与次序。
+  ⚠️ 确定性面：镜头位置可由行动者推出，旋转 `state.viewRotation` **已经在状态里**（`rotateView` 动作，
+  原版存 `+0x2743`）—— 但它**不在 `stateFingerprint` 的白名单里**（`net/protocol.ts` 的 parts 只收
+  turnCount/currentPlayer/日期/物价/rngState/玩家几项/地产/公库/樂透/道具/库存/牌堆/股市/持股/物件/
+  pending），真要接投影，**必须先把 `viewRotation` 纳入指纹**，否则一端转视角就能让 AI 的取舍分岔而对账看不见。
+- **FU-3 `0x4216ab` 的垃圾返回值**（T-7 / T-13）—— 未修，**静态定不出值**。
+  追了一遍 `edx` 的来路：`0x4216ab` 只在「是我的」那支写 `mov edx,1`（`0x42170f`），
+  「不是我的」直接落到 `0x421714 mov eax,edx / ret` ⇒ 返回的是**调用方手里那个 edx**。
+  飛彈（`0x004217f9`）与核彈（`0x00421ff7`）对窗口清单第一项调用时，edx 最后一次被写是
+  `0x40a0b1` 的收尾 —— `0x40a0a0 push 1 / call 0x409b18`（把那块窗口画到屏幕上）→ `0x40a0aa mov eax,esi`
+  → `0x40a0ac jmp 0x40b33b`（只动 eax，**不动 edx**）⇒ edx = `0x409b18` 出口留下的值。
+  `0x409b18` 有多条出口，而 `0x40a0a0` 压的实参是 1 ⇒ `0x409b3e` 那条「镜头没动就直接返回」的快路
+  **走不到**；真正走的是 `0x409c61 / 0x409c70 / 0x409de2 → 0x40b33b`，而 edx 取决于循环**最后一次迭代**
+  走的是 `0x409c97 je 0x409de1`（`mov dx,[...]` ⇒ 低 16 位 0）还是 `0x409dd9 call 0x456a1c`（画精灵 ⇒ 被调函数残值）。
+  ⇒ 与运行时实体表 / 相机状态相关，**要真值只能在原版里跟一次**（Unicorn 或调试器）。
+  影响面：只有「窗口第一件不是我的东西」那一次 `cmp eax,1`；若恰为 1，飛彈/核彈永不发射。
+  本引擎按「不是我的就继续找、是我的才放弃」的**意图**做，与 FU-1 的窗口口径一起记 approx。
+- **FU-4 `whoPlays == 3 / 4`**（V-2）—— 未修（会软锁，见下）。
+  回合分派 `0x00418d6e push 0 / call 0x40c912` → `0x00418d78 cmp eax,5 / ja 0x418e7a` →
+  跳表 `0x418c3d`：`[0] = 0x418d88`（who_plays 0 = 出局者推进游标）、`[1] = 0x4196f1`（真人）、
+  `[2] = [5] = 0x418dc6`（电脑支）、**`[3] = [4] = 0x418e7a`（`pop ebp/edi/esi/ebx; ret`，什么都不做）**。
+  而 `isAiControlled` 用的是**位掩码 6**（那是 `0x40b1ad` / `0x43c5fa` / `0x43d331` 这批
+  「这个座位是不是电脑」的判据）⇒ `3`（真人|电脑）与 `4`（只托管）在两套口径下结论相反。
+  不修的理由：照 `0x418e7a` 复刻 = 该座位这一回合**什么都不发生**、游标也不推进 —— 原版就此软锁；
+  复刻禁止活锁（C-DET-4 与「AI 必须推进」的既有约定），要让它过去就得发明一条原版没有的推进规则。
+  可达性：只有**读档**（`loaders/savegame.ts` 原样搬 `+0x15`）与复刻自己的「电脑行也点托管」
+  （`client/src/ai-settings.ts:467` 把 2 变成 6）能造出来。
+- **FU-5 预演顺延**（V-9 / V-12）—— 未修，附**可观测性实测**。
+  原版 `0x441d98` 的 8 格循环：第一张过 `0x41e69e` 的卡**直接出**（`0x00441e00 call [0x475d5c+id*4]`，
+  返回值不看，`0x441e07` 出栈返回）；本引擎先用 `canUseCard` 预演，不生效就试下一张。
+  实测（`tools/audit/fu5-card-rehearsal-scan.ts`，seed 1..20 全电脑长局、每局 ≤4 万步）：
+  判定函数肯出 **806** 次，预演挡下 **0** 次 ⇒ 合并后的 registry 已经能表达 AI 会选的每一个目标，
+  这条偏差**当前不可观测**。
+  真要修需要两样（都还没做）：① reducer 得能**非活锁地**收下一条「出了但没生效」的 AI 出牌
+  （现在失败会让 AI 原样重提 ⇒ 活锁，这正是当初加预演的原因）；② 逐卡核 `consume_card(0x441343)`
+  的 36 个调用点，确认原版在**失败分支之前**就扣卡（否则「失败也扣卡」会扣错）。
 
 ## 跨区发现（不属本区，未改）
 
-- **ai-econ**：`ai/policy.ts:583` `chooseBuildTarget`（托管真人「取第一个可选」）与 `:588` `buildFacility`（「不蓋公園、取最小非 0 种类」）是自拟的，
-  电脑支原版是 0x40b455 挑目标 / `rand()%4+1`（0x0041a23e / 0x0040b1ad）—— 与 P-4 同类，建议同样按关窗或交 reducer 按电脑支。
+- ~~**ai-econ**：`ai/policy.ts` 的 `chooseBuildTarget`「取第一个可选」/ `buildFacility`「不蓋公園、取最小非 0 种类」是自拟的~~
+  —— **已修**（ai-econ 的 F15 / `2719f64`：托管走电脑支 `0x40b455` 挑地、`rand()%4+1` 定种类，`facilityType: null` 交 reducer 掷）。
 - **文档**：`rich4-spec/tests/test_tool_dice_ai.py` 把 `+0x24` bits 12-15 注成「玩家占用」，实为惡人（玩家是 bits 8-11，`0x0043d59b`）；
   测试本身只铺位、不受影响。
