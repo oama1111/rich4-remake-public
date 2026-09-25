@@ -126,6 +126,7 @@ import {
   decodeEstate,
   encodeEstate,
   duplicateCards,
+  sweepStaleColumn,
   emptyColumn,
   estateListPrice,
   isColumnFull,
@@ -6930,7 +6931,9 @@ function sweepSpecialFinance(state: GameState, topo: MapTopology): GameState {
  * 电脑玩家的公佈欄回合 —— 挂东西 / 重估 / 买别人的，逐条照 VA 0x0042886e。
  * 规则常量与判据见 places/notice-board.ts 的 AI 一节。
  */
-function aiNoticeBoardTurn(state: GameState, topo: MapTopology): GameState {
+function aiNoticeBoardTurn(state0: GameState, topo: MapTopology): GameState {
+  // @source `0x004284c5 call 0x42483e` —— 进门先把挂着却已不归挂牌人的东西撤掉（在一切随机闸之前）
+  const state = sweepStaleListings(state0, topo);
   const me = state.currentPlayer;
   const player = state.players[me];
   if (player === undefined || !isAlive(player)) return state;
@@ -7023,6 +7026,41 @@ function aiNoticeBoardTurn(state: GameState, topo: MapTopology): GameState {
   }
 
   return { ...next, rngState: rng.getState() };
+}
+
+/**
+ * 公佈欄开张前的清理 `fcn_0042483e` —— 每个玩家一栏，判据见 `places/notice-board.ts` 的 `sweepStaleColumn`。
+ * ⚠️ 真人从工具栏打开公佈欄（`0x00417dee call 0x4284be`）原版也先走这一步；本引擎的真人公佈欄屏
+ *   目前没接（跨区，见 `docs/audit/provenance-ai-econ.md`）。
+ */
+function sweepStaleListings(state: GameState, topo: MapTopology): GameState {
+  let changed = false;
+  const board = state.noticeBoard.map((col, p) => {
+    const valid = (it: Listing): boolean => {
+      switch (it.kind) {
+        case LISTING.stock:
+          // @source 0x00424886 `cmp 挂牌股数, 持股 / jle 留`
+          return it.amount <= (state.holdings[p]?.[it.id]?.amount ?? 0);
+        case LISTING.estate: {
+          const e = decodeEstate(it.id);
+          const rec = e.kind === 'land' ? effectiveLand(state, topo, e.index) : effectiveFacility(state, topo, e.index);
+          if (rec === null || rec.owner !== p + 1) return false;
+          // @source 0x004248e0 / 0x004248eb：`+0x18` / `+0x1a` 与挂牌快照（槽 +0x0a / +0x0b）逐字节比
+          return rec.type === (it.estateType ?? rec.type) && rec.level === (it.estateLevel ?? rec.level);
+        }
+        case LISTING.tool:
+          return toolCount(state.tools, p, it.id) !== 0;
+        case LISTING.card:
+          return state.players[p]?.cards.includes(it.id) ?? false;
+        default:
+          return true;
+      }
+    };
+    const next = sweepStaleColumn(col, valid);
+    if (next !== col) changed = true;
+    return next;
+  });
+  return changed ? { ...state, noticeBoard: board } : state;
 }
 
 function noticeBoardAction(
