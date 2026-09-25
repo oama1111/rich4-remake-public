@@ -1683,8 +1683,29 @@ function stockDetailView(): StockDetailView | null {
   );
 }
 
+/**
+ * ★ 2026-09-25 审计补：谁在**自己的回合**里开的股市屏 —— 关屏时替他交 `{type:'stockScreen', op:'close'}`
+ *   （`0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a`：三种模式的出口都强制收回特別融資）。
+ *   别人的回合里开着看（或联机里不是本机的回合）⇒ 不交。
+ */
+let stockOpenedOnOwnTurn = false;
+
+function markStockOpener(): void {
+  stockOpenedOnOwnTurn = localTurn({ state, localSeat: net?.seat ?? null });
+}
+
+function dispatchStockClose(): void {
+  if (!stockOpenedOnOwnTurn) return;
+  stockOpenedOnOwnTurn = false;
+  if (!localTurn({ state, localSeat: net?.seat ?? null })) return;
+  const a: Action = { type: 'stockScreen', op: 'close' };
+  // 只在真会改局面时才发（空操作在联机里会被定序器当非法拒掉）
+  if (reduce(state, a, topo) !== state) dispatch(a);
+}
+
 function openStock(): void {
   if (screen === 'stock') return;
+  markStockOpener();
   stockPage = 0;
   stockHover = null;
   stockSel = null;
@@ -1697,6 +1718,7 @@ function openStock(): void {
 
 function closeStock(): void {
   if (screen !== 'stock') return;
+  dispatchStockClose();
   screen = 'game';
   stockDetail = null;
   stockAmount = null;
@@ -1716,6 +1738,7 @@ function closeStock(): void {
  *   非 0 返回 = 行号（1 基）= 选中的股票。
  */
 function openStockPick(cardId: number, mode: StockPickMode): void {
+  markStockOpener();
   stockPage = 0;
   stockHover = null;
   stockSel = null;

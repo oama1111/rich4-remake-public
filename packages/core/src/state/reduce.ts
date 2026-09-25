@@ -2545,6 +2545,13 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     case 'noticeBoard':
       return noticeBoardAction(state, topo, action);
 
+    case 'stockScreen': {
+      // @source `0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a` —— 股市屏的两条出口都走到这里
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !isAlive(me)) return state;
+      return sweepSpecialFinance(state, topo);
+    }
+
     case 'declineDecision': {
       // ★ 「不了」对**任何**待决交互都合法（rules/interaction.ts 的
       //   `responseMatches` 第一句就是这个），故不只在 awaitingDecision 生效：

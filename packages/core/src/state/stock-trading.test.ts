@@ -210,3 +210,30 @@ describe('★ 2026-09-24 审计：柜台买入上限 = min(今日可成交量 f1
     expect(act(s1, { type: 'buyStock', stock: 0, shares: 9 }).holdings[0]![0]!.amount).toBe(9);
   });
 });
+
+describe('★ 2026-09-25 审计：关股市屏强制收回特別融資（0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a）', () => {
+  it('非董事長欠着特別融資 ⇒ 关屏那一刻从存款还清；没人欠就原样返回', () => {
+    const CID = 1;
+    const topo2 = {
+      nodes: [makeNode({ id: 1, adjacent: [1] })],
+      commercials: [{
+        id: CID, x: 0, y: 0, name: '測試銀行', stockIndex: 0, landPrice: 500, type: 7,
+        spriteIndex: 0, assetValue: 1_000_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 1000,
+      }],
+    };
+    const s0 = base();
+    const commercialOwners = [...s0.commercialOwners];
+    while (commercialOwners.length <= CID) commercialOwners.push({ owner: 0, ranking: [0, 0, 0, 0] });
+    commercialOwners[CID] = { owner: 2, ranking: [2, 0, 0, 0] }; // 董事長 = 1 号
+    const owing: GameState = {
+      ...s0,
+      commercialOwners,
+      players: s0.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN, specialFinance: 8000 } : p)),
+    };
+    const closed = reduce(owing, { type: 'stockScreen', op: 'close' }, topo2);
+    expect(closed.players[0]!.specialFinance).toBe(0);
+    expect(closed.players[0]!.moneyInBank).toBe(1_000_000 - 8000);
+    const clean = { ...owing, players: owing.players.map((p) => ({ ...p, specialFinance: 0 })) };
+    expect(reduce(clean, { type: 'stockScreen', op: 'close' }, topo2)).toBe(clean);
+  });
+});

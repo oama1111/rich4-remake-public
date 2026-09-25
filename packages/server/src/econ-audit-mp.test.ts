@@ -178,4 +178,29 @@ describe('★ econ 审计：收费敌意 / 真人全出局收局 —— 联机�
     expect(room.state.companyFunds[cid]).toBe(before + item.price * 10);
     expect(mirror.companyFunds).toEqual(room.state.companyFunds);
   });
+
+  run('真人 0 号关股市屏 ⇒ 欠着特別融資的非董事長当场还清（0x0042ba88）；服务器与旁观端一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const bankCo = map.commercials.find((c) => c.type === 7)!;
+    const s0 = scene(map, 'multiplayer', 0, 1, 500_000);
+    const commercialOwners = [...s0.commercialOwners];
+    commercialOwners[bankCo.id] = { owner: 2, ranking: [2, 0, 0, 0] };
+    const state: GameState = {
+      ...s0,
+      phase: 'awaitingRoll',
+      commercialOwners,
+      players: s0.players.map((p, i) => (i === 0 ? { ...p, specialFinance: 7000, moneyInBank: 50_000 } : p)),
+    };
+    const room = roomFrom(map, state);
+    let mirror = state;
+    const r = room.submit(0, { type: 'stockScreen', op: 'close' });
+    expect(r.ok).toBe(true);
+    if (r.ok) mirror = reduce(mirror, r.broadcast.action, topo);
+    expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    expect(room.state.players[0]!.specialFinance).toBe(0);
+    expect(room.state.players[0]!.moneyInBank).toBe(43_000);
+    // 不是本人回合的座位交这一条 ⇒ 被拒
+    expect(room.submit(2, { type: 'stockScreen', op: 'close' }).ok).toBe(false);
+  });
 });

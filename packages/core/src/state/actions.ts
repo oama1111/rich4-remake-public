@@ -171,6 +171,12 @@ export type Action =
    */
   | { type: 'noticeBoard'; op: 'open' }
   | { type: 'noticeBoard'; op: 'close' }
+  /**
+   * ★ 2026-09-25 审计补：真人关上**股市屏**（工具列 `0x00417df7`、紅卡 `0x00444ffa`、黑卡 `0x004450be` 三种模式，
+   *   出口都经 `0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a`）⇒ 强制收回特別融資（模式 0）。
+   *   没有可做的就原样返回（客户端只在会生效时才发，同 `noticeBoard` 的 open / close）。
+   */
+  | { type: 'stockScreen'; op: 'close' }
 
   /**
    * 百貨公司买卖。买的两种可带 `row` = **货架第几行**（`pending.cards` / `pending.tools` 的下标）：
