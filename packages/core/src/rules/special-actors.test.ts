@@ -250,7 +250,7 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
     expect(r.cleared).toEqual([]);
   });
 
-  it('★ 同格有附身的也有地上的：只扫地上那一件（取槽号最大者，同 `objectHandleAt`）', () => {
+  it('★ 同格有附身的也有地上的：只扫地上那一件（附身的不在那一字节里，同 `objectHandleAt`）', () => {
     const mixed: MapObject[] = [
       { type: 5, nodeId: 4, state: 3, attached: 1 },
       { type: 16, nodeId: 4, state: 0, attached: 0 },
@@ -263,6 +263,26 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
     expect(r.cleared).toEqual([{ index: 1, step: 3 }]);
     expect(r.objects[0]).toEqual(mixed[0]);
     expect(r.objects[1]!.nodeId).toBe(0);
+  });
+
+  // ★★ 2026-09-25（本分支）：那一字节是按位或（`0x0040e13c or [node+0x24],(槽+1)<<16`），
+  //   不是「取最大槽号」。OR 落到**第三个槽**时，原版扫掉的是那个槽的记录
+  //   （`0x0041b529 call 0x40e14d`），哪怕那一件在别的格子上。
+  it('★★ 同格两件取**按位或**：槽 0、槽 1 各一件 ⇒ 1|2 = 3 ⇒ 扫掉的是槽 2 那一件', () => {
+    const two: MapObject[] = [
+      { type: 1, nodeId: 4, state: 0, attached: 0 }, // handle 1
+      { type: 2, nodeId: 4, state: 0, attached: 0 }, // handle 2
+      { type: 3, nodeId: 6, state: 0, attached: 0 }, // handle 3 —— 站在别的格上
+    ];
+    const r = runDoll(
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
+      two,
+      line,
+    );
+    expect(r.cleared).toEqual([{ index: 2, step: 3 }]);
+    expect(r.objects[0]).toEqual(two[0]);
+    expect(r.objects[1]).toEqual(two[1]);
+    expect(r.objects[2]!.nodeId).toBe(0);
   });
 
   it('走完就收场 —— 替身不留在场上', () => {

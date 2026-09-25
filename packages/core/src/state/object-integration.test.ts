@@ -15,6 +15,7 @@ import type { GameState } from './types.ts';
 import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, objectNodeCandidates, pickObjectNodeDistant, placeObjectOfType, runtimeOccupiedNodes } from '../rules/object-landing.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { OBJECT_NAMES } from '../rules/purchase.ts';
+import { objectTypeOf } from '../rules/objects.ts';
 import { stateFingerprint } from '../net/protocol.ts';
 import { facilityIndexOf, housingIndexOf } from '../rules/land.ts';
 
@@ -163,6 +164,32 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 1, stepsTotal: 1 };
     const after = reduce(start, { type: 'step' }, topo);
     expect(after.players[0]!.blocking.inHospital, '地雷生效 ⇒ 住院').toBeGreaterThan(0);
+  });
+
+  /*
+   * ★★ 2026-09-25（本分支）：那一字节是**按位或**（`0x0040e13c or [node+0x24],(槽+1)<<16`），
+   *   不是「取最大槽号」—— 两者在 `1|17` / `17|27` 这两对上恰好相同，所以先前看不出来。
+   *   找一个 OR 落到**第三个槽**的组合：死神（种类 15，唯一槽段 14..15 ⇒ handle 15）
+   *   与路障（种类 16，槽段 16..25 ⇒ 空着时取槽 16、handle 17）⇒ `15 | 17 = 31` ⇒ 槽 30，
+   *   而 `OBJECT_TYPE_TABLE[30] = 17`（地雷）。原版随后正是拿这一字节去查
+   *   `objects[字节-1].type`（0x0041b4ca..db）并按它跳表（0x41b3e5）⇒ 这一格是**地雷**。
+   */
+  run('★★ 逐位 OR：死神(handle 15) 与路障(handle 17) 同格 ⇒ 15|17 = 31 ⇒ 槽 30 的地雷', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    const withReaper = placeObjectOfType(cleared, 15, to).objects;
+    const both = placeObjectOfType(withReaper, OBJECT_TYPE_ROADBLOCK, to).objects;
+    expect(both[14]!.nodeId, '死神落在槽 14（handle 15）').toBe(to);
+    expect(both[16]!.nodeId, '路障落在槽 16（handle 17）').toBe(to);
+    // 15 | 17 = 31 ⇒ 原版读到的是槽 30；三个槽的种类先钉住（槽位决定种类）
+    expect([objectTypeOf(14), objectTypeOf(16), objectTypeOf(30)]).toEqual([15, 16, 17]);
+
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 1, stepsTotal: 1 };
+    const after = reduce(start, { type: 'step' }, topo);
+    // 地雷：住院 3 天（路障那一支只会把剩余步数清零，不住院）
+    expect(after.players[0]!.blocking.inHospital).toBe(3);
   });
 
   run('地雷 → 住院 3 天，占用表也置位', () => {

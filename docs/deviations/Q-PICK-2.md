@@ -38,14 +38,18 @@
   cmp byte [player + 0x15], 1 / jne AI
   call 0x444d1a                     ; ★ 真人：只调这一个函数
   ```
-- `fcn_00444d1a`（VA 0x00444d1a）从头到尾**不碰任何窗口**：把地图格表
-  （`0x40a45c(-1)` 摊平进 `0x48b8c4`）扫一遍 → 取格值高字节为 handle →
+- `fcn_00444d1a`（VA 0x00444d1a）从头到尾**不碰任何窗口**：把 `0x40a45c(-1)`
+  摊平出来的**屏幕空间 id 图**扫一遍（`0x409de7` 按当前镜头重建那张 440×440、
+  **每个实例只写一粒**的图，见 `object-pick.ts` 的 `BoardView`）→ 取实例字高字节为 handle →
   `0x40ea62(handle)==1`（种类可附身）→ `objects[handle−1].f5 == 0`（未附身）→
   用物件所在节点与当前玩家的坐标算 `d²`、开方 → **留下最接近的一件**，
   返回它的 handle（`ebp` 初值 0 = 一件都没有 ⇒ 卡不消耗）。
+  ★ 2026-09-25 订正：那张图是**屏幕空间**的（画不进棋盘区的实例压根不进清单），
+  先前这里写成「地图格表」、并把「视野」当成未接的 follow-up —— 现已按图里的
+  内外判据接上（`main.ts` 的 `routeCardUse` 把当前镜头投到 `LAYOUT.board`）。
 - 所以：**列什么、名字从哪张表来、命中在哪** —— 都不存在。没有列表，
   也没有对象名表被读（神明名只出现在 `player_say` 的台词里）。
-- 本引擎照抄：`nearestSummonableObject(state, topo)` → handle；
+- 本引擎照抄：`nearestSummonableObject(state, topo, view)` → handle；
   发 `useCard{cardId:23, target:{kind:'object', objectIndex:handle}}`。
 
 ### 3. 遙控骰子（道具 8）—— **六颗骰面的小盘**，选 1..6
@@ -78,7 +82,7 @@
 | 东西 | 文件 |
 |---|---|
 | 股屏选股模式（模式/字节/白框/1 秒/action） | `packages/client/src/stock-screen.ts`（+ `main.ts` 的 `openStockPick` / `stockPickChoose` / `cancelStockPick`）|
-| 「请最近的一尊」 | `packages/client/src/object-pick.ts`（+ `main.ts` 的 `routeCardPick` 分支）|
+| 「请最近的一尊」（含**视野内**那一道筛子） | `packages/client/src/object-pick.ts`（+ `main.ts` 的 `routeCardPick` 分支）|
 | 六颗骰面盘 | `packages/client/src/dice-choose.ts`（+ `main.ts` 的 `openDicePick` / `dicePickChoose` / `cancelDicePick`）|
 | 卡片欄路由新增两路 | `packages/client/src/inventory.ts` 的 `routeCardPick`（`stockPick` / `objectAuto`）|
 | **core 缺的那一步** | `packages/core/src/cards/registry.ts` 的 24/25 分支补 `applyStockNews`（见 Q-PICK-2-c）|
@@ -167,9 +171,10 @@ dispatch 的形状（与 core 已有的 action **逐字一致**，没有新增�
 - 选股模式里那五块牌子（换页/買進/賣出/資訊/離開）在这一模式下**够不着**：
   原版点中一行就当场 `Post` 抛回、窗口随即消失，本引擎同样在 pick 时吃掉所有
   点击（只认行），这是**照抄**不是省略。
-- 请神符等距时的取法：原版扫的是**地图格**（`0x474938` 那张 440 宽的格表，
-  行序 = 先 y 后 x），本引擎按 `(y, x, handle)` 排序近似它。
-  **格表 → 世界坐标的换算没有取证**，所以只有「两尊神恰好等距」时可能不同；
+- 请神符等距时的取法（2026-09-25 订正）：原版扫的是**屏幕空间那张 id 图**
+  （`0x474938`，440×440、每实例一粒；行序 = 先**屏幕** y 再屏幕 x），
+  本引擎按 `(y, x, handle)` 排序 —— 视图不旋转时屏幕序 = 世界序（只差平移），
+  两者逐条相同；视图旋转过（`camera.view ≠ 0`）时可能不同。
   该差异未再深挖（无可观测的游戏后果：都是一尊神）。
 
 ### Q-PICK-2-h　选完点数**当场走完这一掷**（照 exe），但**跳过滚骰动画**（需求方要求）

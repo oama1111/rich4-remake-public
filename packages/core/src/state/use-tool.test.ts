@@ -9,7 +9,7 @@ import { reduce } from './reduce.ts';
 import { canUseTool } from './preview.ts';
 import type { GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
-import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
+import { TRAFFIC_CAR, TRAFFIC_ENGINEERING, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
 
 const topo = { nodes: [makeNode({ id: 1, adjacent: [1] }), makeNode({ id: 2, adjacent: [1] })] };
 
@@ -60,6 +60,39 @@ describe('★ 交通工具', () => {
   it('没有这个道具就什么都不做', () => {
     const s = withTools({});
     expect(reduce(s, { type: 'useTool', toolId: 6 }, topo)).toBe(s);
+  });
+
+  /*
+   * ★★ 2026-09-25（本分支复核）：**整条路** —— 用道具那一侧真的把原座驾存进
+   *   `+0x64/+0x65`（`0x00447a43..0x00447a55`），到期那一侧才还原得回来
+   *   （`0x0041ccd0..0x0041cd32`）。先前只有 `useVehicleTool` 的单测与到期侧的单测，
+   *   没有一条从 `reduce(useTool 12)` 走到「工程車到期」的用例。
+   */
+  it('★★ 騎機車时开工程車：座驾存进 engineSaved*，到期骑回機車（不再掉成步行）', () => {
+    const s = withTools({ 12: 1 }, {
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, nodeId: 1, trafficMethod: i === 0 ? TRAFFIC_MOTORCYCLE : TRAFFIC_WALK, ndices: i === 0 ? 2 : 1 }),
+      ),
+    });
+    const used = reduce(s, { type: 'useTool', toolId: 12 }, topo);
+    expect(used.players[0]!.trafficMethod).toBe(TRAFFIC_ENGINEERING);
+    expect(used.players[0]!.ndices).toBe(1);
+    // @source 0x00447a49 存 +0x11 / 0x00447a55 存 +0x12（在退车 inc 之后、写 0x1f 之前）
+    expect(used.players[0]!.engineSavedTraffic).toBe(TRAFFIC_MOTORCYCLE);
+    expect(used.players[0]!.engineSavedDice).toBe(2);
+    expect(toolCount(used.tools, 0, 5), '機車退回道具栏').toBe(1);
+    expect(toolCount(used.tools, 0, 12), '工程車被收走').toBe(0);
+
+    // 0x1f 的高 6 位 = 7 天，每天到点 −4（0x1f → 0x1b → … → 0x03 ⇒ 第 8 次归零）
+    let t = used;
+    for (let i = 0; i < 8; i++) {
+      // 4 人局：endTurn 从 3 号交回 0 号时才会走 0 号的日结（`0x419039 call 0x41c84f(0)`）
+      t = reduce({ ...t, currentPlayer: 3, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, topo);
+    }
+    // @source 0x0041cd17 写回 +0x64/+0x65、0x0041cd49 扣掉道具栏那辆機車
+    expect(t.players[0]!.trafficMethod).toBe(TRAFFIC_MOTORCYCLE);
+    expect(t.players[0]!.ndices).toBe(2);
+    expect(toolCount(t.tools, 0, 5)).toBe(0);
   });
 });
 

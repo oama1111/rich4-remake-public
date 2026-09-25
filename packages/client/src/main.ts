@@ -6730,8 +6730,17 @@ function routeCardUse(cardId: number): void {
   }
   // ★ Q-PICK-2：請神符**没有选择 UI** —— 原版 `0x444d1a` 自动请最近的那尊；
   //   一个都请不到时返回 0（卡不消耗）→ 走下面「用不成」那条路。
+  //   ★★ 2026-09-25（C23-1 结案）：候选集是**这一刻画在棋盘区里的**那些 ——
+  //   原版扫的是屏幕空间那张 440×440 的 id 图（`0x40a45c(-1)` → `0x409de7`），
+  //   画不进去的物件根本不在清单里。这里把**当前镜头**（含玩家拖过 / 贴边推过）
+  //   投到棋盘区，判据与 `0x409e99`/`0x409ea5` 那两道 `jl`/`jge` 同一条。
   if (route.kind === 'objectAuto') {
-    const handle = nearestSummonableObject(state, topo);
+    const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
+    const handle = nearestSummonableObject(state, topo, {
+      project: (x, y) => worldToScreen(x, y, camera, vp),
+      width: vp.w,
+      height: vp.h,
+    });
     const act = summonCardAction(handle);
     if (act === null) {
       cardUseFailed();
