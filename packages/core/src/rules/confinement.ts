@@ -187,7 +187,7 @@ export function confine(
  * 0043d621  ax = word [0x48bae0]                 ; ★ 监狱格号（医院是 [0x48bae2]）
  * 0043d627  word [player + 0x0c] = ax            ;   nodeId ← 监狱格
  * 0043d630  word [player + 0x0e] = 0             ; ★ lastNodeId ← 0
- * 0043d637  byte [player + 0x1b] = 0xf           ;   （移动前朝向备份，本引擎未建模）
+ * 0043d637  byte [player + 0x1b] = 0xf           ;   朝向后备哨兵（`Player.savedFacing`）
  * 0043d647  word [player + 0x08] = [0x498e78]+0x38   ; ★ x ← 特殊景观记录 2 的 x
  * 0043d652  word [player + 0x0a] = [0x498e78]+0x3a   ;   y（医院取记录 1 的 +0x1c/+0x1e）
  * ```
@@ -222,7 +222,8 @@ export function teleportToGate(
     // @source 0x43d601 `and byte [player+0x15], 0xf`
     const cleared = { ...p, whoPlays: p.whoPlays & 0x0f };
     // @source 0x43d627 / 0x43d630 —— nodeId ← 監獄/醫院格、lastNodeId ← 0
-    const placed = { ...placeOnNodeId(cleared, nodes, gateNodeId), lastNodeId: 0 };
+    // @source 0x43d637 `mov byte [player+0x1b], 0xf` —— 朝向后备写哨兵（走回棋盘收尾不还原，`0x00418f37`）
+    const placed = { ...placeOnNodeId(cleared, nodes, gateNodeId), lastNodeId: 0, savedFacing: 0xf };
     // @source 0x43d643..0x43d652 —— ★ x/y 另取**特殊景观记录**（不是节点坐标！）
     const rec = gateLandscape(landscapes, kind);
     return rec === undefined ? placed : { ...placed, xpos: rec.x, ypos: rec.y };

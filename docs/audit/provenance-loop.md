@@ -13,10 +13,10 @@
 | 状态 | 行数 |
 |---|---|
 | verified | 64 |
-| fixed | 14（11 处独立修正；R11/R17/L81 与台账行重复计入） |
-| approx | 4 |
-| follow-up | 1 行（L27）+ 下文 F1..F6 共 6 条 |
-| n/a | 3 |
+| fixed | 18（15 处独立修正，含第二轮 F1/F2/F4/F5 与 startTurn 相位闸；R11/R17/L81 与台账行重复计入） |
+| approx | 2 |
+| follow-up | 0 行；下文 F3 一条（多行被挡框，纯表现） |
+| n/a | 4 |
 
 **修正清单**（全部改变规则态 ⇒ 需要协调方统一升 PROTOCOL_VERSION；本分支没有动它）：
 
@@ -31,6 +31,14 @@
 9. **跨月不重摆禮物 / 寶箱（被拿走就永远消失）** → `0x0041d0a5..0x0041d0f6`：月結之后，禮物、寶箱各 `release_object` → `0x40aa6c(原格)` 远处挑格 → `place_object`。
 10. **工程車永不到期** → `0x0041cca3..0x0041cd89`：`+0x11` 每天 −4，`(v & 0xfc)==0` 那天按 `+0x64/+0x65` 还原（没有就步行、1 颗骰）。写入 +0x64 那一侧归道具区（见跨区）。
 11. **换人时清 `stepsTotal`** → `[0x48bafc]` 只在掷骰态 `0x0040d9b7` 写，龜行 / 传送落点的過路費乘数沿用上一掷。
+
+**第二轮（协调方 2026-09-25 追加）**：
+
+12. **联机可自选点数**（F1）→ 服务器 `Room.submit` / `submitSystem` 拒收带 `forced` 的 `rollDice`（`forcedDiceNotAllowed`）。原版点数只来自 `0x419572` 与遙控骰子 `[0x475dd8]`。commit 80c18ce。
+13. **走回棋盘无条件清计数**（F4）→ 只在贴图位离格子 `dx²+dy² ≥ 1024` 时清（帧数 `trunc(d×0.125) ≥ 4`，`0x0040c276..0x0040c3cf`）。八张图实测最小 4356，实战恒清。commit 60ff4a7。
+14. **住店前朝向不还原**（F2）→ `Player.savedFacing`（+0x1b）：住店存（`0x0040d61b` 自己 / `0x0040d68e` 当班者的），关押写 0xf（`0x0043d637`），走回棋盘收尾 `0x00418f2e` 还原；住店释放那一步朝向 = directionOf(格子 − 贴图位)（`0x40d6be` 同一支）。读存档接 +0x1b、+0x64/+0x65（开着工程車时 = `engineSaved*`），写档对称。commit 60ff4a7。
+15. **停留 / 龜行也播预动作与滚骰**（F5，客户端）→ `requestRoll` 见 `rollsWithoutDice` 就当场 `rollDice`；`dice: []` 的回包收掉骰子动画（旁观端同一条路）。commit 9825930。
+16. **`startTurn` 没有相位闸**（回放现形）→ 挂着落点问答 / 走子中再发 `startTurn` 会把回合从头再开（重掷）；联机当班座位可以利用。只在 `turnStart` 受理。commit b4af562。
 
 另修一处**活性**（长局卡死，由修正 8/9 改变随机流后在 `full-game.test.ts` 种子 2024 现形）：落点付费付到破產时出口一律 `pending: null`，把破產清算开出的第一场下線拍卖丢了、队列却留着 ⇒ 之后 `awaitingDecision` 无人可答。改为出口保留拍卖（`bankruptLandingExit`）。归属见跨区。
 
@@ -89,9 +97,9 @@
 | L24 | 被挡（非 0x30）的真人拍時光機快照 | `reduce.ts` startTurn skip 支 | `0x0040c97c call 0x44808a` | **fixed** | |
 | L25 | 夢遊 ⇒ 立刻起步（−1） | `reduce.ts` startTurn → rollDice | `0x0040cba5..0x0040cbb3` | verified | |
 | L26 | 「走回棋盘」(0x10) 那一回合：一步、跑落点、不推游标 | `reduce.ts` startTurn 0x10 支 / endTurn | `0x0040dd37..0x0040dd4a`，`0x00418f07..0x00418f8e` | verified | |
-| L27 | 走回棋盘收尾：朝向还原 `+0x1b & 0xf`（≠0xf 时） | — | `0x00418f2e..0x00418f3c` | follow-up | 关押写哨兵 0xf（不还原）；住宿（`0x40d61b`/`0x40d68e` 存朝向）释放后原版恢复存下的朝向，本引擎没有 +0x1b 字段。只影响朝向 |
+| L27 | 走回棋盘收尾：朝向还原 `+0x1b & 0xf`（≠0xf 时） | `reduce.ts` endTurn 0x10 支、`Player.savedFacing` | `0x00418f2e..0x00418f3c`，写 `0x0040d61b`/`0x0040d68e`/`0x0043d637` | **fixed** | 第二轮 F2 |
 | L28 | 走回棋盘收尾调 `0x40f381` / `0x448a7e` | — | `0x00418f59` / `0x00418f78` | verified | 关押格 0x1f41/0x1f42 不在 2001..5999，两者都空操作 |
-| L29 | 走回棋盘清四项计数（条件：本趟 ≥ 2×步长） | `reduce.ts` startTurn 0x10 支 | `0x0040c3ab..0x0040c3cf` | approx | 无条件清（已知残留，`rules/blocking.ts` 头注） |
+| L29 | 走回棋盘清四项计数：帧数 `trunc(d×0.125) ≥ 4` ⇔ `dx²+dy² ≥ 1024` | `reduce.ts` startTurn 0x10 支、`WALK_BACK_CLEAR_MIN_SQ` | `0x0040c249..0x0040c3cf`，`[0x4631dc]` = f32 0.125 | **fixed** | 第二轮 F4（旧注释「≥ 2×步长」不准：要剩余 < 半程，n ≥ 4） |
 | **回合交接 `0x41c84f`** |||||
 | L30 | 游标：玩家 → 4..7 惡人（不在盘上的跳过）→ 绕回 0 才推日期 | `reduce.ts` endTurn / npcRoundStep / activeNpcSlots | `0x00418f93..0x0041902e` | verified | |
 | L31 | 出局（who==0 且 xpos≠0）跳过；没上盘的照轮 | `reduce.ts:5854` nextAlivePlayer, `types.ts` isUnplaced | `0x00418fee..0x00419006` | verified | |
@@ -118,7 +126,7 @@
 | L53 | 掷骰：ndices 次 `%6+1`；遙控骰子 ⇒ 1 颗 = 指定值、读后清 | `rng/watcom.ts` rollDice | `0x00419572..0x004195b3`，`0x00447285` | verified | |
 | L54 | 總步數 `[0x48bafc]` 只在掷骰写 | `reduce.ts` rollDice（不再在换人时清） | `0x0040d9b7`（唯一写者） | **fixed** | |
 | L55 | ndices 热键：機車 1↔2、汽車 1..3，停留时不理 | `reduce.ts` setDiceCount | `0x004012a7..0x004012ff` | verified | |
-| L56 | `rollDice.forced`（客户端给点数） | `reduce.ts` rollDice | — | n/a | 开发钩子；联机里任何座位都能发 ⇒ 见 follow-up F1 |
+| L56 | `rollDice.forced`（客户端给点数） | `reduce.ts` rollDice；`server/src/room.ts` 拒收 | — | n/a | 单机开发钩子；联机拒收（第二轮 F1，**fixed**） |
 | **走子** |||||
 | L60 | 候选：非 0、非来路、非封路位（bit30>>slot） | `reduce.ts:802` nextCandidates | `0x0040c12c..0x0040c17a` | verified | 封路位在 node+0x24 |
 | L61 | 0 候选回来路；≥1 候选 rand | `reduce.ts:825` pickNextNode | `0x0040c17c..0x0040c1a5` | verified | |
@@ -129,6 +137,8 @@
 | L66 | 夢遊动画计数 | — | `0x0040c462..0x0040c47e` | n/a | 纯表现 |
 | **落点 / 收尾** |||||
 | L70 | 走完先问 quiet 回合判定，被挡整段落点不进 | `reduce.ts` settle | `0x00418e81..0x00418ead` | verified | |
+| L71b | 回合开始只在游标推进后进一次（不能中途重开） | `reduce.ts` startTurn 相位闸 | `0x00418ebd` → `0x00418c55` | **fixed** | 第二轮，回放现形 |
+| L71c | 停留 / 龜行不起预动作、不播滚骰 | `client/src/main.ts` requestRoll / applyAction，`dice-roll.ts` rollsWithoutDice | `0x0040dd64` / `0x0040dd7e`（不进 `0x0040d975` 掷骰态） | **fixed** | 第二轮 F5 |
 | L71 | 落点分派：夢遊且 type≠0 ⇒ 全不跑；17 路跳表 | settle | `0x0041986c..0x004198b2`，表 `0x4197e9` | verified | |
 | L72 | 类型 0 收尾块：顯靈 → `0x448a7e` → 研究所面板 | `reduce.ts` landingTailDue / labPanelTail | `0x0041b077..0x0041b109` | verified | |
 | L73 | 电脑回合次序：买股 → 卖股 → 特別融資收回 → 终局闸 → 公佈欄 → 卡/道具二选一 → 被挡则结束 → 已在走子则返回 → 骰子数 → 起步 | `reduce.ts:6905` aiAdvance | `0x00418dc6..0x00418e75` | verified | 各步内容归 ai-* |
@@ -146,19 +156,36 @@
 | **视角** |||||
 | L95 | 8 档、`&7` | `rules/view.ts` | `[0x499088]`（`0x004195c6` 取用） | verified | |
 
-## Follow-up（未修，附证据）
+## Follow-up
 
-- **F1 `rollDice.forced` 是作弊口子**：`Action` 允许客户端带点数（`state/actions.ts:33`），服务器 `Room.submit` 只要镜像能推进就收 ⇒ 联机任一座位可掷任意点数（`forced: 100` 就走 100 格）。原版没有这条路（点数只来自 `0x419572` / 遙控骰子 `[0x475dd8]`）。建议服务器拒收带 `forced` 的 `rollDice`（开发钩子只在单机用）。
-- **F2 住宿释放后朝向还原**（L27）：`0x00418f2e` 读 `+0x1b & 0xf`。需要给住宿那一支（`0x40d61b` / `0x40d68e`）存朝向；关押写 0xf 哨兵不受影响。
-- **F3 被挡框多行**（L22）：多个阻碍同时成立时原版一扇框拼多行（`0x457110` 追加）；目前只显示第一项。
-- **F4 走回棋盘清计数的条件**（L29）：原版要本趟 ≥ 2×步长才清（`0x0040c3b4 cmp [0x4749dc],[0x48baf4]`）。
-- **F5 客户端**：龜行 / 停留的 `rollDice` 结果 `dice: []`，表现层仍会播一段滚骰（原版龜行不进掷骰态，`0x0040dd40` 只放走路音效）。
-- **F6 回放报告回归**：本分支没有跑 `feedback/` 里的旧回放（状态改变后旧日志的指纹必然不同）。
+- ~~F1 联机自选点数~~ → 第二轮已修（服务器拒收）。
+- ~~F2 住宿释放后朝向还原~~ → 第二轮已修。
+- **F3 被挡框多行**（L22）：多个阻碍同时成立时原版一扇框拼多行（`0x457110` 追加）；目前只显示第一项。纯表现。
+- ~~F4 走回棋盘清计数的条件~~ → 第二轮已修。
+- ~~F5 客户端龜行 / 停留的滚骰动画~~ → 第二轮已修。
+- **F6 回放报告**：见下一节。
+
+## 回放报告复核（`rich4-remake/feedback/`，97 份，第二轮 F6）
+
+做法：同一份 `base` + `trail`（逐条带宿主种子，`replayTrail`）分别用**审计前**（`ebf7854`）与**本分支**两套 core 重放，
+逐条比较去掉纯表现字段（`last*` / `notices` / `snapshots` / `stepsTotal` / `savedFacing`）之后的整份状态，并核对终点指纹。
+
+| 类别 | 份数 | 说明 |
+|---|---|---|
+| 审计前就能按指纹复现、本分支**逐条完全一致** | 11 | 20260922-122902811、20260922-195857499、20260923-023156297、20260923-161844067、20260924-021342002、20260924-105216869、20260924-143446983、20260924-143640603、20260924-144046048、20260924-144217689、20260924-234350490 |
+| 审计前能复现、本分支终点指纹仍一致、中途有差 | 1 | 20260924-223238961：**只有** `insuranceDays` 不同（#11 起：保險期改在交接时走 + 次日到期），不进指纹、没有连带 —— **预期** |
+| 审计前就对不上报告指纹（报告出自更早的版本，旧代码重放已有大量被拒 action） | 85 | 不能用来判断本分支；其中 6 份两套代码逐条一致 |
+
+85 份不可复现报告里，两套代码的**首个分歧**只有三类（逐份跑 `both.ts` 看首个新出现的字段）：
+① `players[*].insuranceDays`（保險时机 / 到期 —— 预期，20260922-2005xx..2010xx、20260924-0440xx、20260925-0300xx/0301xx）；
+② `facilityResearchDays` / 研發道具早一拍到手（研究所改在交接时走 —— 预期，20260924-1818xx/1819xx、20260925-030128992）；
+③ **`startTurn` 在非 `turnStart` 相位被受理**（旧代码把回合从头再开）—— 这是**真 bug**（这些已失步的轨迹里，旧代码把错位的 `startTurn` 当真执行），已修（上文第 16 条）。加了相位闸之后这些报告被拒的 action 数有增有减，属于已失步轨迹的正常表现。
+没有发现别的分歧来源；能复现的 12 份里没有一份因本分支改变终点指纹。
 
 ## 跨区发现（不在本区修）
 
-- **cards（道具 12 工程車）**：用工程車时原版把旧交通方式 / 骰子数存进 `+0x64 / +0x65`（`0x00447a49` / `0x00447a55`），并在 `0x004479e2` 用 `(traffic & 3) == 3` 判「已在开」。本引擎 `useVehicleTool` 没存（已加字段 `Player.engineSavedTraffic / engineSavedDice`，到期还原那一侧已接）⇒ 现在到期一律还原成步行，本该骑回原来那辆。
+- **cards（道具 12 工程車）**：用工程車时原版把旧交通方式 / 骰子数存进 `+0x64 / +0x65`（`0x00447a49` / `0x00447a55`），并在 `0x004479e2` 用 `(traffic & 3) == 3` 判「已在开」。本引擎 `useVehicleTool` 没存（字段 `Player.engineSavedTraffic / engineSavedDice` 已加，到期还原与读写存档两侧已接）⇒ 在游戏里开的工程車到期一律还原成步行，本该骑回原来那辆。
 - **cards（道具 11 傳送機）**：传自己时原版先拍時光機快照（`0x004477c3 call 0x44808a`），本引擎没拍。
 - **econ（保險）**：理赔闸 `+0x3e != 0`（`0x0044ba74`）不变；本分支只改了到期（L42），金额与投保（`0x0041ac6e` `(v+天) & 0x7f`）照旧。econ 若有依赖「永久理赔」的测试 / 推理需要跟进。
 - **econ（破產）**：落点付费付到破產的两处出口（`reduce.ts` 的 `companyExit` 与建設公司 `buildTarget` 那一支）先前 `pending: null` 丢拍卖 ⇒ 卡死；已改走 `bankruptLandingExit`（只修活性）。其它把 `pending` 清成 null 的出口是否也会吞掉清算拍卖，请 econ 过一遍（`grep "pending: null"`）。
-- **events / cards**：`landingWhoPlays` 与原版的 `+0x64` 同址（原版工程車借它存交通方式）—— 两者在本引擎里分成两个字段，读存档（`loaders/savegame.ts` 的 f100）时若玩家正开着工程車，需要把 f100/f101 读进 `engineSaved*`。
+- ~~存档 +0x64/+0x65~~：第二轮已接（开着工程車时读写 `engineSaved*`；`+0x65` 的写者是 `0x00447a55`，`save-writer.ts` 旧表里「无写者」已订正）。

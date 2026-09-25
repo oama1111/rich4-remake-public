@@ -215,6 +215,12 @@ export class Room {
     if (action.type === 'setAi' && action.player !== seat) {
       return { ok: false, reason: 'notYourSeat' };
     }
+    // ★ 审计 2026-09-25（loop F1）：`rollDice.forced` 是单机开发钩子，**不收**客户端带来的点数 ——
+    //   否则任一座位都能掷任意点数（`forced: 100` 就走 100 格）。原版的点数只来自掷骰 `0x419572`
+    //   与遙控骰子 `[0x475dd8]`（core 里是 `GameState.forcedDice`，由 `useTool 8` 写），不经客户端。
+    if (action.type === 'rollDice' && (action as { forced?: unknown }).forced !== undefined) {
+      return { ok: false, reason: 'forcedDiceNotAllowed' };
+    }
     // ★ 把「镜像能否推进」作为合法性判据交给定序器：
     //   只有推进成功才会拿到序号，故日志里绝不会出现无法施加的记录。
     let advanced: GameState | null = null;
@@ -239,6 +245,10 @@ export class Room {
 
   /** 服务器发起的 action（不受回合限制），同样先在镜像上验过再编号 */
   submitSystem(action: Action): { ok: true; broadcast: Broadcast } | { ok: false; reason: string } {
+    // 与 `submit` 同一道闸（loop F1）：服务器自己也不许带客户端点数
+    if (action.type === 'rollDice' && (action as { forced?: unknown }).forced !== undefined) {
+      return { ok: false, reason: 'forcedDiceNotAllowed' };
+    }
     let advanced: GameState | null = null;
     const r = this.#sequencer.submitSystem(action, (a) => {
       // ★★ 首席复核续（DeepSeek）：**`undefined` 也要挡**，与 `submit` 那一条同理。
