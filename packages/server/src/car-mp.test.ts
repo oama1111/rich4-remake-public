@@ -151,4 +151,59 @@ describe('★★ 第二十六份：电脑的车 —— 联机与单机同一条�
       expect(after.tools[1 * TOOL_SLOTS + CAR]).toBe(0);
     }
   });
+
+  run('★ ③ 真人逛店：买卡扣牌堆、卖卡回牌堆、买/卖汽車动库存（10 → 9 → 10）；联机镜像逐条一致，且与单机同一串结果相同', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const store = map.nodes.find((n) => n.specialKind === SPECIAL_KIND.DEPARTMENT_STORE)!;
+    const scene = (mode: 'single' | 'multiplayer'): GameState => {
+      const s0 = baseGame(map, mode);
+      return {
+        ...s0,
+        currentPlayer: 0,
+        phase: 'settling',
+        pending: null,
+        stepsRemaining: 0,
+        players: s0.players.map((p, i) => (i === 0 ? { ...p, nodeId: store.id, points: 900 } : p)),
+      };
+    };
+    const state = scene('multiplayer');
+    const room = roomFrom(map, state);
+    const mirror = { s: state };
+    let single = scene('single');
+    const both = (a: Action) => {
+      expect(submitBoth(room, mirror, topo, 0, a).ok).toBe(true);
+      single = reduce(single, a, topo);
+      // 单机与联机：同一串 action ⇒ 牌堆 / 库存 / 手牌 / 道具 / 點券一模一样
+      expect(single.cardAmount).toEqual(room.state.cardAmount);
+      expect(single.toolStock).toEqual(room.state.toolStock);
+      expect(single.tools).toEqual(room.state.tools);
+      expect(single.players[0]!.cards).toEqual(room.state.players[0]!.cards);
+      expect(single.players[0]!.points).toBe(room.state.players[0]!.points);
+    };
+    both({ type: 'settle' });
+    const shop = room.state.pending;
+    if (shop?.kind !== 'shop') throw new Error('真人进店该开商店窗');
+    // 货架从牌堆抽、不放回：每种上架张数 ≤ 牌堆剩余；开门本身不动牌堆
+    const shelf = new Map<number, number>();
+    for (const c of shop.cards) shelf.set(c.id, (shelf.get(c.id) ?? 0) + 1);
+    for (const [id, n] of shelf) expect(n).toBeLessThanOrEqual(room.state.cardAmount[id - 1]!);
+    expect(room.state.cardAmount).toEqual(state.cardAmount);
+    const id = shop.cards[0]!.id;
+    const pool0 = room.state.cardAmount[id - 1]!;
+    both({ type: 'shop', op: 'buyCard', id, row: 0 });
+    expect(room.state.cardAmount[id - 1]).toBe(pool0 - 1);
+    expect(mirror.s.cardAmount[id - 1]).toBe(pool0 - 1);
+    both({ type: 'shop', op: 'sellCard', id });
+    expect(room.state.cardAmount[id - 1]).toBe(pool0);
+    expect(room.state.toolStock[CAR]).toBe(10);
+    both({ type: 'shop', op: 'buyTool', id: CAR });
+    expect(room.state.toolStock[CAR]).toBe(9);
+    expect(room.state.tools[0 * TOOL_SLOTS + CAR]).toBe(1);
+    both({ type: 'shop', op: 'sellTool', id: CAR, count: 1 });
+    expect(room.state.toolStock[CAR]).toBe(10);
+    both({ type: 'declineDecision' });
+    expect(room.state.pending).toBeNull();
+  });
 });
+
