@@ -126,8 +126,11 @@ export function stockBudget(
 ): number {
   // @source cmp byte [+0x1a], 0 / je 跳过
   if (stockRatio === 0) return 0;
-  const pool = holdingsValue + moneyInBank + cash;
-  const target = Math.trunc((pool * stockRatio) / 100);
+  // @source 0x0042c002..0x0042c02c：`add` / `imul edx, eax` / `idiv 100` 全是 32 位 ——
+  //   `imul` 只留低 32 位，(可动用总额 × 比例) 超过 2^31 时原版绕成负数 ⇒ 目标为负 ⇒ 不买。
+  //   （后期富翁局：总额 3000 万、比例 80 就会绕。）`Math.imul` 就是这条乘法。
+  const pool = (holdingsValue + moneyInBank + cash) | 0;
+  const target = Math.trunc(Math.imul(pool, stockRatio) / 100);
   // @source cmp eax, ebp / jge 不买
   if (holdingsValue >= target) return 0;
   const want = target - holdingsValue;

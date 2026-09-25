@@ -29,6 +29,7 @@ import { useCard, type UseCardContext } from '../cards/registry.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -239,7 +240,12 @@ describe('★ 电脑回合掷骰前的调度步（aiStep）', () => {
       rngState: 12345,
     });
     const s1 = reduce(ai, { type: 'aiNext' }, { nodes: [] });
-    expect(s1.rngState).toBe(ai.rngState); // 0 → 1 不碰随机
+    // ★★ 审计订正：0 → 1 是买股（0x42bf03），入口 `0x0042bf14 rand()%3` **每回合必掷**一次；
+    //   这里股市没有一支有分 ⇒ 之后不再掷
+    const one = new WatcomRng();
+    one.setState(ai.rngState);
+    one.next();
+    expect(s1.rngState).toBe(one.getState());
     const s2 = reduce(s1, { type: 'aiNext' }, { nodes: [] });
     expect(s2.aiStep).toBe(2);
     expect(s2.rngState).not.toBe(s1.rngState);

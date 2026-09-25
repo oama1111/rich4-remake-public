@@ -63,7 +63,6 @@ import {
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
 import { placementBlockedAt } from '../rules/object-landing.ts';
-import { decideStockSell, decideStockTrade } from './stock-policy.ts';
 import { aiDiceCount } from './dice-policy.ts';
 
 /**
@@ -142,16 +141,17 @@ export function decideAction(ctx: AiContext): Action | null {
   switch (state.phase) {
     case 'turnStart':
       // ★ 回合开始时挂着的还款提醒窗（真人开着窗被托管）先答掉，否则 `startTurn` 被原样退回、卡死
-      if (state.pending?.kind === 'loanReminder') return decidePending(state);
+      if (state.pending?.kind === 'loanReminder') return decidePending(state, map);
       return { type: 'startTurn' };
     case 'awaitingRoll':
       // ★ 掷骰前的顺序照 0x00418dc6：买股 → 卖股 → [特別融資收回 → 公佈欄 → rand&1] → 用卡 | 用道具 → 掷骰
-      //   中括号里三件在 reducer 的 aiAdvance 里做；这里按 aiStep 只答当前那一步
+      //   ★★ 审计（provenance-ai-econ）：买股、卖股两步也挪进 reducer 的 aiAdvance —— 原版这两段
+      //   都要掷全局 `rand()`（买股入口 `0x0042bf14` 每回合必掷），策略层碰不得随机数（C-DET-1）。
+      //   这里在第 0、1 步只发 `aiNext`，由 reducer 按原版买 / 卖；第 2 步起才是策略的活。
       switch (state.aiStep) {
         case 0:
-          return decideStockTrade(state, map) ?? { type: 'aiNext' };
         case 1:
-          return decideStockSell(state, map) ?? { type: 'aiNext' };
+          return { type: 'aiNext' };
         case 2:
           return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
         default:
@@ -172,13 +172,13 @@ export function decideAction(ctx: AiContext): Action | null {
       // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉。
       // ★ 拍賣例外：轮到真人举牌时 core 不替他把竞价「答掉」（那会清空 pending、
       //   把屏顶掉）。返回 null 让表现层收那一手 —— 见下面 awaitingDecision。
-      if (state.pending?.kind === 'auction') return decidePending(state);
-      return decidePending(state) ?? { type: 'endTurn' };
+      if (state.pending?.kind === 'auction') return decidePending(state, map);
+      return decidePending(state, map) ?? { type: 'endTurn' };
 
     case 'awaitingDecision': {
       // ★ 設施那三种（買/首建/加蓋）是 pending 而不是地块决策，先让 decidePending 答；
       //   只有真正的買地/盖房才轮到 decideAtLanding。
-      const answered = decidePending(state);
+      const answered = decidePending(state, map);
       if (answered !== null) return answered;
       const kind = state.pending?.kind;
       // ★ 其余 pending（研究所面板、未实现的场所）**不能**掉进 decideAtLanding
@@ -505,7 +505,7 @@ export function auctionNextBid(
  * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
  *   未实现的场所会以 `unimplemented` 留在 `pending` 里，上层看得见。
  */
-export function decidePending(state: GameState): Action | null {
+export function decidePending(state: GameState, map?: Rich4Map): Action | null {
   const p = state.pending;
   if (p === null) return null;
   // ★ 落点那台 ATM（`landing`，phase = turnEnd）只给**恰好** who_plays == 1 的真人开；走到这里说明他开着窗

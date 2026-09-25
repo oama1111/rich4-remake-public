@@ -310,6 +310,7 @@ import {
   withdraw,
 } from '../places/bank.ts';
 import { autoLoanAmount } from '../ai/personality.ts';
+import { aiStockBuy, aiStockSellPick } from '../ai/stock-policy.ts';
 import {
   LOTTERY_TICKET_PRICE,
   aiBuyTicket,
@@ -2313,29 +2314,11 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'buyStock':
-    case 'sellStock': {
-      let traded = tradeStock(state, action);
-      // ★ 2026-09-23：**电脑**买 / 卖股各弹一扇「%s\n\n買進%s%d張」/「賣出」（1500 ms）——
-      //   `[玩家名, 股名 [股*36+0x496980], 张数]`。真人在股市柜台（`0x0042afc6`）买卖**不弹**。
-      //   @source 买 `0x0042c770 push 0x464186` → `0x0042c78c call 0x440cac`；
-      //           卖 `0x0042d076 push 0x4641cc` → `0x0042d092 call 0x440cac`
-      const trader = state.players[state.currentPlayer];
-      if (traded !== state && trader !== undefined && isAiControlled(trader)) {
-        traded = appendFreshNotice(traded, {
-          key: action.type === 'buyStock' ? 'stock.aiBuy' : 'stock.aiSell',
-          args: [
-            playerName(state, state.currentPlayer),
-            stocksOfMap(state.globalMapId)[action.stock]?.name ?? '',
-            action.shares,
-          ],
-        });
-      }
-      // @source 0x0042d0a2：還款壓力下賣完一支若 現金+存款 仍 < 貸款×1.1，就回头再賣 —— 调度步停在 1
-      const seller = traded.players[state.currentPlayer];
-      const keepSelling =
-        action.type === 'sellStock' && seller !== undefined && loanSellPressure(seller, traded) && loanStillUncovered(seller);
-      return afterAiStep(state, traded, topo, action.type === 'buyStock' ? 1 : keepSelling ? 1 : 2);
-    }
+    case 'sellStock':
+      // ★★ 审计（provenance-ai-econ）：这条 action 只剩**真人**的股市柜台（`0x0042afc6`，不弹框）在用 ——
+      //   电脑的买卖在调度步里由 reducer 按原版跑（`aiStockBuyTurn` / `aiStockSellTurn`，见 `aiAdvance`），
+      //   不再经这里。先前电脑也发这条、在这里补「買進 / 賣出」框与「壓力下回头再卖」，已挪走。
+      return tradeStock(state, action);
 
     case 'aiNext': {
       // @source 0x00418dc6 的顺序：策略层在某一步没事可做就发它把步数推进
@@ -4735,17 +4718,7 @@ function tradeStock(
   if (action.type === 'buyStock' && isLimitUp(stock.openPrice, stock.price)) return state;
   if (action.type === 'sellStock' && isLimitDown(stock.openPrice, stock.price)) return state;
 
-  const commit = (r: TradeResult): GameState => ({
-    ...state,
-    players: state.players.map((p, i) => (i === state.currentPlayer ? r.player : p)),
-    market: {
-      ...state.market,
-      stocks: state.market.stocks.map((s, i) => (i === action.stock ? r.stock : s)),
-    },
-    holdings: state.holdings.map((row, i) =>
-      i === state.currentPlayer ? row.map((h, j) => (j === action.stock ? r.holding : h)) : row,
-    ),
-  });
+  const commit = (r: TradeResult): GameState => commitTrade(state, state.currentPlayer, action.stock, r);
 
   if (action.type === 'buyStock') {
     // 可流通股不够就买不到
@@ -6810,17 +6783,115 @@ function pendingForSpecial(
  */
 function aiAdvance(state: GameState, topo: MapTopology, step: number): GameState {
   let s = state;
+  // @source 0x00418de6 `call 0x42bf03` —— 买股（入口 `rand()%3` 每回合必掷）
+  if (s.aiStep < 1 && step >= 1) s = aiStockBuyTurn(s, topo);
   if (s.aiStep < 2 && step >= 2) {
+    // @source 0x00418df4 `call 0x42c79f` —— 卖股
+    s = aiStockSellTurn(s, topo);
     s = sweepSpecialFinance(s, topo);
     if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
     // ★ 三道随机闸都在 reducer 里掷，AI 策略层不碰随机数（与保釋同一做法）
     s = aiNoticeBoardTurn(s, topo);
+    // @source `0x0042885c push 0 / call 0x436b0a` —— 公佈欄收尾**再收一次**特別融資
+    //   （公佈欄上买下銀行股可能换了董事長 ⇒ 旧董事長欠着的那笔此刻就要收回）
+    s = sweepSpecialFinance(s, topo);
+    if (s.phase !== 'awaitingRoll') return { ...s, aiStep: step };
     const rng = new WatcomRng();
     rng.setState(s.rngState);
     const branch = rng.next() & 1;
     s = { ...s, rngState: rng.getState(), aiBranch: branch };
   }
   return s.aiStep >= step ? s : { ...s, aiStep: step };
+}
+
+/**
+ * 电脑买股 —— `fcn_0042bf03` 的落账那一段（决定在 `ai/stock-policy.ts` 的 `aiStockBuy`）。
+ *
+ * @source `0x0042c72d call 0x428d2a(玩家, 股, 股数, 1)`（柜台买：扣存款、减流通量与可成交量、重算均价、
+ *   `0x428e14 call 0x4294d5` 重排企業名次）→ `0x0042c736 call 0x41d433`（重画侧栏）→
+ *   `0x0042c770 push 0x464186`「%s\n\n買進%s%d張」→ `0x0042c78c call 0x440cac`（1500 ms）。
+ *   ★ 原版这一路**没有**柜台那几道检查（流通量 / 存款够不够）—— 直接落账。
+ */
+function aiStockBuyTurn(state: GameState, topo: MapTopology): GameState {
+  const idx = state.currentPlayer;
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const t = aiStockBuy(state, topo, () => rng.next());
+  const rolled: GameState = { ...state, rngState: rng.getState() };
+  if (t === null) return rolled;
+  const me = rolled.players[idx];
+  const held = rolled.holdings[idx]?.[t.stock];
+  const stock = rolled.market.stocks[t.stock];
+  if (me === undefined || held === undefined || stock === undefined) return rolled;
+  const bought = reownCommercial(commitTrade(rolled, idx, t.stock, buyStock(me, held, stock, t.shares, 'market')), t.stock, idx);
+  return appendFreshNotice(bought, {
+    key: 'stock.aiBuy',
+    args: [playerName(rolled, idx), stocksOfMap(rolled.globalMapId)[t.stock]?.name ?? '', t.shares],
+  });
+}
+
+/**
+ * 电脑卖股 —— `fcn_0042c79f` 整段（打分在 `ai/stock-policy.ts` 的 `aiStockSellPick`）。
+ *
+ * @source VA 0x0042c79f：
+ * ```asm
+ * 0042c7ca  壓力 = 距還款日 <= 6 && 現金+存款 < 貸款         ; [esp+0xd0]，整趟只算这一次
+ * 0042c802  没壓力：rand()%3 != 0 ⇒ 返回                     ; ★ 有壓力**不掷**
+ * 0042c81b  call 0x428d01 / cmp eax,1 / je 返回              ; 休市不卖
+ * 0042c829  打分挑一支（分最高且 > 0）
+ * 0042d033  call 0x428e23(玩家, 股, 全部持股, 1)             ; 卖进存款、重排企業名次
+ * 0042d076  push 0x4641cc「%s\n\n賣出%s%d張」/ 0x0042d092 call 0x440cac
+ * 0042d0a2  壓力 && 挑到了 && 貸款×1.1 > 現金+存款 ⇒ jmp 0x42c829   ; ★ 回头再挑一支（旗不重算）
+ * ```
+ * ★★ 审计订正：先前「回头再卖」时每一步重算壓力（`現金+存款 < 貸款`），卖到 貸款 ≤ 現金+存款 < 貸款×1.1
+ *   这一段就停了、打分也少了壓力那 +1 / ×2；原版旗是入口那一份，要一直卖到盖住 貸款×1.1。
+ */
+function aiStockSellTurn(state: GameState, topo: MapTopology): GameState {
+  const idx = state.currentPlayer;
+  const me = state.players[idx];
+  if (me === undefined) return state;
+  const pressure = loanSellPressure(me, state);
+  let s = state;
+  if (!pressure) {
+    const rng = new WatcomRng();
+    rng.setState(state.rngState);
+    const gate = rng.next() % 3;
+    s = { ...state, rngState: rng.getState() };
+    if (gate !== 0) return s;
+  }
+  if (!marketOpenOn(s.globalMapId, s.year, s.month, s.day, s.market.closedDays)) return s;
+  for (let guard = 0; guard < 12; guard++) {
+    const t = aiStockSellPick(s, topo, pressure);
+    if (t === null) break;
+    const p = s.players[idx]!;
+    const held = s.holdings[idx]?.[t.stock];
+    const stock = s.market.stocks[t.stock];
+    if (held === undefined || stock === undefined) break;
+    s = reownCommercial(commitTrade(s, idx, t.stock, sellStock(p, held, stock, t.shares, 'bank')), t.stock, idx);
+    s = appendFreshNotice(s, {
+      key: 'stock.aiSell',
+      args: [playerName(s, idx), stocksOfMap(s.globalMapId)[t.stock]?.name ?? '', t.shares],
+    });
+    if (!pressure) break;
+    // @source 0x0042d0de：`fild 現金+存款 / fild 貸款 / fmul 1.1 / fcompp / ja 0x42c829`
+    if (!loanStillUncovered(s.players[idx]!)) break;
+  }
+  return s;
+}
+
+/** 一笔股票买卖落账（`tradeStock` 与电脑买卖共用） */
+function commitTrade(state: GameState, player: number, stockIndex: number, r: TradeResult): GameState {
+  return {
+    ...state,
+    players: state.players.map((p, i) => (i === player ? r.player : p)),
+    market: {
+      ...state.market,
+      stocks: state.market.stocks.map((x, i) => (i === stockIndex ? r.stock : x)),
+    },
+    holdings: state.holdings.map((row, i) =>
+      i === player ? row.map((h, j) => (j === stockIndex ? r.holding : h)) : row,
+    ),
+  };
 }
 
 /** 电脑在 awaitingRoll 做完某一步后把调度步推到 `step`；真人或没生效的 action 原样返回 */

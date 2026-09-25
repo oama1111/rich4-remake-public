@@ -53,15 +53,17 @@
  * 然后 `qsort` 按分降序（0x0042bed0），从头扫：0 分跳过；第 i 名以 `rand()%24 <= 12−i`
  * 的概率被选中（0x0042c690），第一个中的就买：股数 = trunc(可投 / 現價)，不超过可成交量。
  *
- * ⚠️ 两处替身（D-004 / D-006）：`rand()%24` 用 `aiRoll`；Watcom 的 qsort 不稳定，
- *   同分的先后不可知，本引擎按下标升序。
+ * ★★ 审计（provenance-ai-econ）：买卖两段都改由 **reducer** 在调度步里跑（`aiStockBuy` /
+ *   `aiStockSellPick`，见 `state/reduce.ts` 的 `aiAdvance`），随机数走**全局** Watcom 流、
+ *   与原版同序同次数：买股入口 `rand()%3`（**每个电脑回合必掷**）、排名里逐名 `rand()%24`、
+ *   卖股（没壓力时）`rand()%3`。先前策略层用 `aiRoll` 派生替身（D-004），全局流一次都不推进；
+ *   `qsort` 也已按原版 Watcom 算法逐条移植（`rules/watcom-qsort.ts`，D-006 撤）。
  */
 
-import type { Action } from '../state/actions.ts';
 import type { GameState } from '../state/types.ts';
 import type { MapTopology } from '../state/reduce.ts';
 import { stockBudget } from './personality.ts';
-import { aiRoll } from './card-policy.ts';
+import { watcomQsort } from '../rules/watcom-qsort.ts';
 import { dayNumberSince1998 } from '../places/calendar.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
 import { isLimitDown, isLimitUp, loanSellPressure, marketOpenOn } from '../places/stock-market.ts';
@@ -294,18 +296,23 @@ export function stockScoreInput(
   };
 }
 
-/** 十二支的分，按分降序、同分下标升序（D-006）@source qsort + 0x0042bed0 */
+/**
+ * 十二支的分按原版 `qsort` 排名 @source `0x0042c64e call 0x457e6c(表, 12, 4, 0x42bed0)`。
+ *
+ * 表是 12 个 dword：低字 = 分、高字 = 股票下标（`0x0042c56d or [..], 股<<16`）；比较器 `0x42bed0`
+ * 比**低字**（`movsx`，有符号），大者在前。Watcom 的 `qsort` 不稳定 —— 同分谁先由算法定，
+ * 故用逐条移植的 `watcomQsort`（4 字节元素 ⇒ 枢轴拷贝那一型；n = 12 < 16 只走两趟插入）。
+ */
 export function rankStocks(scores: readonly number[]): { stock: number; score: number }[] {
-  return scores
-    .map((score, stock) => ({ stock, score }))
-    .sort((a, b) => b.score - a.score || a.stock - b.stock);
+  const recs = scores.map((score, stock) => ({ stock, score }));
+  return watcomQsort(recs, (a, b) => (a.score > b.score ? -1 : a.score < b.score ? 1 : 0), false);
 }
 
 /**
  * 从排名里挑一支 @source 0x0042c656..0x0042c6c1：
- * 0 分跳过；第 i 名（0 起）当 `rand()%24 <= 12 − i` 时选中，否则看下一名。
+ * 0 分跳过（**不掷**）；第 i 名（0 起）掷一次 `rand()%24`，`<= 12 − i` 就选中，否则看下一名。
  *
- * @param roll 第 i 次那个 `rand()%24` 的替身（D-004）
+ * @param roll 第 i 名那次 `rand()%24`（reducer 传全局流）
  */
 export function pickRanked(
   ranked: readonly { stock: number; score: number }[],
@@ -320,58 +327,58 @@ export function pickRanked(
   return -1;
 }
 
+/** 原版 `rand()` 的来源（reducer 传 `WatcomRng.next`） */
+export type RandSource = () => number;
+
+/** 电脑这一趟买 / 卖哪支、几股 */
+export interface AiStockTrade {
+  stock: number;
+  shares: number;
+}
+
 /**
- * AI 这一步要不要买股票；不买返回 `null`。
+ * 电脑买股 —— `fcn_0042bf03(玩家)` 整段（reducer 在调度步 0 → 1 时调）。
+ *
+ * ★ 随机数与原版同序同次数（全局流）：
+ *   1. `0x0042bf14 call rand / idiv 3 / test edx,edx / jne 返回` —— **每个电脑回合必掷**，
+ *      三分之二的回合到此为止；
+ *   2. 排名里每个非 0 分的名次各掷一次 `rand()%24`（`0x0042c690`），选中即停。
+ * ★ 买本身是 `0x0042c72d call 0x428d2a(玩家, 股, 股数, 1)` —— **没有**柜台那几道检查
+ *   （流通量 / 存款够不够），调用方直接落账。
  */
-export function decideStockTrade(state: GameState, topo?: MapTopology): Action | null {
+export function aiStockBuy(state: GameState, topo: MapTopology, rand: RandSource): AiStockTrade | null {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
-
-  // ★★ @source 0x0042bf14：`call rand / idiv 3 / test edx,edx / jne 返回`
-  //   —— **三分之二的回合根本不看股市**。2026-09-19 补（§7.140，通道 2
-  //   `test_stock_daily_bf03.py`）：此前 `decideStockTrade` 从 `0x42bf30` 起，
-  //   **漏了这道闸** ⇒ 复刻 AI 看股市的频率约为原版的 **3 倍**。
-  //   （卖股侧 `decideStockSell` 早有对应实现 `aiRoll(state, 0x42c802, 3)`；这里同型。
-  //   `aiRoll` 是 D-004 的确定性替身，只保证"三分之一通过"这个分布。）
-  if (aiRoll(state, 0x42bf14, 3) !== 0) return null;
-
-  // @source 闸一
+  // @source 0x0042bf14：rand()%3 != 0 ⇒ 返回（先于三道闸）
+  if (rand() % 3 !== 0) return null;
+  // @source 闸一 0x0042bf30 `cmp byte [player+0x1a], 0 / je`
   if (me.stockRatio === 0) return null;
-  // @source 闸二：`call 0x428d01 / cmp eax, 1 / je 结束` —— 休市不进场
-  //   ★ 这个判据里含 `[0x4990dc] != 0`（全股市暂停，新聞 26）⇒ 必须把 `closedDays` 传进去，
-  //     否则 AI 会在休市日一直发 `buyStock`，而 reducer 那边一律拒绝 ⇒ **死锁**
-  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays)) {
-    return null;
-  }
-  // @source 闸三
-  if (me.loanDueDate !== 0 && daysUntil(state, me.loanDueDate) < STOCK_LOAN_DUE_GUARD_DAYS) {
-    return null;
-  }
+  // @source 闸二 `call 0x428d01 / cmp eax, 1 / je 结束` —— 休市（含新聞 26 的全股市暂停）不进场
+  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays)) return null;
+  // @source 闸三 0x0042bf65 `cmp eax, 0xf / jl`
+  if (me.loanDueDate !== 0 && daysUntil(state, me.loanDueDate) < STOCK_LOAN_DUE_GUARD_DAYS) return null;
 
   const owned = holdingsValue(state, state.currentPlayer);
+  // 预算 ≤ 0 只在存款 ≤ 0 时出现 —— 那时两条存款闸让十二支全 0 分、`rand()%24` 一次也不掷，与这里直接返回同效
   const budget = stockBudget(owned, me.cash, me.moneyInBank, me.stockRatio);
   if (budget <= 0) return null;
 
   const scores = state.market.stocks.map((_, j) => {
-    const input = stockScoreInput(state, topo ?? { nodes: [] }, j, state.currentPlayer);
+    const input = stockScoreInput(state, topo, j, state.currentPlayer);
     return input === null ? 0 : scoreStock(input, me.moneyInBank, state.priceIndex, state.totalMonths, state.currentPlayer);
   });
-  const pick = pickRanked(rankStocks(scores), (i) => aiRoll(state, 0x42c690 + i, 24));
+  const pick = pickRanked(rankStocks(scores), () => rand() % 24);
   if (pick === -1) return null;
 
   const stock = state.market.stocks[pick]!;
-  // @source 0x0042c6e2 `fild 可投 / fdiv 現價` → 0x0042c6ef `call 0x457dbc`
-  //   （`__round_toward_zero`：**向零截断**，不是 Math.round）；
-  //   0x0042c716：不超过可成交量
+  // @source 0x0042c6e2 `fild 可投 / fdiv 現價` → 0x0042c6ef `call 0x457dbc`（向零截断）
   let shares = truncTowardZero(budget / stock.price);
+  // @source 0x0042c702 `test edx, edx / je 返回`
   if (shares === 0) return null;
+  // @source 0x0042c716 `cmp 可成交量, 股数 / jge` —— 不超过当日可成交量
   if (stock.f10 < shares) shares = stock.f10;
-  // 柜台还要求 trunc(股数 × 現價) <= 存款；可投已封顶在存款上，这里只防浮点边角
-  while (shares > 0 && Math.trunc(shares * stock.price) > me.moneyInBank) shares--;
-  if (shares <= 0) return null;
-  return { type: 'buyStock', stock: pick, shares };
+  return { stock: pick, shares };
 }
-
 
 // ============================================================
 //  賣股 @source 0x0042c79f..0x0042d0ee
@@ -385,7 +392,7 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
  * 0042cf7c  逐支（我持股 > 0、没停牌、没跌停）打分，取分最高且 > 0 的一支，**全部賣出**
  * 0042d0a2  壓力下：現金+存款 < 貸款×1.1 就回头再賣一支（本引擎：aiStep 停在 1，下一帧再来）
  *
- * ── 有企業（0x42c872）──  ratio = 我持股 / 全體持股；S = 月均盈餘；A = 資產額/10000；day = 今日
+ * ── 有企業（0x42c872）──  ratio = 全體持股 / 我持股（★ 见下）；S = 月均盈餘；A = 資產額/10000；day = 今日
  * 0042c8fa  盈餘(+0x28) <= −10000×物價 && ratio > 0.6 && 10 < day < 15         → +3
  * 0042c941  盈餘 <= −6000×物價 && 現價 > 成本×1.2 && 董事長≠我 && 8 < day < 15  → +2
  * 0042c9b8  S <= 10000×物價 && A×2 <= 現價 && 現價 > 成本×1.3 && ratio < 0.4   → +1
@@ -395,7 +402,7 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
  * 0042cba7  壓力                                                           → +1
  *
  * ── 無企業（0x42cbc1）──  gain = 現價/成本；minHist = 144 日里最低的非 0 收盘
- * 0042cd59  gain > 1.6 && 波动系数 < 1.0                                   → +2
+ * 0042cd59  gain > 1.6 && 趋势(+0x1c) < 1.0                                  → +2
  * 0042cd8e  現價 > minHist×8 && minHist×8 > 成本×1.25                        → +2
  * 0042cde4  avg24 > avg6 && 現價 < 開盤                                     → +2
  * 0042ce19  gain >= +2.0                                                   → +trunc(2·(gain−2)+1)
@@ -403,6 +410,14 @@ export function decideStockTrade(state: GameState, topo?: MapTopology): Action |
  * 0042cec9  現金+存款 < 16000×物價 && gain > 0                              → +trunc(2·gain + 1)
  * 0042cf33  壓力                                                           → 分 ×2
  * ```
+ *
+ * ★★ 审计订正（provenance-ai-econ）两处：
+ *   1. **ratio 是「全體 ÷ 我」不是「我 ÷ 全體」**：`0x0042c8ad fild [我持股]` 先入栈、`0x0042c8c2 fild 全體`
+ *      后入栈，`0x0042c8c9 fdivrp st(1)`（`DE F1`：ST(1) ← ST(0) ÷ ST(1)）⇒ 全體 ÷ 我 —— 与 `0x428e02`
+ *      算均价（同一条 `DE F1`、同样先成本后股数入栈 ⇒ 成本 ÷ 股数）同形。于是 ratio ≥ 1：
+ *      「ratio > 0.6」恒成立、「ratio < 0.4」恒不成立（原版如此，照抄）。先前写反了。
+ *   2. **無企業那条 +2 看的是趋势 `+0x1c`**（`0x0042cd72 cmp dword [股*36 + 0x49699c], 0x3f800000 / jge`，
+ *      与买股 `0x42c4bb` 同一个字段），不是波动系数 `+0x18`。先前用了 `volatility`。
  *
  * ★ `0x0042ce20` 的判据阈值是 **+2.0**（`0x4641f4`），`−2.0`（`0x4641f8`）是
  *   紧接着 `fadd` 的**偏移量**、不是阈值。旧代码把这两个常量读反，写成
@@ -510,7 +525,8 @@ export function scoreStockForSale(
     const c = s.company;
     const monthly = totalMonths !== 0 ? Math.trunc(c.profit / totalMonths) : c.profit;
     const asset = Math.trunc(c.assetValue / 10000);
-    const ratio = s.totalHold === 0 ? 0 : Math.fround(s.myHolding / s.totalHold);
+    // @source 0x0042c8c9 `fdivrp st(1)`（DE F1）⇒ 全體 ÷ 我，`fstp dword` 存 f32（myHolding > 0 已由入口保证）
+    const ratio = Math.fround(s.totalHold / s.myHolding);
     const mine = c.chairman === meIndex + 1;
     if (c.funds <= -10000 * priceIndex && ratio > SELL_RATIO.redRatio && dayOfMonth > 10 && dayOfMonth < 15) score += 3;
     if (c.funds <= -6000 * priceIndex && price > cost * SELL_RATIO.gainA && !mine && dayOfMonth > 8 && dayOfMonth < 15) score += 2;
@@ -524,7 +540,8 @@ export function scoreStockForSale(
 
   const gain = cost === 0 ? 0 : Math.fround(price / cost);
   const min8 = Math.fround(s.minHist * SELL_RATIO.minHistMultiple);
-  if (gain > SELL_RATIO.bigGain && s.volatility < 1.0) score += 2;
+  // @source 0x0042cd72 `cmp dword [股*36 + 0x49699c], 0x3f800000 / jge` —— 趋势 +0x1c（整数比位型 ≡ 浮点 < 1.0）
+  if (gain > SELL_RATIO.bigGain && s.trend < 1.0) score += 2;
   if (price > min8 && min8 > cost * SELL_RATIO.minHistCost) score += 2;
   if (s.avg24 > s.avg6 && price < s.openPrice) score += 2;
   // 三段都收在 `(x + 偏移)/0.5 + 1` 再 `call 0x457dbc`；÷0.5 就是 ×2（精确，
@@ -556,19 +573,15 @@ export function pickForSale(scores: readonly number[]): number {
 }
 
 /**
- * 電腦這一步賣不賣、賣哪支；不賣返回 `null`。賣就是**全部持股**。
- * 調度里是第 1 步（`aiStep === 1`），壓力下 reducer 会让它停在第 1 步再来一次。
+ * 卖股那一轮打分挑哪支 —— `0x0042cf7c` 的十二支循环（逐支打分、取分最高且 > 0 的一支，**全部卖出**）。
+ * 返回 null = 没有可卖的。随机闸与「壓力下回头再卖」的循环在 reducer（`aiStockSellTurn`）里。
+ *
+ * @param mustSell 进入 `0x42c79f` 时算好的壓力旗（`[esp+0xd0]`）—— ★ 整趟**不重算**：
+ *   回头再卖（`0x0042d0de ja 0x42c829`）跳回的是打分循环，旗还是入口那一份。
  */
-export function decideStockSell(state: GameState, topo: MapTopology): Action | null {
+export function aiStockSellPick(state: GameState, topo: MapTopology, mustSell: boolean): AiStockTrade | null {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return null;
-  const mustSell = loanSellPressure(me, state);
-  // @source 0x0042c802：没壓力时三分之二的回合根本不看
-  if (!mustSell && aiRoll(state, 0x42c802, 3) !== 0) return null;
-  // 同 `decideStockTrade`：休市（含新聞 26 的全股市暂停）不卖
-  if (!marketOpenOn(state.globalMapId, state.year, state.month, state.day, state.market.closedDays)) {
-    return null;
-  }
   const scores = state.market.stocks.map((_, j) => {
     const input = sellScoreInput(state, topo, j, state.currentPlayer);
     return input === null
@@ -579,5 +592,5 @@ export function decideStockSell(state: GameState, topo: MapTopology): Action | n
   if (pick === -1) return null;
   const shares = state.holdings[state.currentPlayer]?.[pick]?.amount ?? 0;
   if (shares <= 0) return null;
-  return { type: 'sellStock', stock: pick, shares };
+  return { stock: pick, shares };
 }
