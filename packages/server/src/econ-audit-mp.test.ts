@@ -27,6 +27,7 @@ import {
   type MapTopology,
   type Rich4Map,
   type SeatInfo,
+  aiShopVisit,
 } from '@rich4/core';
 import { Room } from './room.ts';
 
@@ -185,6 +186,64 @@ describe('★ econ 审计：收费敌意 / 真人全出局收局 —— 联机�
     submit({ type: 'shop', op: 'buyTool', id: item.id });
     expect(room.state.companyFunds[cid]).toBe(before + item.price * 10);
     expect(mirror.companyFunds).toEqual(room.state.companyFunds);
+  });
+
+  run('★★ 电脑 3 号踩百貨格 ⇒ 同一趟營業額也进企業帳（0x42f24f jge 0x42ed50 → 0x42ed75）；旁观端一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const store = map.nodes.find((n) => n.type > 0x1770 && n.type < 0x1f40 && n.specialKind !== 0)!;
+    const cid = store.type - 0x1770;
+    const s0 = scene(map, 'multiplayer', 3, 0, 500_000);
+    const state: GameState = {
+      ...s0,
+      // 电脑那一支在 `settle` 里当场买完就走（不挂 pending），
+      // 营业额 = Σ 每次买卖函数的返回值（买 10×價 / 卖標價）
+      players: s0.players.map((p, i) => (i === 3 ? { ...p, nodeId: store.id, points: 1000, whoPlays: 2 } : p)),
+    };
+    const room = roomFrom(map, state);
+    let mirror = state;
+    const before = state.companyFunds[cid] ?? 0;
+    const beforeProfit = state.companyProfit[cid] ?? 0;
+    const submit = (action: Action) => {
+      const r = room.submit(3, action);
+      expect(r.ok).toBe(true);
+      if (r.ok) mirror = reduce(mirror, r.broadcast.action, topo);
+      expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    };
+    submit({ type: 'settle' });
+    // 电脑那一支不挂商店交互（`0x0042ea2b cmp [+0x15],1 / jne 0x42ed8d`）
+    expect(room.state.pending).toBeNull();
+    // 真的买了东西：點券变少（否则这条用例可能空转）
+    expect(room.state.players[3]!.points).toBeLessThan(1000);
+    const visit = aiShopVisit({
+      player: state.players[3]!,
+      tools: state.tools,
+      toolStock: state.toolStock,
+      cardAmount: state.cardAmount,
+    });
+    expect(visit.revenue).toBeGreaterThan(0);
+    expect(room.state.companyFunds[cid]).toBe(before + visit.revenue);
+    expect(room.state.companyProfit[cid]).toBe(beforeProfit + visit.revenue);
+    expect(mirror.companyFunds).toEqual(room.state.companyFunds);
+    expect(mirror.companyProfit).toEqual(room.state.companyProfit);
+    // 单机同一局面：同一个 reducer ⇒ 同一笔
+    const single = reduce(state, { type: 'settle' }, topo);
+    expect(single.companyFunds[cid]).toBe(before + visit.revenue);
+  });
+
+  run('★ 电脑踩的不是百貨格 ⇒ 企業帳一分不动（格值不在 0x1770..0x1f40 内，0x0042ed57 jle）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = scene(map, 'multiplayer', 3, 0, 500_000);
+    const room = roomFrom(map, s0);
+    const beforeFunds = [...s0.companyFunds];
+    const beforeProfit = [...s0.companyProfit];
+    const r = room.submit(3, { type: 'settle' });
+    expect(r.ok).toBe(true);
+    expect(room.state.companyFunds).toEqual(beforeFunds);
+    expect(room.state.companyProfit).toEqual(beforeProfit);
+    const single = reduce(s0, { type: 'settle' }, topo);
+    expect(single.companyFunds).toEqual(beforeFunds);
   });
 
   run('真人 0 号关股市屏 ⇒ 欠着特別融資的非董事長当场还清（0x0042ba88）；服务器与旁观端一致', () => {

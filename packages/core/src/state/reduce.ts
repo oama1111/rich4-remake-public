@@ -8382,7 +8382,11 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
       toolStock: next.toolStock,
       cardAmount: next.cardAmount,
     });
-    return {
+    // ★★ L48（2026-09-25 审计）：电脑 / 托管那一支**也**把这一趟营业额记进企業帳 ——
+    //   原版两支在离店时汇合到同一段（`0x0042f24f cmp eax,6 / jge 0x42ed50`），
+    //   `ebp` = 这一趟累计额，`0x42ed75/0x42ed7e` 加进 `[企業+0x28] / [+0x2c]`。
+    //   真人那一支见 `shopAction` 的 `commit(..., revenue)`（同一个 `shopRevenueTo`）。
+    const shopped: GameState = {
       ...next,
       players: next.players.map((p, i) => (i === me ? visit.player : p)),
       tools: visit.tools,
@@ -8396,6 +8400,7 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
             lastShopGift: { kind: gift.kind, id: gift.id, points: gift.points },
           }),
     };
+    return shopRevenueTo(shopped, topo, visit.revenue);
   }
 
   // ② ③ 货架
@@ -8468,15 +8473,21 @@ function poolDelta(cardAmount: readonly number[], cardId: number, delta: number)
 }
 
 /**
- * ★ 2026-09-24 审计补（ai-econ 审计转来）：百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。
+ * 百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。**真人 / 电脑两支共用**。
  *
  * @source 真人那一支每一笔都把返回值累加进 `[0x48c343]`（进店 `0x0042d441` 清零）：
  *   买卡 `0x0042e214`（`0x42d237` 返回 **標價 × 10**，`0x0042d267..0x0042d26e`）、
  *   买道具 `0x0042e498`（`0x42d272` 同一尾巴，× 10）、卖卡 `0x0042e0c5`（`0x42d145` 返回 **標價**）、
  *   卖道具 `0x0042e126`（`0x42d1b2` 返回 **標價 × 个数**）；关窗 `0x0042e8b2 call 0x401966([0x48c343])` 交回，
  *   `0x0042ed0d mov ebp, eax` → 节点格值在 (0x1770, 0x1f40) 之间（百貨格的格值 = 百貨企業的实体码）⇒
- *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。电脑那一支（`0x0042ed8d` 起）不记。
- *   窗是模态的、期间没人读盈餘 ⇒ 这里每成交一笔就加一笔，与关窗时一次加总等价。
+ *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。
+ *   ★ 2026-09-25 审计订正：**电脑那一支也记**——它把同一趟的累计额留在 `ebp`
+ *   （买卡 `0x0042f143` / 买道具 `0x0042f1bc` / `0x0042f222` / `0x0042f2df`、卖卡/卖道具各处 `add ebp,eax`），
+ *   循环走完 `0x0042f23d..0x0042f24f cmp eax,6 / jge 0x42ed50` **跳进真人支的同一段收尾**。
+ *   电脑那一支的每笔金额由 `places/ai-shop.ts` 的 `revenue` 交上来（同一组返回值）。
+ *
+ *   真人那扇窗是模态的、期间没人读盈餘 ⇒ 真人支每成交一笔就加一笔，与关窗时一次加总等价；
+ *   电脑那一支本来就是离店时一次性记。
  */
 function shopRevenueTo(state: GameState, topo: MapTopology, amount: number): GameState {
   const me = state.players[state.currentPlayer];
