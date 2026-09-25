@@ -30,6 +30,7 @@
  * 让它落地之后还是朝着原来那个大方向走（见 `pickFacingAt`）。
  */
 
+import { syncEscortNodes } from './object-landing.ts';
 import type { GameState } from '../state/types.ts';
 import type { MapNode } from '../loaders/map.ts';
 import { placeOnNode } from './position.ts';
@@ -216,12 +217,11 @@ export function teleportPlayer(
   if (p.nodeId === targetNodeId) return null;
   const facing = pickFacingAt(nodes, targetNodeId, p.direction);
   if (facing === null) return null;
+  const moved = placeOnNode({ ...p, lastNodeId: facing.from, direction: facing.direction }, node);
   return {
     ...state,
-    players: state.players.map((x, i) =>
-      i === playerIndex
-        ? placeOnNode({ ...x, lastNodeId: facing.from, direction: facing.direction }, node)
-        : x,
-    ),
+    players: state.players.map((x, i) => (i === playerIndex ? moved : x)),
+    // ★ 身上的神明 / 炸彈跟着搬（`0x00447844 call 0x40fc00`）
+    objects: syncEscortNodes(state.objects, moved),
   };
 }

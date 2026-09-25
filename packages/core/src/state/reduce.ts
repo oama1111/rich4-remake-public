@@ -171,6 +171,8 @@ import type { CardTarget } from '../cards/target.ts';
 import { applyHostilityDeltas, breakAlliance, updateHostility } from '../rules/hostility.ts';
 import {
   objectNodeCandidates,
+  occupantsOfNode,
+  syncEscortNodes,
   runtimeOccupiedNodes,
   placementBlockedAt,
   pickObjectNodeDistant,
@@ -1820,8 +1822,13 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         }
       });
       const remaining = state.stepsRemaining - 1;
+      // ★ 身上的神明 / 定時炸彈每走一格都跟着换格（`0x0040c1be mov [p+0x0c], di` → `0x0040c1cc call 0x40fc00`）——
+      //   先前只在关押时同步，神明离场时搭档的「离原地 ≥ 300」参照点就停在附身那一格
+      const walker = moved.players[state.currentPlayer];
+      const objects = walker === undefined ? moved.objects : syncEscortNodes(moved.objects, walker);
       return applyArrival({
         ...moved,
+        objects,
         rngState: rng.getState(),
         stepsRemaining: remaining,
         phase: remaining > 0 ? 'moving' : 'settling',
@@ -3405,9 +3412,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     handle,
     landId: land === null ? 0 : land.id,
     stepsRemaining: afterAlms.stepsRemaining,
-    othersHere: afterAlms.players
-      .filter((p) => p.index !== me.index && isAlive(p) && p.nodeId === me.nodeId)
-      .map((p) => p.index),
+    // ★ 节点占位位（被关着的人不算、乞丐算），传不传再由 `passBomb` 看 who_plays / 已有炸彈
+    othersHere: occupantsOfNode(afterAlms.players, me.nodeId, me.index),
     randValue,
   });
 
@@ -3446,6 +3452,11 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
   if (r.stopMovement) {
     next = { ...next, stepsRemaining: 0, phase: 'settling' };
   }
+
+  // ★ 离场物件的搭档**当场**另找地方登场 —— `release_object` 内部就挑格（`0x0040e28c → 0x40aa6c`），
+  //   在送醫院（惡犬 `0x0041b8ef` / 炸彈 `0x0041b775`）**之前**：那一刻玩家还占着这一格。
+  //   先前搭档在住院之后才挑，人已被搬走，这一格多成了一个空位候选。
+  next = respawnPartner(next, topo, r.respawn);
 
   // 炸彈把脚下的建筑降一级 —— `0x40ab4a(node.type, 0)`（mode 0，**不记敌意**）：
   // ```asm
@@ -3519,10 +3530,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
     );
   }
 
-  // 神明离场后，搭档换上来
-  const withPartner = respawnPartner(next, topo, r.respawn);
   // ★ 神明**附身那一刻**的發威（跳表 `ref_0040ea9b`，见 rules/god-power.ts）
-  return applyGodPowerOnAttach(state, withPartner, topo);
+  return applyGodPowerOnAttach(state, next, topo);
 }
 
 /**
@@ -3594,10 +3603,14 @@ function applyGodPower(
         players = r.players;
         pool = r.pool;
         out = { ...out, players, pool };
-        // @source 每次 `pay_money` 内部就地破产；随后 `cmp [0x46caf8],0 / jne 跳出`
+        // @source 每次 `pay_money` 内部就地破产；循环**只在分出胜负时**跳出
+        //   （`0x0040ec7b cmp byte [0x46caf8], 0 / jne 0x40eca4`）——一个人被收破产，后面的人照收。
+        //   先前第一个破产就 `break`，后面的对手一分不付。
         if (r.bankrupted) {
           out = applyBankruptcy(out, i, topo);
-          break;
+          players = out.players;
+          pool = out.pool;
+          if (out.phase === 'gameOver') break;
         }
       }
       return out;

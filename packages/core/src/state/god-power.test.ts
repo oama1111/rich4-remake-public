@@ -146,6 +146,15 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(after.players[0]!.cash).toBe(100_000 + amount * 3);
   });
 
+  run('★★ 小財神：前面的对手被收破产，**后面的照收**（循环只在分出胜负时跳出，0x0040ec7b）', () => {
+    const { state } = fresh();
+    const players = rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p));
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players });
+    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    expect(after.players[1]!.whoPlays).toBe(0); // 1 号付不起 ⇒ 破产
+    for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 照付`).toBe(100_000 - amount);
+  });
+
   run('★ 大財神：附身者進帳（現金），三位數 @source 0x0040ed4c', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
     const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
