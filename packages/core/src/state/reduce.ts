@@ -71,7 +71,7 @@ import type {
   LandscapeInfo,
 } from '../loaders/map.ts';
 import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
-import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
+import { collectRent, LAND_TOLL_FEE_NAME, rentHostility } from '../rules/rent.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
   aiScapegoat,
@@ -2067,6 +2067,22 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           const tollLandsHint = preview.counted.length > 1 ? preview.counted : null;
           let pre: GameState = { ...state, lastTollLands: tollLandsHint };
           for (const n of notices) pre = appendFreshNotice(pre, n);
+          // ★ 2026-09-24 审计：神明把金额抹成 0 ⇒ 当场收尾 —— @source `0x00419d7c test eax, eax /
+          //   0x00419d7e je 0x41b077`：敌意、被动卡、死神、付钱、`[land+0x2c]` 一概不走
+          //   （先前落进 `finishToll` 的 `toll === 0` 支，把「上次过路费」改写成 0）。
+          if (preview.total === 0) return { ...pre, phase: 'turnEnd' };
+          // ★ 2026-09-24 审计补：付钱之前先记敌意（`0x00419db1` / `0x00419df3 call 0x40df69`），见 `rentHostility`
+          pre = {
+            ...pre,
+            players: rentHostility(
+              pre.players,
+              state.currentPlayer,
+              land.owner - 1,
+              landlord.alliedPlayer,
+              preview.total,
+              preview.allyToll,
+            ),
+          };
           // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償 → 付钱（`runTollTail`）
           return runTollTail(pre, topo, {
             route: { path: 'rent', landId: land.id },
@@ -7683,21 +7699,15 @@ function insurancePayoutMoney(state: GameState, topo: MapTopology, index: number
  * 住店／坐牢／住院的「意外損失」= 2000 × 天 × 物價，保險期内由保險公司赔
  * @source `0x0040d402` / `0x0043d72c` / `0x0043edd9`
  *
- * ⚠️ **旅館这一支的原版天数字段是一处未初始化读**（2026-09-18 查清，见
- *   `rich4-spec/docs/systems/game-loop.md` §四之二末）：
+ * ★ 2026-09-24 审计订正：旅館这一支取的**就是住宿天数**，不是未初始化读。
  * ```asm
- * 0041a807  mov  edx, dword ptr [esp + 0xd4]   ; ★ 旅館路径上此槽**没有写点**
- * …2000×edx×物價…  0041a82d  call 0x44ba63    ; 保险理赔
+ * 0041a805  push 0                              ; ★ 先压一个参数 ⇒ esp −4
+ * 0041a807  mov  edx, dword ptr [esp + 0xd4]   ; = 压栈之前的 [esp + 0xd0] = 天数（0x41a460 写入）
+ * …2000×edx×物價…  0041a82d  call 0x44ba63(edi, 值, 0)   ; 保险理赔
  * ```
- *   `sub_0041982d`（落点分派器，帧 `sub esp,0xf8`）里 `[esp+0xd4]` 全函数只有
- *   **6 个写点**（`0x41a503` 加油站交通倍率 / `0x41aa09`、`0x41aa85`、`0x41ac47`、
- *   `0x41acb1`、`0x41ad1a` 各公司支线），**都不在旅館路径上**；而同一路径的
- *   住宿天数明明在 `[esp+0xd0]`（`0x41a460` 写入，`0x41a7e8`/`0x41a838` 都在读它）。
- *   ⇒ 原版索赔金额取的是一个**残留/未初始化的栈槽**。
- *
- *   **复刻的处置（有意偏离）**：沿用 `[esp+0xd0]` 的天数（= 转盘值），即
- *   「住几天就赔几天」。理由是原版那一格取不到确定值，逐位对齐无意义。
- *   登记在 `docs/gaps/README.md` §7.56。
+ *   先前（2026-09-18，`docs/gaps/README.md` §7.56）把 `[esp+0xd4]` 当成同一帧里的另一个槽，
+ *   漏算了紧挨着的那条 `push 0`，于是记成「未初始化读 + 有意偏离」。实际「住几天就赔几天」
+ *   与原版逐位一致，不是偏离。
  */
 function insureConfinement(state: GameState, topo: MapTopology, index: number, days: number): GameState {
   return insurancePayoutTo(state, topo, index, hotelStayLoss(days, state.priceIndex));
@@ -7848,7 +7858,13 @@ function runTollTail(
         use = aiUsesFreeCard(c.toll, p, s.priceIndex, rng.next());
       }
       if (use) {
-        const owner = c.route.path === 'rent' ? rentOwnerOf(s, topo, c.route.landId) : -1;
+        // `0x444a60(当前玩家, 收款方, 費)` 的第二参：住宅 = 地主（0x00419e51）、設施 = 主人（0x0041a62c）
+        const owner =
+          c.route.path === 'rent'
+            ? rentOwnerOf(s, topo, c.route.landId)
+            : c.route.path === 'facility'
+              ? (effectiveFacility(s, topo, c.route.facilityId)?.owner ?? 0) - 1
+              : -1;
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.FREE));
         });
@@ -7955,6 +7971,13 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       who = reaper;
     }
     const landlord = s.players[land.owner - 1];
+    // ★ 2026-09-24 审计订正：最后付钱的人（嫁禍 / 死神换过之后的 `edi`）**就是地主或地主的同盟**
+    //   ⇒ 整段跳过（不付、不记 `[land+0x2c]`、不说台词）—— @source `0x00419f30 cmp edi, 地主 / je 0x41b077`、
+    //   `0x00419f40 cmp edi, 同盟 − 1 / je 0x41b077`。先前付给同盟自己那一份会把他的現金搬进存款、
+    //   白记一笔本月收支；付给地主自己则把「上次过路费」改写成 0。
+    if (who === land.owner - 1 || (landlord !== undefined && who === landlord.alliedPlayer - 1)) {
+      return { ...s, phase: 'turnEnd' };
+    }
     // ★ 付的是**神明调整之后**的那一笔（`ebp`），不按替死鬼 / 死神身上的神明再调一次
     const out = collectRent(s.players, allEffectiveLands(s, topo), who, land, s.priceIndex, [], c.toll);
     // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
@@ -7992,12 +8015,19 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
         who = reaper;
       }
     }
-    const r = transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0);
+    // ★ 2026-09-24 审计订正：最后付钱的人**就是主人**（嫁禍 / 死神换成了他）⇒ 不付钱、不记 `[設施+0x30]`、
+    //   不说進帳台词，但**旅館照住** —— @source `0x0041a709 cmp edi, 主人 / je 0x41a761`（跳过的只是
+    //   `0x41a70d..0x41a75e` 付钱那一段，旅館那段从 `0x41a761` 开始）。先前照样 `transferMoney(主人→主人)`，
+    //   把他的現金搬进存款、还白记一笔本月收支。
+    const selfPay = who === ownerIdx;
+    const r = selfPay
+      ? { players: s.players, pool: s.pool, bankrupted: false }
+      : transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0);
     // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
     const facilityLastToll = [...s.facilityLastToll];
-    facilityLastToll[fac.id] = god.toll;
+    if (!selfPay) facilityLastToll[fac.id] = god.toll;
     // ★ 第十四份：設施主人的「進帳」台词 `0x0041a735 call 0x44f354(主人, ebp)`（付款人就是主人时 `0x0041a70b je` 跳过）
-    const gainSays = who !== ownerIdx ? [{ player: ownerIdx, amount: god.toll }] : null;
+    const gainSays = !selfPay ? [{ player: ownerIdx, amount: god.toll }] : null;
     let paid: GameState = {
       ...s,
       players: r.players,
@@ -8006,16 +8036,43 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       phase: 'turnEnd',
       ...(gainSays === null ? {} : { lastGainSays: gainSays }),
     };
-  // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
+  // @source 0x0041a761 旅館（`cmp [+0x18],1`）且付款人还在场（`0x0041a775 cmp [edi].who_plays, 0`）且没终局（`0x0041a782`）：
+  //   敌意 → 清关押 → 住 N 天 → 保險理賠 → 倒楣天数 +N → 贴图挪到旅館
   if (hotelDays > 0 && !r.bankrupted) {
+    // ★ 2026-09-24 审计补：敌意 += 20 × 天数 × 物價 —— @source `0x0041a78f..0x0041a7a0`（天 → 5天 → 20天 → × 物價）
+    //   `0x0041a7bc call 0x40df69([0x49910c] 当前玩家, 主人, 值)`：主语是**当前玩家**，不是住店的 `edi`
+    paid = {
+      ...paid,
+      players: updateHostility(paid.players, c.payer, ownerIdx, 20 * hotelDays * s.priceIndex).players,
+    };
+    // ★ 2026-09-24 审计补：住店之前先 `0x0041a7c5 call 0x40d761(edi)` —— 被嫁禍 / 死神点到的人若正关在
+    //   監獄 / 醫院，先把他那张占用表的格子清掉（`0x0040d774` / `0x0040d793`），再把 `+0x32` 起四个计数
+    //   整个 dword 清零（`0x0040d7a9`），然后才写住宿天数。先前只写 `inHotel`，人会同时「住店 + 坐牢」。
+    const guest = paid.players[who];
+    if (guest !== undefined && (guest.blocking.inPrison !== 0 || guest.blocking.inHospital !== 0)) {
+      const prisonOccupancy = [...paid.prisonOccupancy];
+      const hospitalOccupancy = [...paid.hospitalOccupancy];
+      if (guest.blocking.inPrison !== 0 && who < prisonOccupancy.length) prisonOccupancy[who] = 0;
+      if (guest.blocking.inHospital !== 0 && who < hospitalOccupancy.length) hospitalOccupancy[who] = 0;
+      paid = { ...paid, prisonOccupancy, hospitalOccupancy };
+    }
     // ★ 住店的是实际付款的那个人（0x0041a772 起全用 edi）
     paid = withPlayer(paid, who, (p) => {
-      // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）
+      // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）；
+      //   `0x40d761` 已把 +0x33 消失 / +0x34 坐牢 / +0x35 住院 一并清零
       const left = hotelDays - 1;
-      p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left };
+      p.blocking = {
+        ...p.blocking,
+        inHotel: left === 0 ? RELEASE_PENDING : left,
+        disappearing: 0,
+        inPrison: 0,
+        inHospital: 0,
+      };
       // @source 0x0041a83f `add byte ptr [eax + 0x496baa], dl` —— 8 位累加「本月倒楣天數」
       p.totalWinterSleepDays = misfortuneDaysAfter(p.totalWinterSleepDays, hotelDays);
-      p.monthlyPaid += hotelStayLoss(hotelDays, s.priceIndex);
+      // ⚠️ 2026-09-24 审计删：先前这里还有一句 `monthlyPaid += 2000×天×物價`。原版全 exe 写 `+0x5c`
+      //   的只有 `pay_money` 一处（`xref 0x496bc4`：0x0041d381 累加、0x00439ee6 月结清零），
+      //   `0x44ba63`（保險理賠）也不碰它 ⇒ 那一句是自拟的，删掉。
       // ★★ 第 88 条：住店时**贴图位置**要挪到**旅館設施**上（不是格子坐标）
       //   @source `0x41a85e call 0x40d5a5(玩家, 原节点, 設施号)` → 支 A：
       //   `or [player+0x15], 0x20` + 按 `设施 x/y − 玩家 x/y` 重算朝向 + `call 0x40dd1f`
@@ -8575,16 +8632,23 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (godNotice !== null) notices.push(godNotice);
   if (god.toll === 0) return { ...withRng, notices, phase: 'turnEnd' };
 
-  // ★ 尾巴照 0x0041a648 起：嫁禍卡（設施这条没有免費卡）→ 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
+  // ★ 尾巴照 0x0041a5c8 起：免費卡（**旅館除外**）→ 嫁禍卡 → 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
   let pre: GameState = { ...withRng, rngState: rng.getState() };
   for (const n of notices) pre = appendFreshNotice(pre, n);
+  // ★ 2026-09-24 审计补：敌意 += 調整後費 / 100（有符号、向零）—— @source `0x0041a59e mov ecx, 0x64 /
+  //   0x0041a5a8 idiv ecx / 0x0041a5c0 call 0x40df69(当前玩家, 主人, 商)`，在被动卡之前
+  pre = { ...pre, players: updateHostility(pre.players, payer, ownerIdx, Math.trunc(god.toll / 100)).players };
   return runTollTail(pre, topo, {
     route: { path: 'facility', facilityId: fac.id, hotelDays },
     payer,
     who: payer,
     toll: god.toll,
     feeName,
-    freeDone: true, // @source 0x0041a648：設施这一路没有免費卡那一问
+    // ★ 2026-09-24 审计订正：購物中心 / 加油站**也问免費卡**，只有旅館跳过 ——
+    //   @source `0x0041a5d5 cmp byte [設施+0x18], 1 / 0x0041a5d9 je 0x41a63d`（旅館直接跳到嫁禍卡那一段），
+    //   其余走 `0x0041a5db..0x0041a63b`（与住宅 `0x00419e01..0x00419e65` 同一套：費 ≥ 2000×物價 或 > 現金+存款
+    //   → 有 0x14 免費卡 → `call 0x444a60` → `xor ebp, ebp`）。先前一律 `freeDone: true`。
+    freeDone: fac.type === FACILITY_TYPE.hotel,
   });
 }
 

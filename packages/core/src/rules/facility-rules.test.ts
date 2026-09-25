@@ -347,8 +347,25 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     // days − 1，为 0 时挂 0x80
     expect(b.inHotel).toBe(days === 1 ? RELEASE_PENDING : days - 1);
     expect(r.players[0]!.totalWinterSleepDays).toBe(days);
-    // 本月支出 = 住宿費（pay_money 已累计）+ 那笔 2000×天×物價 的損失记账
-    expect(r.players[0]!.monthlyPaid).toBe(paid + hotelStayLoss(days, 1));
+    // ★ 审计订正：本月支出**只有**住宿費（pay_money 累计的那一笔）。原版写 `+0x5c` 的只有 pay_money
+    //   （`xref 0x496bc4`），`0x44ba63` 保險理賠也不碰它 —— 先前多记的「2000×天×物價」是自拟的
+    expect(r.players[0]!.monthlyPaid).toBe(paid);
+    // 敌意：收費 `0x0041a5c0` 记 費/100，旅館再 `0x0041a7bc` 记 20×天×物價（主语 = 当前玩家，对象 = 主人）
+    expect(r.players[0]!.hostility[1]).toBe(Math.trunc(paid / 100) + 20 * days);
+  });
+
+  it('★ 审计订正：死神顯靈换成**主人自己**付 ⇒ 不付钱、不记這一筆，但旅館照住（0x0041a709 je 0x41a761）', () => {
+    const s0 = othersFacility(FACILITY_TYPE.hotel, 1);
+    // 主人 1 号身上是死神（god_info 0xe：不在 0x41d559 的免收里，但 0x40fbb8 会点到他）
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 1 ? { ...p, godInfo: 0xe } : p)) };
+    const lastBefore = s.facilityLastToll[FAC_ID];
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.players[0]!.cash).toBe(100_000);
+    expect(r.players[1]!.monthlyPaid).toBe(0);
+    expect(r.players[1]!.monthlyReceived).toBe(0);
+    expect(r.players[1]!.moneyInBank).toBe(s.players[1]!.moneyInBank);
+    expect(r.facilityLastToll[FAC_ID]).toBe(lastBefore);
+    expect(r.players[1]!.blocking.inHotel).not.toBe(0); // 主人自己住进去
   });
 
   it('★★ 住店时**贴图位置**挪到旅館設施坐标上（第 88 条）', () => {

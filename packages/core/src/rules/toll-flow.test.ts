@@ -117,11 +117,24 @@ describe('★ 免費卡 / 嫁禍卡 自动使用', () => {
   });
 
   it('接到住宅落点：手里有嫁禍卡、費 > 現金、恨 2 号 → 2 号付，卡扣掉', () => {
-    const s = onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0], whoPlays: WHO_PLAYS_COMPUTER }, third: { cash: 9000 } });
+    const s = onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 50, 0], whoPlays: WHO_PLAYS_COMPUTER }, third: { cash: 9000 } });
     const after = settle(s);
     expect(after.players[0]!.cash).toBe(100);
     expect(after.players[0]!.cards).toEqual([]);
     expect(after.players[2]!.cash).toBe(9000 - 1200);
+  });
+
+  it('★ 审计补：付费之前先记敌意（0x00419df3）⇒ 电脑嫁禍会挑到地主本人 ⇒ 谁都不付（0x00419f30 je）', () => {
+    // 恨 2 号只有 9；这一笔 1200 先给地主记上 12 ⇒ 最恨的变成地主 1 号 ⇒ 嫁禍給地主 ⇒ 原版整段跳过付款
+    const s = onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0], whoPlays: WHO_PLAYS_COMPUTER }, third: { cash: 9000 } });
+    const before = s.landLastToll[LAND];
+    const after = settle(s);
+    expect(after.players[0]!.hostility[1]).toBe(12);
+    expect(after.players[0]!.cards).toEqual([]); // 卡照样用掉
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[2]!.cash).toBe(9000);
+    expect(after.players[1]!.monthlyReceived).toBe(0); // 地主没付给自己
+    expect(after.landLastToll[LAND]).toBe(before); // [land+0x2c] 不写
   });
 
   it('tollPassiveTail：免費卡先抹成 0，嫁禍就不再触发（原版门槛判两次的自然结果）', () => {
@@ -235,11 +248,38 @@ describe('★★ 託管（服务器 AI 接管 / 超时）答这两问：`decideP
   it('免費卡 / 嫁禍卡都给 `null`', () => {
     const asked = settle(onRivalLand({ payer: { cash: 100, moneyInBank: 0, cards: [20] } }));
     expect(decidePending(asked)).toEqual({ type: 'answerFreeCard', use: null });
-    const asked2 = settle(onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 9, 0] }, third: { cash: 9000 } }));
+    const asked2 = settle(onRivalLand({ payer: { cash: 100, cards: [19], hostility: [0, 0, 50, 0] }, third: { cash: 9000 } }));
     expect(decidePending(asked2)).toEqual({ type: 'answerScapegoat', target: null });
     // 电脑规则：恨 2 号 ⇒ 2 号付；託管那一支不再亮一遍牌，只弹「嫁禍給%s！」
     const after = reduce(asked2, { type: 'answerScapegoat', target: null }, topo);
     expect(after.players[2]!.cash).toBe(9000 - 1200);
     expect(after.notices.map((n) => n.key)).toEqual(['card.scapegoatTo']);
+  });
+});
+
+describe('★ 2026-09-24 审计：过路费的敌意与收尾', () => {
+  it('付费记敌意：当前玩家 → 地主 += 实付/100（0x00419df3），无同盟', () => {
+    const after = settle(onRivalLand({ payer: { hostility: [0, 3, 0, 0] } }));
+    expect(after.players[0]!.cash).toBe(50_000 - 1200);
+    expect(after.players[0]!.hostility[1]).toBe(3 + 12);
+  });
+
+  it('有同盟：地主那份按「总额 − 同盟原始份」、同盟那份按「同盟原始份」各记一笔（0x00419db1 / 0x00419df3）', () => {
+    // 1 号地主与 2 号同盟；2 号名下没有同名地 ⇒ 同盟原始份 0 ⇒ 对 2 号记 0
+    const s = onRivalLand({ owner: { alliedPlayer: 3 }, third: { alliedPlayer: 2 } });
+    const after = settle(s);
+    expect(after.players[0]!.hostility[1]).toBe(12);
+    expect(after.players[0]!.hostility[2]).toBe(0);
+  });
+
+  it('大財神把费抹成 0 ⇒ 当场收尾：不记敌意、不改「上次过路费」（0x00419d7e je 0x41b077）', () => {
+    const s0 = onRivalLand({ payer: { godInfo: 2 } });
+    const landLastToll = [...s0.landLastToll];
+    landLastToll[LAND] = 777;
+    const after = settle({ ...s0, landLastToll });
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.players[0]!.hostility[1]).toBe(0);
+    expect(after.landLastToll[LAND]).toBe(777);
+    expect(after.phase).toBe('turnEnd');
   });
 });
