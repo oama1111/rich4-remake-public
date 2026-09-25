@@ -373,6 +373,7 @@ import {
 //   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
 //   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
 import { boardFilmWindowOpen, boardStateForFilm, visibleBoardState, type BoardFilmWindow } from './deferred-board.ts';
+import { AI_TOOL_NOTICE_KEY, applyVehicleHold, vehicleHoldOf, type VehicleHold } from './vehicle-hold.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
@@ -4889,6 +4890,10 @@ function startActionFx(action: Action, before: GameState): void {
   // 機器工人（9）/ 魔法屋「就地加蓋」/ 天使卡（9）原地建屋 → 大锤影片
   // （盖到 5 级时接 `0x20b`）。判据在 core 的 `lastBuildUpgrades` 里，不看 action 种类。
   startBuildFx(before);
+  // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：电脑换车 ⇒ 「使用汽車」框底下还是旧图组，框收了才换
+  //   （原版 `0x00448070` 框 → `0x0044807e` 道具函数里 `0x40b93b` 换图组 → 道具台词；`vehicle-hold.ts`）
+  const vh = vehicleHoldOf(before, state);
+  if (vh !== null) vehicleHold = vh;
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
   // ★★ 第十二份試玩回報：原版用卡是「亮牌 1500 ms（`fcn_00441f73`，阻塞）→ 卡片函数」，
   //   飞行在卡片函数**里面** ⇒ 先挂起，等亮牌收屏再起（`tickPendingCardFlight`）。
@@ -7588,6 +7593,19 @@ let boardFilmRedrawKeepsPlayersFor: GameState | null = null;
 let manifestHold: ManifestHold | null = null;
 
 /**
+ * ★★ 第二十六份：电脑换车那一扇「使用%s」框还没收时，那一位按换车**之前**的交通方式画
+ * （`vehicle-hold.ts`；原版 `0x00448070` 框在前、`0x40b93b` 换图组在道具函数里）；`null` = 没在按。
+ */
+let vehicleHold: VehicleHold | null = null;
+
+/** 「使用%s」框收掉了（没在弹、也没排着）⇒ 放开，棋子这一拍换成车（= 原版 `0x40b93b`）*/
+function tickVehicleHold(): void {
+  if (vehicleHold === null || noticeKeyShowing(AI_TOOL_NOTICE_KEY)) return;
+  vehicleHold = null;
+  requestRender();
+}
+
+/**
  * 顯靈框收掉了 ⇒ 放开按住的等级，并补那第二声音效 50
  * （天使 `0x0040f4f8` / 福神 `0x0040f9e1`，都在框之后、重画 `0x41d476(0,0,1)` 之前）。
  */
@@ -8433,7 +8451,12 @@ function boardDrawState(): GameState {
   return withLandingHidden(boardDrawStateBase());
 }
 
+/** 棋盘那一份（影片窗口 / 顯靈框按住之后），再叠上第二十六份的换车按住（`vehicle-hold.ts`）*/
 function boardDrawStateBase(): GameState {
+  return applyVehicleHold(boardDrawStateHeld(), vehicleHold);
+}
+
+function boardDrawStateHeld(): GameState {
   // ★★ 機器工人那一段的**中途放出**（第九份试玩回报，见 `startBuildFx` 的注释）：
   //   大锤片走到第 48 帧（2736 ms，烟尘散尽、工人立定成排）就放开等级 ⇒ 房子在这一拍
   //   换成修好的模型，工人接着演退场段。
@@ -8574,6 +8597,8 @@ function requestRender(): void {
     if (screen === 'game') tickGodAscend(performance.now());
     // ★ 第十三份試玩回報 #1：顯靈框收掉那一拍放开按住的等级 + 第二声音效（须在 `tickBuildFx` 之前）
     tickManifestHold();
+    // ★ 第二十六份：电脑换车那一扇「使用%s」框收掉那一拍换图组
+    tickVehicleHold();
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
@@ -10307,6 +10332,7 @@ function startGame(): void {
   resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
   newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
   manifestHold = null;
+  vehicleHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
@@ -12066,6 +12092,7 @@ function connectOnline(
           resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
           newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
           manifestHold = null;
+          vehicleHold = null;
           godAscend = null;
           pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
           pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
@@ -12510,6 +12537,7 @@ function settleAfterSilentRebuild(): void {
   deferredBoardBefore = null;
   newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
   manifestHold = null;
+  vehicleHold = null;
   godAscend = null;
   pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
   pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理

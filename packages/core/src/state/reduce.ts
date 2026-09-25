@@ -153,6 +153,7 @@ import {
   shareWindowLimit,
 } from '../places/company.ts';
 import { tickInsuranceDays } from '../rules/blocking.ts';
+import { aiShopVisit } from '../places/ai-shop.ts';
 import {
   buyCard,
   buyTool,
@@ -7148,6 +7149,35 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
         };
       }
     }
+  }
+
+  // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：**恰好** who_plays == 1 的真人才开窗、抽货架；
+  //   电脑 / 托管当场按原版那一支买卖完就走（`places/ai-shop.ts`）—— 不抽货架（不耗随机数）、
+  //   不挂 `pending`、没有框 / 台词 / 音效。
+  //   @source `0x0042ea2b imul eax, [0x49910c], 0x68 / cmp byte [eax+0x496b7d], 1 / jne 0x42ed8d`
+  //   先前电脑也挂 `pending{shop}`，由 `ai/policy.ts` 自拟的「车优先、點券全花」来答 ——
+  //   150 點就能买汽車，而原版只拿一半點券逛道具、先買機車（见 `ai-shop.ts` 文件头）。
+  if (((next.players[me]?.whoPlays ?? 0) & 0xff) !== WHO_PLAYS_HUMAN) {
+    const visit = aiShopVisit({
+      player: next.players[me]!,
+      tools: next.tools,
+      toolStock: next.toolStock,
+      cardAmount: next.cardAmount,
+    });
+    return {
+      ...next,
+      players: next.players.map((p, i) => (i === me ? visit.player : p)),
+      tools: visit.tools,
+      toolStock: visit.toolStock,
+      cardAmount: visit.cardAmount,
+      rngState: rng.getState(),
+      ...(gift === null
+        ? {}
+        : {
+            notices: [{ key: 'shop.chairmanGift' as const, args: [gift.name] }],
+            lastShopGift: { kind: gift.kind, id: gift.id, points: gift.points },
+          }),
+    };
   }
 
   // ② ③ 货架

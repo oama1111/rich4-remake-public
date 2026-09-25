@@ -211,7 +211,7 @@ describe('★ M2 验收：完整一局', () => {
   run('★ AI 真的会用道具 —— 百貨公司一通，道具经济就活了', () => {
     // 这条先前是反向断言（「一个都没用」），因为当时卡在两处：
     //   开局不发交通工具，而車子要去百貨公司买——那时百貨还没实现。
-    // 现在百貨接上了，AI 会用點數买汽車再换乘，道具终于被用起来。
+    // 现在百貨接上了，AI 会用點數买車（原版先買機車、只拿一半點券逛道具）再换乘，道具终于被用起来。
     const map = loadMap();
     const topo = {
       nodes: map.nodes,
@@ -230,8 +230,13 @@ describe('★ M2 验收：完整一局', () => {
       const a = decideAction({ state, map });
       if (a === null) break;
       if (a.type === 'useTool') used++;
-      if (a.type === 'shop') bought++;
+      // ★ 第二十六份：电脑进百貨不再挂商店交互（原版 `0x0042ea2b … jne 0x42ed8d` 当场买卖完就走，
+      //   `places/ai-shop.ts`）⇒ 不再有 `shop` action，改数「落在百貨的那条 settle 花掉了點券」
+      const me = state.players[state.currentPlayer];
+      const onStore =
+        a.type === 'settle' && map.nodes[(me?.nodeId ?? 0) - 1]?.specialKind === SPECIAL_KIND.DEPARTMENT_STORE;
       const next = reduce(state, a, topo);
+      if (onStore && (next.players[state.currentPlayer]?.points ?? 0) < (me?.points ?? 0)) bought++;
       if (next === state) break;
       state = next;
     }

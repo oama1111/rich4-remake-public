@@ -194,16 +194,40 @@ describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
   });
 });
 
-describe('★ 电脑买过的那一行不再提（货架记 sold 之后）', () => {
-  it('买完汽車 ⇒ 下一步不再提汽車（否则 reducer 必拒、原样重提，卡死在 turnEnd/shop）', () => {
-    let s = landed(500);
-    const first = decidePending(s);
-    expect(first).toEqual({ type: 'shop', op: 'buyTool', id: 6 });
-    s = reduce(s, first!, topo);
-    expect(toolCount(s.tools, 0, 6)).toBe(1);
-    // 汽車那一行已卖掉 ⇒ 不再提汽車；提出来的（機車或 null）必须是 reducer 收得下的
-    const next = decidePending(s);
-    expect(next).not.toEqual({ type: 'shop', op: 'buyTool', id: 6 });
-    if (next !== null) expect(reduce(s, next, topo)).not.toBe(s);
+describe('★★ 第二十六份：电脑不再收到商店交互，托管的真人也不替他花點券', () => {
+  it('电脑落在百貨 ⇒ 当场买卖（`places/ai-shop.ts`）、不挂 pending、不抽货架', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: 2 }),
+      ),
+    });
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 货架那一段 `rand()%10+6` 只在真人那一支 ⇒ 电脑进店（非董事長）一个随机数都不耗
+    expect(r.rngState).toBe(s.rngState);
+    expect(toolCount(r.tools, 0, 5)).toBe(1);
+    expect(toolCount(r.tools, 0, 6)).toBe(1);
+  });
+
+  it('托管位（who_plays = 1|4）也走电脑那一支（`cmp byte [+0x15], 1` 是精确比较）', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: i === 0 ? 5 : 2 }),
+      ),
+    });
+    expect(reduce(s, { type: 'settle' }, topo).pending).toBeNull();
+  });
+
+  it('开着商店窗被托管的真人 ⇒ AI 只关窗（null），不自拟买车', () => {
+    const s = landed(500);
+    expect(s.pending?.kind).toBe('shop');
+    expect(decidePending(s)).toBeNull();
   });
 });

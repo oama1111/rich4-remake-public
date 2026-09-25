@@ -185,7 +185,7 @@ import { CARDS,
   fortuneDisplayEntry,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import type { GameState, MapTopology } from '@rich4/core';
+import { SPECIAL_KIND, type GameState, type MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -551,6 +551,23 @@ export function cardGained(before: GameState, after: GameState): CardGain | null
     }
   }
   return null;
+}
+
+/**
+ * 这一条 action 是不是「在百貨公司里」—— 那里得到的卡（董事長贈卡 / 买卡）**没有卡面**（见 `event()` 里的取证）。
+ *
+ * ① 真人：前后任一边挂着 `pending.shop`（进门那条 settle → shop，买卡那条 shop → shop）；
+ * ② ★★ 第二十六份：电脑 / 托管进店**不挂** `pending`（原版 `0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`
+ *    当场买卖完就走，`core/places/ai-shop.ts`）⇒ 认「这条 settle 把当前玩家结算在百貨公司格上」。
+ *    电脑那一支买卡同样走 `_rich4_player_buy_card` `0x0042f13b call 0x42d237` → `0x4412e4`，零图形。
+ *    卡片格落点不会同时是百貨公司格，所以不会误伤真正的抽卡。
+ */
+export function shopVisitAction(before: GameState, after: GameState, topo: Pick<MapTopology, 'nodes'>): boolean {
+  if (before.pending?.kind === 'shop' || after.pending?.kind === 'shop') return true;
+  if (before.phase !== 'settling') return false;
+  const p = after.players[before.currentPlayer];
+  const node = p === undefined ? undefined : topo.nodes[p.nodeId - 1];
+  return node?.specialKind === SPECIAL_KIND.DEPARTMENT_STORE;
 }
 
 // ============================================================
@@ -1539,7 +1556,7 @@ export const eventBoxScreen: UiScreen = {
     //   - 買卡 `_rich4_player_buy_card` `0x0042d242 call 0x4412e4` —— `0x4412e4` 只調 `0x441262`/`0x44128f`/`0x441343`，零圖形。
     //   判據：這一條 action 前後任一邊掛著 `pending.shop`（進門那條是 settle → shop，買卡那條 shop → shop）。
     //   卡片格落點不會同時是百貨公司格，所以不會誤傷真正的抽卡。
-    if (before.pending?.kind === 'shop' || after.pending?.kind === 'shop') return;
+    if (shopVisitAction(before, after, env.topo)) return;
     // ★ 魔法屋「得一張卡片」同理：`0x004320dd` 那一支是 `0x004320ee call 0x441e12`（同上：只有 rand + receive_card，
     //   零圖形）→ 弹「名字\n\n得到XX卡！」訊息框（`magic.gotCard`）—— **没有卡面**。
     //   判據：這一條 action 剛寫下 `lastEvent.kind === 'magicHouse'`。
