@@ -129,9 +129,16 @@ function objectOnNode(view: ToolAiView, nodeId: number): MapObject | undefined {
   return i === -1 ? undefined : view.state.objects[i];
 }
 
-/** 这格上有没有（活着的）玩家 @source node+0x24 bits 12-15 */
-function anyoneOnNode(view: ToolAiView, nodeId: number): boolean {
-  return view.state.players.some((p) => isAlive(p) && p.nodeId === nodeId);
+/**
+ * 这格上有没有**惡人**（actor 4..7）@source node+0x24 bits 12-15（`0x1000 << (actor − 4)`）。
+ *
+ * ★★ 审计（ai-move）：`+0x24` 的运行位是 `0x100 << actor`（送監獄 `0x0043d59b mov edi,0x100 /
+ *   shl edi,cl` 对 actor 0..7 同一个式子）⇒ **bits 8-11 = 玩家 0..3、bits 12-15 = 惡人 4..7**。
+ *   遙控骰子 `0x00421a12 and edx, 0xf000` 查的是惡人，不是玩家（旧注释与 rich4-spec 的
+ *   test_tool_dice_ai.py 都把它说成「玩家占用」）。
+ */
+function villainOnNode(view: ToolAiView, nodeId: number): boolean {
+  return runtimeOccupiedNodes([], [], view.state.specialActors).has(nodeId);
 }
 
 /**
@@ -176,16 +183,18 @@ function myStreetCount(view: ToolAiView, land: LandInfo): number {
 }
 
 /**
- * 「这格什么都没有」@source `test dword [node+0x24], 0x3fff00 / jne 跳过`
- * （bits 12-15 玩家、16-21 物件）。本引擎的运行时占用不进 `node.flags`（那是静态地图数据），
- * 改从 state 查；bits 8-11 语义未解，静态部分照查。
+ * 「这格什么都没有」@source 路障阶段一 `0x00421148 test dword [node+0x24], 0x3fff00 / jne 跳过`
+ * —— bits 8-11 玩家、12-15 惡人、16-21 物件（`runtimeOccupiedNodes` 同一份位语义）。
+ * 本引擎的运行时占用不进 `node.flags`（那是静态地图数据），改从 state 现算；静态部分照查。
+ *
+ * ★★ 审计（ai-move）：玩家那几位只在他**站在盘上**时才置 —— 关在監獄/醫院、住店、消失期间
+ *   原版把自己那一位清掉不置（`0x0043d61d` / `0x0040d5d2` / `0x0040d444`），那一格照样算空。
+ *   旧实现按「谁的 nodeId 是它」一律算占用，住店的人脚下那格就放不了路障。
  */
 function nodeClear(view: ToolAiView, node: MapNode): boolean {
-  if ((node.flags & 0xf00) !== 0) return false;
-  if (anyoneOnNode(view, node.id)) return false;
-  // bits 12-15 同时也是**惡人**站的格（`runtimeOccupiedNodes` 的第三段）—— 引擎也拒这种格
-  if (runtimeOccupiedNodes([], [], view.state.specialActors).has(node.id)) return false;
-  return objectOnNode(view, node.id) === undefined;
+  if ((node.flags & 0x3fff00) !== 0) return false;
+  const s = view.state;
+  return !runtimeOccupiedNodes(s.players, s.objects, s.specialActors).has(node.id);
 }
 
 // ============================================================
@@ -389,7 +398,7 @@ const feidan: Handler = (view) => {
 /**
  * 8 遙控骰子 @source 0x00421827
  * 闸：godInfo ∈ {7,8,15}（衰神/死神附身）、龜行中、現金+存款 < 10000、財運 < 0 → 不用；
- * 前瞻 6 格必须无岔路。逐格（步数 i+1）：格上有玩家、或有坏物件
+ * 前瞻 6 格必须无岔路。逐格（步数 i+1）：格上有**惡人**（bits 12-15）、或有坏物件
  * （类型 5,6,7,8,10,11,16,17,18）→ 跳过。
  *   - 无主住宅地：同區我的地 ≥ 2 且 現金 > 地價×2.5 → **立即定**；
  *   - 我的住宅（type 0、等级 < 5）：同區 ≥ 2、現金 > 房價×2.5、等级 > 目前最佳 → 记下不立即定；
@@ -418,7 +427,8 @@ const yaokong: Handler = (view) => {
     const nid = ahead.nodes[i]!;
     const node = nodeAt(view, nid);
     if (node === undefined) continue;
-    if (anyoneOnNode(view, nid)) continue;
+    // @source 0x00421a12 `and edx, 0xf000 / jne 跳过` —— 格上有惡人（不是玩家）
+    if (villainOnNode(view, nid)) continue;
     const obj = objectOnNode(view, nid);
     if (obj !== undefined && DICE_BAD_OBJECTS.includes(obj.type)) continue;
     if (node.ref.kind === 'land') {
