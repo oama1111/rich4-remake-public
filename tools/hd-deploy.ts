@@ -58,6 +58,9 @@ interface VerifiedSet {
 /** 过场帧的 WebP 参数：q 80（2× 帧放大到 3× 舞台看不出块）、alpha 无损（FLIC 的透明像素要叠在底图上）、最慢最小的 m 6 */
 export const WEBP_ARGS = ['-quiet', '-q', '80', '-alpha_q', '100', '-m', '6'] as const;
 
+/** 角色 0..11 里除了宫本宝藏（6，绿发绿衣被绿幕抠坏、返工中）与钱夫人（3，第一组已单列）以外的 10 位 */
+const CHARACTERS_BUT_6 = [0, 1, 2, 4, 5, 7, 8, 9, 10, 11];
+
 export const VERIFIED: readonly VerifiedSet[] = [
   {
     name: '钱夫人整套重绘',
@@ -78,6 +81,24 @@ export const VERIFIED: readonly VerifiedSet[] = [
       { archive: 'Panel', resource: 78, frames: 20 },
     ],
     encode: 'webp',
+  },
+  {
+    name: '其余角色走路 / 骰子套',
+    why: 'W-80 §6.13–6.15：约翰乔、沙隆巴斯、忍太郎、阿土伯、莎拉公主、糖糖、乌咪、孙小美、小丹尼、金贝贝的站 / 走 / 拿骰子（0x80 + 21×角色 + 0..2）。宫本宝藏（角色 6）绿幕返工中，不上',
+    resources: CHARACTERS_BUT_6.flatMap((ch) => [0, 1, 2].map((k) => ({ archive: 'Data', resource: 0x80 + 21 * ch + k }))),
+    model: 'qwen-image-2.1-repaint-6x-downscale+tone-fix (W-80 §6.13–6.15)+tier2x',
+  },
+  {
+    name: '角色其余 18 套',
+    why: 'W-80 §6.16–6.17：机车 / 汽车 / 推土机 / 快艇（站 + 骑 + 骰子）、另一套走路、乞丐 / 住院 / 囚服（0x80 + 21×角色 + 3..20）；钱夫人也在内。宫本宝藏不上（同上）',
+    resources: [...CHARACTERS_BUT_6, 3].flatMap((ch) => Array.from({ length: 18 }, (_, k) => ({ archive: 'Data', resource: 0x80 + 21 * ch + 3 + k }))),
+    model: 'qwen-image-2.1-repaint-6x-downscale+tone-fix (W-80 §6.16–6.17)+tier2x',
+  },
+  {
+    name: '四大惡人：小偷、強盜',
+    why: 'W-80 §6.16：替身 actor 4/5 = Data 380–383 / 384–387（站、走、快艇、夢遊）；流氓、間諜仍在跑',
+    resources: Array.from({ length: 8 }, (_, k) => ({ archive: 'Data', resource: 380 + k })),
+    model: 'qwen-image-2.1-repaint-6x-downscale+tone-fix (W-80 §6.16)+tier2x',
   },
 ];
 
