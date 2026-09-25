@@ -718,6 +718,16 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     expect(done.lastBuildUpgrades).toEqual([{ entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' }]);
   });
 
+  it('★ 审计补：别人的建設公司、电脑没地可蓋 ⇒ 照收 1000 × 物價（`0x0041ad28 je 0x41adff`）', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const base = landingOnCompany(1, 5); // 唯一那块已 5 级 ⇒ 没地可蓋
+    const s: GameState = { ...base, priceIndex: 3 };
+    const before = s.players[0]!.cash + s.players[0]!.moneyInBank;
+    const after = reduce(s, { type: 'settle' }, topo);
+    expect(before - (after.players[0]!.cash + after.players[0]!.moneyInBank)).toBe(3000);
+    expect(after.landLevel[1]).toBe(5);
+  });
+
   it('★ 建設公司（真人选目标那一支，`buildTarget`）也记 companyBuild', () => {
     const topo = companyTopo(INDUSTRY.construction);
     const human = landingOnCompany(1, 4);

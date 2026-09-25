@@ -5597,19 +5597,30 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   const companyFunds = [...state.companyFunds];
   const dividendBankrupts: number[] = [];
   if (date.day === DIVIDEND_DAY) {
+    // ★ 2026-09-24 审计订正：先把每人**各家分紅加总**，最后每个在场玩家**各结一次**（含总额 0 的人）。
+    //   @source `0x0042bce3 add [esp + 玩家*4 + 0x90], eax`（按人累加，0x42bac8 清零）→ 对话框之后
+    //   `0x0042be6d..0x0042bec3`：`who_plays != 0` 的每个人 `存款 += 累计`，为负才折进現金、再负就破产。
+    //   先前逐家企业结一次：保险公司理赔后盈餘为负的那一笔先把存款扣穿、提前折现金甚至误判破产，
+    //   后面正的分紅又进不回来。
+    const acc = players.map(() => 0);
     for (const c of topo.commercials ?? []) {
       const holdings = players.map((_, p) => state.holdings[p]?.[c.stockIndex]?.amount ?? 0);
       const d = companyDividends(companyFunds[c.id] ?? 0, holdings, players);
-      for (const row of d.rows) {
-        const pl = players[row.player];
-        if (pl === undefined) continue;
-        const r = applyDividend(pl, row.amount);
-        players = players.map((x, i) => (i === row.player ? r.player : x));
-        if (r.bankrupt) dividendBankrupts.push(row.player);
-      }
+      for (const row of d.rows) acc[row.player] = (acc[row.player] ?? 0) + row.amount;
       // @source 0x0042bd37 `test ebp, ebp / je` —— 有人持股才清零
       if (d.cleared) companyFunds[c.id] = 0;
     }
+    players = players.map((pl, i) => {
+      if (!isAlive(pl)) return pl;
+      const r = applyDividend(pl, acc[i] ?? 0);
+      if (r.bankrupt) dividendBankrupts.push(i);
+      return r.player;
+    });
+    // ★ 2026-09-24 审计订正：分紅破产在原版是**当场**处理的（`0x0042beba call 0x40cd87`），
+    //   清算里 `0x0040d1a8..0x0040d1c4` 释放他的樂透号码 —— 都在 `0x0041d094` 開獎**之前**。
+    //   完整的就地破产（连同变卖持股进公库、拍卖）另列 follow-up；这里至少先把号码放掉，
+    //   免得出局者的号码还参与今天的開獎（「>10 张」判据、抽签分母、得奖）。
+    for (const who of dividendBankrupts) lottery = releaseTickets(lottery, who);
   }
   // ★ 开奖屏要显示的「本期号码」—— 只有 core 知道（见 `GameState.lastLotteryDraw`）
   let lotteryHint: LotteryDrawHint | null = null;
@@ -8299,6 +8310,9 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           return chargeCompanyFee(pre, topo, me, c, entityLandPrice(built.state, topo, target) * built.state.priceIndex);
         }
       }
+      // ★ 2026-09-24 审计补：没地可蓋 ⇒ 照收 **1000 × 物價** —— @source `0x0041ad28 test ebp,ebp / je 0x41adff`
+      //   → `0x0041adff..0x0041ae18`（物價 → 3 → 24 → 25 → 200 → 1000 倍）→ `0x0041ae37` 同一段收費。先前一分不收。
+      if (target === 0) return chargeCompanyFee(next, topo, me, c, 1000 * next.priceIndex);
     } else {
       // ★ 2026-09-23：别人的建設公司同一句（`0x0041acd1 cmp [+0x15],1` → `0x0041acdb push 0x463a4a` → `0x0041acf7`）
       next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
@@ -8310,6 +8324,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           pending: { kind: 'chooseBuildTarget', commercialId: c.id, name: c.name, choices, charge: true },
         };
       }
+      // ★ 2026-09-24 审计补：真人这一侧也没地可蓋（选地窗 `0x446ae8` 拿不到目标 ⇒ 0）⇒ 同样 1000 × 物價（`0x0041adff`）
+      return chargeCompanyFee(next, topo, me, c, 1000 * next.priceIndex);
     }
   }
   return companyExit(next, topo, me, c.id);

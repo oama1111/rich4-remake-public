@@ -121,4 +121,33 @@ describe('★ econ 审计：收费敌意 / 真人全出局收局 —— 联机�
     const single = reduce(scene(map, 'single', 0, 2, 0), { type: 'settle' }, topo);
     expect(single.phase).toBe('gameOver');
   });
+
+  run('15 日分紅按人加总：一家负一家正 ⇒ 电脑 1 号只进净额，不误判破产；旁观端一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = scene(map, 'multiplayer', 3, 0, 500_000);
+    const [a, b] = map.commercials;
+    const companyFunds = [...s0.companyFunds];
+    companyFunds[a!.id] = -5_000;
+    companyFunds[b!.id] = 8_000;
+    const state: GameState = {
+      ...s0,
+      day: 14,
+      phase: 'turnEnd',
+      companyFunds,
+      holdings: s0.holdings.map((row, p) =>
+        row.map((h, i) => ({ ...h, amount: p === 1 && (i === a!.stockIndex || i === b!.stockIndex) ? 100 : 0 })),
+      ),
+      players: s0.players.map((p, i) => (i === 1 ? { ...p, cash: 100, moneyInBank: 0 } : p)),
+    };
+    const room = roomFrom(map, state);
+    let mirror = state;
+    const r = room.submit(3, { type: 'endTurn' });
+    expect(r.ok).toBe(true);
+    if (r.ok) mirror = reduce(mirror, r.broadcast.action, topo);
+    expect(stateFingerprint(mirror)).toBe(room.fingerprint);
+    expect(room.state.day).toBe(15);
+    expect(room.state.players[1]!.whoPlays).not.toBe(0);
+    expect(room.state.players[1]!.moneyInBank).toBe(3_000);
+  });
 });
