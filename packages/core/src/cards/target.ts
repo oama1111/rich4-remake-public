@@ -63,9 +63,17 @@ export type CardTarget =
    */
   | { kind: 'none'; facilityType?: number };
 
-/** 特殊棋子的合法编号区间（REQ-05.1） @source PRD §4.2 */
+/**
+ * 特殊棋子的合法编号区间（REQ-05.1）—— 只有四大惡人 4..7。
+ *
+ * ★ 2026-09-24 审计订正（原为 8，含機器娃娃）：選擇器把目标编成**低字节位集**
+ *   （玩家/惡人的拾取码 `0x00408a07 mov edx,0x10 / shl edx,cl`），
+ *   `0x40d293` 只看 `dl`（`0x0040d297 test dl,0xff`、`cmp eax,8 / jge`）；
+ *   機器娃娃那一格的拾取码是 0（`0x00408a4a xor ecx,ecx / mov word [..+0x48a850], cx`）
+ *   ⇒ 轉向/停留/夢遊/烏龜卡都**点不中**機器娃娃。
+ */
 export const ACTOR_MIN = 4;
-export const ACTOR_MAX = 8;
+export const ACTOR_MAX = 7;
 
 /**
  * 目标类别 —— 由卡片的选择参数 `0xe0c0XYZ` 归纳得出。

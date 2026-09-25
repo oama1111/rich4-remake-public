@@ -3412,6 +3412,9 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
 
   // 住院
   if (r.hospitalDays !== 0) {
+    // ★ 首次住院 4..6 天（定時炸彈 5 天）掷一次倒霉台词的 rand（`0x0043eca5 call 0x44f2c2`）
+    const hrng = new WatcomRng();
+    hrng.setState(next.rngState);
     const c = sendToConfinement(
       next.players,
       next.objects,
@@ -3423,10 +3426,12 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
       // ★ 首次关押会清掉"另一张"占用表（原版 `call 0x40d761`，@source 0x0043d5e7）
       next.prisonOccupancy,
       topo.landscapes,
+      hrng,
     );
     next = insureConfinement(
       {
         ...next,
+        rngState: hrng.getState(),
         players: c.players,
         objects: c.objects,
         hospitalOccupancy: c.occupancy,
@@ -5156,6 +5161,8 @@ function playCard(
         state.market.closedDays,
       ),
       facilities,
+      // ★ 首次入狱的屏幕坐标取特殊景观记录（綠島），`0x0043d643` —— 先前卡片路径没传，落回节点坐标
+      ...(topo.landscapes === undefined ? {} : { landscapes: topo.landscapes }),
       actors: state.specialActors,
       // ★★ 2026 本轮：嫁禍/復仇卡入狱要**占床位**（客户端关押动效靠 0→1 跳变触发），
       //   且首次入狱要清医院那一格 —— 这两张表以前根本没进卡牌路径。
@@ -5321,6 +5328,9 @@ function playCard(
   for (const rs of r.respawns) {
     next = respawnPartner(next, topo, rs);
   }
+  // ★★ 陷害卡入狱的保險理赔（`send_to_prison` 尾部 `0x0043d749 call 0x44ba63`，首次与加刑都赔）——
+  //   先前卡片路径从不赔（受害者与復仇卡反弹的出牌者都一样）
+  for (const c of r.confined ?? []) next = insureConfinement(next, topo, c.player, c.days);
   // ★ 2026-09-23（框模板反查）：卡片函数**里面**弹的那几扇訊息框（1500 ms）
   const cardNotice = cardEffectNotice(state, cardId, target, r.taxed);
   if (cardNotice !== null) next = appendFreshNotice(next, cardNotice);

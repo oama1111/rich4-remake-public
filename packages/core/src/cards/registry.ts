@@ -30,7 +30,7 @@ import { transferMoney } from '../rules/payment.ts';
 import { applyHostilityDeltas } from '../rules/hostility.ts';
 import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
 import { auctionBasePrice, auctionCardHostility, eligibleBidders } from '../rules/auction.ts';
-import { actorActive, specialSlotOf } from '../rules/special-actors.ts';
+import { ACTOR_PLACE, actorActive, npcBittenByDog, specialSlotOf } from '../rules/special-actors.ts';
 import type { SpecialActor } from '../rules/special-actors.ts';
 
 import { applyAverageCashCard } from './average-cash.ts';
@@ -142,6 +142,12 @@ export interface UseCardResult {
    * 「抽取%s\n\n%d元稅金！」那扇框（`0x004453ef`）要用，调用方弹。
    */
   taxed?: { victim: number; amount: number };
+  /**
+   * 陷害卡（17）送進監獄的玩家与**这一次的天数参数**（按入狱次序：受害者、復仇卡反弹的出牌者）——
+   * `send_to_prison` 尾部 `0x0043d724..0x0043d749 call 0x44ba63(玩家, 2000×天數×物價, 0)`（首次与加刑都走）
+   * 的保險理赔要 `GameState`，由 reduce 的 `playCard` 逐个赔。
+   */
+  confined?: { player: number; days: number }[];
   /**
    * 本次要送回物件表的物件 handle（下标 + 1）。
    *
@@ -412,7 +418,7 @@ export function useCard(
     // ★ 夢遊卡(16) 也有替身那一支 —— @source `rich4_card_mengyouka.asm:252-257`
     //   （`cmp ebx,4 / jl 跳过` 之后写替身记录 `+13`），
     //   2026-09-16 订正后再接上（先前误判「索引空间没核清」，见 D-T047-5）。
-    allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 30,
+    allowActor: cardId === 6 || cardId === 14 || cardId === 16 || cardId === 17 || cardId === 30,
   });
   if (targetError !== null) return fail(targetError);
   // ★ 已出局（`who_plays` 整字节 == 0）的玩家点不中 —— 选择器的类别判据：
@@ -443,6 +449,7 @@ export function useCard(
   let hostilityDeltas: HostilityDelta[] = [];
   let defended = false;
   let taxed: { victim: number; amount: number } | undefined;
+  let confined: { player: number; days: number }[] | undefined;
   let releasedObjects: number[] = [];
   // ★ 拍賣那一条是**开拍请求**（AuctionRequest）：座位/心理价位等由 reduce 补齐
   let followUp: PendingInteraction | AuctionRequest | null = null;
@@ -649,12 +656,25 @@ export function useCard(
       break;
     }
     case 17: {
+      if (target.kind === 'actor') {
+        // ★★ 陷害卡打四大惡人（選擇參數 0xe0c0710 与夢遊卡同组，收 4..7）：
+        //   @source `0x00444599 cmp ebx,4 / jge 0x44467a` → `push 5 / push ebx / call 0x43d593`
+        //   → 惡人支 `0x0043d760`：清节点占位位、`+0x0a = 1`（監獄）、`+0x0b..+0x0f = 0`、
+        //   `0x0043d7b3 mov byte [0x496b30 + actor], 1`（占監獄床位）。无敌意、不查被动卡、无保險。
+        //   先前 17 不收惡人目标。
+        const slot = specialSlotOf(target.actor);
+        const a = slot >= 0 ? actors[slot] : undefined;
+        if (a === undefined || !actorActive(a)) return noEffect();
+        actors = actors.map((x, i) => (i === slot ? npcBittenByDog(x, ACTOR_PLACE.prison) : x));
+        prisonOccupancy = prisonOccupancy.map((v, i) => (i === target.actor ? 1 : v));
+        break;
+      }
       // 陷害卡：嫁祸的新目标由外部给出；core 只用结果（C-ARC-2）
       const r = applyFrameCard(
         players, cur, target, ctx.priceIndex, ctx.scapegoatPicker,
         prisonOccupancy, hospitalOccupancy,
         // ★ 首次入狱要传送到监狱格 + 跟班搬家（`send_to_prison` 函数体内的事）
-        ctx.nodes, objects, ctx.landscapes,
+        ctx.nodes, objects, ctx.landscapes, ctx.rng,
       );
       if (!r.ok) return fail(r.error ?? 'noEffect');
       players = r.players;
@@ -664,6 +684,10 @@ export function useCard(
       prisonOccupancy = r.prisonOccupancy;
       hospitalOccupancy = r.hospitalOccupancy;
       defended = r.outcome?.kind === 'absolved';
+      if (r.outcome?.kind === 'imprisoned') {
+        confined = [{ player: r.outcome.victim, days: r.outcome.victim === cur ? 4 : 5 }];
+        if (r.outcome.revenged === true) confined.push({ player: cur, days: 5 });
+      }
       break;
     }
     case 29: {
@@ -1076,5 +1100,5 @@ export function useCard(
   players = players.map((p, i) => (i === cur ? consumeCard(p, cardId) : p));
 
   // ★ 走到这里 = 原版返回非 0（成功）：效果已落地，卡已被扣
-  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }) };
+  return { ok: true, error: null, players, lands, tools, toolStock, objects, market, facilities, actors, prisonOccupancy, hospitalOccupancy, respawns, hostilityDeltas, defended, releasedObjects, followUp, researchReset, ...(taxed === undefined ? {} : { taxed }), ...(confined === undefined ? {} : { confined }) };
 }

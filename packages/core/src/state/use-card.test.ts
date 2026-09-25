@@ -203,6 +203,17 @@ describe('★ 出牌入口', () => {
     expect(h.players[1]!.blocking.sleepWalking).toBe(5);
   });
 
+  it('★★ 陷害卡（17）：首次入狱 5 天掷一次倒霉台词的 rand（0x0043d5f9 → 0x44f2c2）、有保險就理赔（0x0043d749）', () => {
+    const { state, topo } = scene();
+    let s = give(state, 0, 17);
+    s = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, insuranceDays: 10, cash: 0 } : p)) };
+    const after = reduce(s, { type: 'useCard', cardId: 17, target: { kind: 'player', index: 1 } }, topo);
+    expect(after.players[1]!.blocking.inPrison).toBe(5);
+    expect(after.rngState).not.toBe(s.rngState);
+    // 2000 × 5 天 × 物價（scene 的 priceIndex）
+    expect(after.players[1]!.cash).toBe(2000 * 5 * s.priceIndex);
+  });
+
   it('★ 停留卡（14）给目标挂上停留天数', () => {
     const { state, topo } = scene();
     const s = give(state, 0, 14);

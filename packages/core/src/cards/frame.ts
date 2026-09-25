@@ -127,6 +127,8 @@ export function applyFrameCard(
   nodes: readonly MapNode[] = [],
   objects: readonly MapObject[] = [],
   landscapes: readonly LandscapeInfo[] = [],
+  /** 全局随机流：首次入狱 4..6 天那一次 `rand()`（`0x0043d5f9 call 0x44f2c2`，见 `sendToConfinement`）*/
+  rng?: { next(): number },
 ): FrameResult {
   const fail = (error: TargetError): FrameResult => ({
     ok: false,
@@ -207,6 +209,7 @@ export function applyFrameCard(
     days,
     hospitalOccupancy,
     landscapes,
+    rng,
   );
 
   // 5. ★★ 復仇卡(18)：**在主效果施加之后**才查，且仅当
@@ -244,6 +247,7 @@ export function applyFrameCard(
       REVENGE_DAYS,
       hospital2,
       landscapes,
+      rng,
     );
     players2 = second.players;
     objects2 = second.objects;

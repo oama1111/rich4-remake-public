@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { ACTOR_PLACE } from '../rules/special-actors.ts';
 import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
@@ -1077,7 +1078,7 @@ describe('★ T-008：五张地块卡对設施目标', () => {
   });
 });
 
-describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', () => {
+describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..7；機器娃娃点不中）', () => {
   // 一个已出场在棋盘上的替身 + 牌在手的玩家
   const actorCtx = (cardId: number, slot: number, over: Partial<UseCardContext> = {}) => {
     const actors = initialSpecialActors().map((a, i) =>
@@ -1090,7 +1091,19 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     });
   };
 
-  for (const actor of [4, 5, 6, 7, 8]) {
+  it('★★ 陷害卡(17) 打在场的惡人 → 关進監獄、占床位（0x00444599 → 0x0043d760），无敌意、卡扣', () => {
+    const ctx = actorCtx(17, 1);
+    const r = useCard(ctx, 17, { kind: 'actor', actor: 5 });
+    expect(r.ok).toBe(true);
+    expect(r.actors[1]!.place).toBe(ACTOR_PLACE.prison);
+    expect(r.prisonOccupancy[5]).toBe(1);
+    expect(r.hostilityDeltas).toEqual([]);
+    expect(r.players[0]!.cards).toEqual([]);
+    // 機器娃娃点不中
+    expect(useCard(actorCtx(17, 4), 17, { kind: 'actor', actor: 8 }).error).toBe('actorOutOfRange');
+  });
+
+  for (const actor of [4, 5, 6, 7]) {
     it(`停留卡(14)：actor ${actor} 的 halted 写成 1（= 停 2 天，与别人同款）`, () => {
       const ctx = actorCtx(14, actor - 4);
       const r = useCard(ctx, 14, { kind: 'actor', actor });
@@ -1130,14 +1143,14 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(r.players[0]!.cards).toEqual([]);
   });
 
-  it('未出场的機器娃娃（actor 8 offBoard）→ 同样 ok + 已扣卡', () => {
+  // ★ 2026-09-24 审计订正：機器娃娃的拾取码是 0（`0x00408a4a`），`0x40d293` 只认低字节 ⇒ 点不中
+  it('機器娃娃（actor 8）→ actorOutOfRange，卡不扣', () => {
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [30] }), makePlayer({ index: 1 })],
     });
     const r = useCard(ctx, 30, { kind: 'actor', actor: 8 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[4]!.singleStep).toBe(0);
-    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('actorOutOfRange');
   });
 
   it('actor 越界（9）→ actorOutOfRange', () => {
@@ -1151,11 +1164,9 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(useCard(makeCtx(), 1, { kind: 'actor', actor: 4 }).error).toBe('targetNotAllowed');
   });
 
-  it('★ 机器娃娃在场时转向卡也生效（0x40c78c 不看种类，只看 ≥4）', () => {
+  it('★ 机器娃娃在场也点不中（拾取码 0，`0x00408a4a`）', () => {
     const ctx = actorCtx(6, 8 - 4);
-    const r = useCard(ctx, 6, { kind: 'actor', actor: 8 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[4]!.direction).toBe(7);
+    expect(useCard(ctx, 6, { kind: 'actor', actor: 8 }).error).toBe('actorOutOfRange');
   });
 
   // ── ★ 2026-09-16 补：夢遊卡(16) 的替身那一支 ──────────────────
@@ -1164,7 +1175,7 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
   //   → `mov byte [ebx*16 + 0x498df5], 5`
   // ⚠️ 先前 registry 里写的是「索引空间没核清、故不接」—— 那条判据是错的
   //   （`ebx` 到那一步已经是 CTZ 之后的下标），订正记录见 D-T047-5。
-  for (const actor of [4, 5, 6, 7, 8]) {
+  for (const actor of [4, 5, 6, 7]) {
     it(`夢遊卡(16)：actor ${actor} 的 sleepwalkDays 写成 5`, () => {
       const ctx = actorCtx(16, actor - 4);
       const r = useCard(ctx, 16, { kind: 'actor', actor });
@@ -1207,7 +1218,7 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(a.ok).toBe(true);
     expect(a.players[0]!.cards).toEqual([]);
     const b = useCard(ctx, 16, { kind: 'actor', actor: 8 });
-    expect(b.ok).toBe(true);
+    expect(b.error).toBe('actorOutOfRange'); // 機器娃娃点不中
   });
 
   it('夢遊卡(16) 仍然不接受「自己」这个玩家目标（0xe0c0710 不含自己）', () => {
