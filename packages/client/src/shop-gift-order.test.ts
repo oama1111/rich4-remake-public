@@ -254,11 +254,22 @@ describe('`main.ts` 接线（源码钉）', () => {
     // 只调一次（不能前面再留一处）
     expect(body.indexOf('syncShopUi();')).toBe(body.lastIndexOf('syncShopUi();'));
   });
-  it('`syncShopUi` 的闸是 `shopWindowMayOpen`，且把排着的訊息框算上', () => {
-    const fn = main.slice(main.indexOf('function syncShopUi(): void {'));
-    const head = fn.slice(0, fn.indexOf('if (shopUi === null) {\n    const ui'));
+  it('开窗的闸是 `shopWindowMayOpen`，且把排着的訊息框算上', () => {
+    // ★ 2026-09-25（`20260925-134801926`）：这三个取值从 `syncShopUi` 的**体内**搬到了
+    //   紧邻它的 `shopOpenGate()` —— 商店那份后备壳（`currentDialog` → `shopShellMayAnswer`）
+    //   要读**同一份**判据，`syncShopUi` 与它两处各写一套必然漂移（壳比窗早放开一拍，
+    //   玩家就能在进店演出还没演完时把这一趟答掉，正是那份回报）。
+    //   断言的**内容一字未改**，只是跟着取值走；另外钉住两个消费者都走这一个函数。
+    const gate = main.slice(main.indexOf('function shopOpenGate(): boolean {'));
+    const head = gate.slice(0, gate.indexOf('\n}\n'));
     expect(head).toContain('shopWindowMayOpen(');
     expect(head).toContain('noticePendingRanks().length');
     expect(head).toContain('noticeShowing()');
+    const sync = main.slice(main.indexOf('function syncShopUi(): void {'));
+    const syncHead = sync.slice(0, sync.indexOf('if (shopUi === null) {\n    const ui'));
+    expect(syncHead).toContain('shopOpenGate()');
+    const dialog = main.slice(main.indexOf('function currentDialog(): InteractionUi | null {'));
+    const dialogHead = dialog.slice(0, dialog.indexOf('\n}\n'));
+    expect(dialogHead).toContain('shopOpenGate');
   });
 });
