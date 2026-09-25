@@ -433,6 +433,29 @@ export type AuctionRequest = Pick<
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */
 export type AuctionPending = Extract<PendingInteraction, { kind: 'auction' }>;
 
+/** 破产清算拍卖的候选表里的一格（地块 `i + 0x7d0` / 設施 `i + 0xfa0`）；`0` = 已被划掉 */
+export type BankruptcySlot = { kind: 'land' | 'facility'; index: number };
+
+/**
+ * `state.pendingQueue` 里的一项 —— **前一场拍卖落槌之后**接着要做的事。
+ *
+ * ★ 原版的 `0x43bde5`（开一场拍卖）是**阻塞调用**：它返回时那一场已经打完了。
+ *   所以原版可以在一条流程里「开一场 → 接着干别的 → 再开一场」，
+ *   而本引擎的拍卖是待决交互（跨 action），只能把这些「接着要干的事」排进队列。
+ *
+ * | 项 | 出处 |
+ * |---|---|
+ * | 一场排队的拍卖 | 拍賣卡 / 魔法屋 / 新聞 7 / 破产清算，见 `AuctionRequest` |
+ * | `bankruptcyDraw` | 破产清算的**下一抽** —— 原版抽一处就开一场、回来再抽下一处（`0x40d1f7` ↔ `0x40d1e3`，AUC-43） |
+ * | `credit` | `pay_money` 里收款人的入账，要等付款人的清算拍卖打完（`0x0041d376` 早于 `0x0041d387`，PAY-05） |
+ * | `dayRolloverTail` | 推日期被分紅破产打断之后剩下的半段（開獎 / 月结 / 地契到期，`0x0042beba`，STK-57） |
+ */
+export type QueuedStep =
+  | AuctionRequest
+  | { kind: 'bankruptcyDraw'; slots: readonly (BankruptcySlot | 0)[]; rounds: number }
+  | { kind: 'credit'; payee: number; amount: number; toCash: boolean }
+  | { kind: 'dayRolloverTail'; dividend: readonly number[] | null; next: number; newMonth: boolean };
+
 /** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */const PLACE_NAMES: Readonly<Record<number, string>> = {
   // ★ **空的** —— 17 种特殊格已全部接上规则：
   //   公園/新聞/命運/監獄/醫院/三个小游戏/樂透/三种點數格/卡片/

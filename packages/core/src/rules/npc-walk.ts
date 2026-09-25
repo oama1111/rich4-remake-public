@@ -22,7 +22,7 @@ import type { WatcomRng } from '../rng/watcom.ts';
 import { isAlive } from '../state/types.ts';
 import { addPoints } from './points.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
-import { PAY_FLAG_CREDIT_TO_CASH, PAY_FLAG_DEBIT_FROM_BANK, transferMoney } from './payment.ts';
+import { PAY_FLAG_CREDIT_TO_CASH, PAY_FLAG_DEBIT_FROM_BANK, transferMoney, type PendingCredit } from './payment.ts';
 import { emptyOwnership, ownerOf } from '../places/commercial.ts';
 import { OBJECT_TYPE_DOG } from '../cards/summon.ts';
 import { companyParty } from './payment.ts';
@@ -513,6 +513,12 @@ export interface NpcSettlement {
   state: GameState;
   /** 这趟里被榨破产的玩家下标，按发生顺序；调用方要逐个走破产流程 */
   bankrupted: number[];
+  /**
+   * ★ PAY-05：付款人破产时**还没入账**的那几笔（收款人 = 惡人的主人，是玩家）。
+   *   原版 `pay_money` 的 `0x0041d376 call 0x40cd87`（清算 + 拍卖，阻塞）在收款分支之前 ——
+   *   调用方要把这几笔排到清算拍卖之后。
+   */
+  credits: PendingCredit[];
 }
 
 export function applyNpcEvents(
@@ -528,6 +534,7 @@ export function applyNpcEvents(
   let companyFunds = state.companyFunds;
   let companyProfit = state.companyProfit;
   const bankrupted: number[] = [];
+  const credits: PendingCredit[] = [];
 
   const give = (i: number, mut: (p: Player) => Player): void => {
     const p = players[i];
@@ -622,10 +629,14 @@ export function applyNpcEvents(
       case 'protection':
       case 'toll': {
         // @source `push 0` —— bit0 未置 = **進存款**（0x0041c576 / 0x0041c5xx 两处同）
-        const r = transferMoney(players, [], pool, e.landlord, owner, e.amount, 0);
+        // ★ PAY-05：`deferCredit` —— 地主付到破产时，主人这一笔等他的清算拍卖打完才入账
+        const r = transferMoney(players, [], pool, e.landlord, owner, e.amount, 0, true);
         players = [...r.players];
         pool = r.pool;
-        if (r.bankrupted) bankrupted.push(e.landlord);
+        if (r.bankrupted) {
+          bankrupted.push(e.landlord);
+          if (r.deferred) credits.push(r.credit);
+        }
         break;
       }
       case 'home':
@@ -643,6 +654,7 @@ export function applyNpcEvents(
   return {
     state: { ...state, players, objects, pool, tools, toolStock, cardAmount, companyFunds, companyProfit },
     bankrupted,
+    credits,
   };
 }
 

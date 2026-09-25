@@ -3,7 +3,7 @@
  * 四大惡人每輪走一趟 @source 0x00418f93（下一名行动者依次轮到棋盘上的 4..7）+ 0x0040dd1f（步数）
  */
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { autoAction, pickNextNode, reduce, type MapTopology } from './reduce.ts';
 import {
   ACTOR_PLACE,
@@ -636,5 +636,80 @@ describe('★★ 第二十六份 panel：换人那次整窗重画（`0x41c84f` �
     const b = reduce(structuredClone(s), { type: 'endTurn' }, ring);
     expect(b.lastPanelTurn).toEqual(after.lastPanelTurn);
     expect(b.lastTurnBeats![0]!.after.lastNpcTurn).toEqual(after.lastTurnBeats![0]!.after.lastNpcTurn);
+  });
+});
+
+/**
+ * ★★ 2026-09-25（follow-up 审计 · 扫 `pending: null`）：惡人那一步把人榨破产时，
+ *   **清算拍卖不能被丢掉**。
+ *
+ * @source 惡人勒索 `0x0041c4df`（流氓停在别人的地產上）→ `0x0041c521 call 0x41d2c6`
+ *   （`pay_money`，付款人两个口袋都空 ⇒ `0x0041d376 call 0x40cd87`）——
+ *   清算里的下線拍卖 `0x40d1e3 call 0x43bde5` 是**阻塞**的：那一串打完才回到
+ *   回合边界的游标（`0x00418f93` 的下一个惡人）。所以「惡人段还没走完」与
+ *   「清算拍卖挂着」可以同时成立，`endTurn` 的「停在 turnEnd 等下一条 npcStep」
+ *   那一条出口**必须**把 pending 留着（先前的 `pending: null` 会把它丢掉，
+ *   队列里剩下的场次再也接不上 ⇒ `afterDayRollover` 见队列非空却没有 pending ⇒ 卡死）。
+ */
+describe('★★ 惡人段里破产：清算拍卖要留着（follow-up 扫 pending: null）', () => {
+  /** 6 格环、3 号格是「A 区」的一块地（地价 10 万 ⇒ 勒索費 10 万×物價） */
+  const feeRing: MapTopology = {
+    nodes: Array.from({ length: 6 }, (_, i) =>
+      makeNode({
+        id: i + 1,
+        adjacent: [((i + 1) % 6) + 1],
+        ...(i === 2 ? { ref: { kind: 'land' as const, index: 3 } } : {}),
+      }),
+    ),
+    lands: [3, 4, 5, 6].map((id) => makeLand({ id, name: 'A', type: 0, landPrice: 100_000 })),
+  };
+
+  it('★ 流氓停在 0 号的地上、0 号付不出 ⇒ 拍卖挂着、惡人段还剩一个、队列接得上', () => {
+    const base = makeGameState({
+      year: 1998,
+      month: 1,
+      day: 5,
+      // ★ 两位真人：只有一位时他一出局就收局，清算整段被跳过（`0x0040cfdb`）
+      players: [
+        makePlayer({ index: 0, character: 0, whoPlays: 1, nodeId: 1, cash: 0, moneyInBank: 0 }),
+        // 其余三位要有**出得起起拍价**的現金（起拍价 = 地价 10 万 × 物價 1），
+        // 否则三场拍卖一开就全体放弃、当场流拍，pending 自然就空了（不是本用例要测的东西）
+        makePlayer({ index: 1, character: 1, whoPlays: 1, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 2, character: 2, whoPlays: 2, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 3, character: 3, whoPlays: 2, nodeId: 1, cash: 1_000_000 }),
+      ],
+      currentPlayer: 3, // 最后一名 ⇒ 这一回合推日期、先走惡人段
+      phase: 'turnEnd',
+    });
+    // 0 号名下 4 块地（> 3 ⇒ 清算要开 3 场拍卖）
+    const landOwner = new Array<number>(64).fill(0);
+    for (const l of feeRing.lands!) landOwner[l.id] = 1;
+    const specialActors = [...base.specialActors];
+    // 流氓（actor 6 = 槽 2）在 2 号格、龜行 1 步 ⇒ 必定走到 3 号格（0 号的地）停下勒索
+    specialActors[2] = { ...releaseNpc(2, 1, 0), singleStep: 1, lastNodeId: 1 };
+    // 间谍（槽 3）也在盘上 ⇒ 惡人段还剩一位没走
+    specialActors[3] = { ...releaseNpc(6, 1, 0), singleStep: 1, lastNodeId: 5 };
+
+    const s: GameState = { ...base, landOwner, specialActors };
+    const after = reduce(s, { type: 'endTurn' }, feeRing);
+
+    expect(after.players[0]!.whoPlays, '被勒索到出局').toBe(0);
+    expect(after.pending?.kind, '★ 清算拍卖必须留着').toBe('auction');
+    expect(after.phase).toBe('awaitingDecision');
+    expect(after.pendingNpcSlots, '★ 惡人段还剩一位').toEqual([3]);
+
+    // 三场拍卖打完 ⇒ 回到 turnEnd，惡人段接着走（不卡死）
+    let cur = after;
+    let auctions = 0;
+    while (cur.pending?.kind === 'auction' && auctions < 10) {
+      auctions++;
+      cur = reduce(cur, { type: 'auction', winner: -1, price: 0 }, feeRing);
+    }
+    expect(auctions, '释放 4 处 ⇒ 拍 3 场').toBe(3);
+    expect(cur.pending).toBeNull();
+    expect(cur.pendingQueue).toEqual([]);
+    expect(cur.phase).toBe('turnEnd');
+    expect(cur.pendingNpcSlots).toEqual([3]);
+    expect(autoAction(cur), '下一条自动 action 就是接着走惡人').toEqual({ type: 'npcStep' });
   });
 });

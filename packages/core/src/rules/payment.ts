@@ -106,6 +106,32 @@ export interface TransferResult {
   paid: number;
   /** 付款方是否被判定破产（原版在此处 `call 0x40cd87`） */
   bankrupted: boolean;
+  /**
+   * 收款方那一段（`0x0041d387` 起）要落的账：编号 + 实付额 + 進現金/進存款。
+   *
+   * ★ 与 `payee` 参数不同：企業付款那一支（`esi > 100`）`jmp 0x41d387`，收款方照样收钱，
+   *   所以 `credit.payee` 就是调用方给的那个收款方编号，只是金额被削成了实付额。
+   */
+  credit: PendingCredit;
+  /**
+   * ★★ PAY-05：`true` = **这一笔还没入账**，挂在调用方手上。
+   *
+   * 原版 `0x0041d2c6` 的顺序是「扣款级联 → `0x0041d376 call 0x40cd87`（清算 + 拍卖，
+   * **阻塞跑完**）→ `0x0041d381` 记本月支出 → `0x0041d387` 收款方入账」——
+   * 收款人在清算拍卖期间**还没拿到这笔钱**（他的現金会参与竞价）。
+   * 本引擎的拍卖是待决交互，故付款人破产时把这一笔交给调用方，
+   * 由它挂进 `pendingQueue`（`{kind:'credit'}`），等那串拍卖打完再入账。
+   */
+  deferred: boolean;
+}
+
+/** 收款方那一笔（见 `TransferResult.credit` / `QueuedStep` 的 `credit`） */
+export interface PendingCredit {
+  /** 收款方编号：玩家下标 / `companyParty(i)` / `PARTY_POOL` */
+  payee: number;
+  amount: number;
+  /** `flags & PAY_FLAG_CREDIT_TO_CASH` ⇒ 進現金，否则進存款 */
+  toCash: boolean;
 }
 
 // ============================================================
@@ -184,6 +210,13 @@ export function debitPlayer(cash: number, bank: number, amount: number, fromBank
  *
  * ⚠️ 企业付款分支（`esi > 100`）在原版里 `jmp 0x41d387` 直接跳到收款方处理，
  * **跳过了破产判定**——企业不会破产，资金可以为负。此处照搬。
+ *
+ * ★★ `deferCredit`（PAY-05）：付款人**当场破产**时收款人的那一笔要不要挂起来。
+ * 原版 `0x0041d376 call 0x40cd87` 在 `0x0041d387` 的收款分支**之前**，
+ * 而清算里的拍卖是阻塞调用 ⇒ 入账发生在清算拍卖**全部打完之后**。
+ * 传 `true` 时本函数**不入账**，把那一笔原样交在 `credit` 里（`deferred = true`），
+ * 由调用方在清算之后补（`state/reduce.ts` 的 `settleTransferCredit`）。
+ * 缺省 `false` = 老行为（立即入账），只有能破产的调用点才需要显式打开。
  */
 export function transferMoney(
   players: readonly Player[],
@@ -193,6 +226,7 @@ export function transferMoney(
   payee: number,
   amount: number,
   flags = 0,
+  deferCredit = false,
 ): TransferResult {
   const nextPlayers = [...players];
   const nextCompanies = [...companies];
@@ -230,6 +264,16 @@ export function transferMoney(
   }
 
   // ── 收款方 ──────────────────────────────────────────
+  const credit: PendingCredit = {
+    payee,
+    amount: paid,
+    toCash: (flags & PAY_FLAG_CREDIT_TO_CASH) !== 0,
+  };
+  // ★ PAY-05：付款人破产且调用方要求延后 ⇒ 这一笔原样交出去，等清算拍卖打完再入账
+  //   （原版 `0x0041d376 call 0x40cd87` 早于 `0x0041d387`；企业付款那一支不会破产）
+  if (deferCredit && bankrupted) {
+    return { players: nextPlayers, companies: nextCompanies, pool: nextPool, paid, bankrupted, credit, deferred: true };
+  }
   if (payee === PARTY_POOL) {
     nextPool += paid;
   } else if (isCompany(payee)) {
@@ -252,7 +296,7 @@ export function transferMoney(
     }
   }
 
-  return { players: nextPlayers, companies: nextCompanies, pool: nextPool, paid, bankrupted };
+  return { players: nextPlayers, companies: nextCompanies, pool: nextPool, paid, bankrupted, credit, deferred: false };
 }
 
 // ============================================================

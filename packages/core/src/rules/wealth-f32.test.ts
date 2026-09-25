@@ -22,7 +22,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { calculatePlayerWealth } from './wealth.ts';
-import { makePlayer } from '../testing/factories.ts';
+import { makeLand, makePlayer } from '../testing/factories.ts';
+import { LAND_TYPE_HOUSE } from './toll.ts';
 
 /**
  * 持股 1000 股 × 10.35 元。
@@ -78,5 +79,65 @@ describe('★ 总资产：原版把运行中的总资产每步压回 float32（f
     expect(empty(2 ** 24 + 1)).toBe(2 ** 24);
     expect(empty(123_456_789)).toBe(123_456_792);
     expect(empty(1000)).toBe(1000);
+  });
+});
+
+/**
+ * ★★ WLT-02：累加器是 **32 位整数**（帧里那一格 `[esp]`），`fistp dword` 越界时
+ *   存 x87 的「整数不确定值」`0x80000000`。
+ *
+ * 期望值由**原版真码**（Unicorn）跑 `0x4239db..0x423a20` 实测（注入口袋与持股/股价、
+ * 回读 `[esp]`）：
+ * ```
+ * total=INT_MAX、无持股          → -2147483648
+ * total=2^31、无持股             → -2147483648
+ * 持股 1000×2e6 = 2e9、total=0   → 2000000000     （范围内精确）
+ * 持股 1000×3e6 = 3e9、total=0   → -2147483648    （fistp 溢出）
+ * total=2e9 + 1000×3e5           → -2147483648
+ * total=INT_MAX + 1000×1e3       → -2147483648
+ * ```
+ */
+describe('★★ WLT-02：身家是 32 位整数（fistp 溢出 ⇒ 0x80000000）', () => {
+  const INT_MIN = -2_147_483_648;
+  const withStocks = (cash: number, bank: number, amount: number, price: number): number =>
+    calculatePlayerWealth(
+      makePlayer({ cash, moneyInBank: bank, loan: 0, index: 0 }),
+      [],
+      [],
+      [{ amount, price }],
+    );
+
+  it('★ 口袋相加就是 32 位加法：INT_MAX + 1 ⇒ INT_MIN', () => {
+    expect(calculatePlayerWealth(makePlayer({ cash: 2 ** 31 - 1, moneyInBank: 1, loan: 0 }), [], [], []))
+      .toBe(INT_MIN);
+  });
+
+  it('★ f32(total) 之后越界 ⇒ fistp 存整数不确定值：2^31 ⇒ INT_MIN', () => {
+    expect(withStocks(2 ** 31, 0, 0, 0)).toBe(INT_MIN);
+  });
+
+  it('范围内照样精确：1000 × 2e6 = 2e9', () => {
+    expect(withStocks(0, 0, 1000, 2_000_000)).toBe(2_000_000_000);
+  });
+
+  it('★ 市值把 total 顶出 int32 ⇒ INT_MIN（3e9）', () => {
+    expect(withStocks(0, 0, 1000, 3_000_000)).toBe(INT_MIN);
+  });
+
+  it('★ 20 亿 + 3 亿 ⇒ INT_MIN', () => {
+    expect(withStocks(2_000_000_000, 0, 1000, 300_000)).toBe(INT_MIN);
+  });
+
+  it('★ 地块/設施的加法也回绕（`add ebp, ecx` 是 32 位）', () => {
+    const land = makeLand({ id: 1, owner: 1, landPrice: 50_000, housePrice: 0, type: LAND_TYPE_HOUSE });
+    const s = calculatePlayerWealth(
+      makePlayer({ cash: 2 ** 31 - 1, moneyInBank: 0, loan: 0, index: 0 }),
+      [land],
+      [],
+      [],
+    );
+    // INT_MAX 先被股票那 12 轮压成 f32(INT_MAX) = 2^31（f32 的最近值）→ fistp 越界 ⇒ INT_MIN，
+    // 再加地价仍是 INT_MIN + 50000（不越界时就是普通加法）
+    expect(s).toBe((INT_MIN + 50_000) | 0);
   });
 });

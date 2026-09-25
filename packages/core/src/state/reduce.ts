@@ -82,9 +82,13 @@ import {
   PAY_FLAG_DEBIT_FROM_BANK,
   companyParty,
   debitPlayer,
+  isCompany,
+  companyIndexOf,
   receiveMoney,
   transferMoney,
   type Company,
+  type PendingCredit,
+  type TransferResult,
 } from '../rules/payment.ts';
 import {
   aiScapegoat,
@@ -323,7 +327,9 @@ import {
   unimplementedPlace,
   type AuctionPending,
   type AuctionRequest,
+  type BankruptcySlot,
   type PendingInteraction,
+  type QueuedStep,
   type TollTailCtx,
   type CardPassiveTail,
 } from '../rules/interaction.ts';
@@ -576,24 +582,90 @@ function startAuction(state: GameState, topo: MapTopology, request: AuctionReque
 }
 
 /**
- * 一场拍卖落槌后的**收尾**：结算完就看看队列里还有没有排队的拍卖。
+ * 一场拍卖落槌后的**收尾**：结算完就看看队列里还有没有排队的活。
  *
  * ★ 这是所有拍卖结束路径的**唯一汇合点** —— `settleAuctionPending`（竞价循环
  *   收尾）、兼容入口 `{ type: 'auction', winner, price }`、以及
  *   `startAuction` 里「一开拍就全体放弃」的当场流标，全都经过它。
  *   所以接续逻辑只写在这里一处即可，不会漏。
+ *
+ * ★ 2026-09-25（follow-up 审计）：队列项不再只是「一场拍卖」——
+ *   还有破产清算的下一抽（AUC-43）、挂着没入账的钱（PAY-05）、推日期剩下的半段（STK-57），
+ *   见 `rules/interaction.ts` 的 `QueuedStep`。逐项处理，能当场做完的就继续下一项。
  */
 function chainQueuedAuction(state: GameState, topo: MapTopology): GameState {
-  const next = state.pendingQueue[0];
-  if (next === undefined) {
-    // ★ 推日期时开出的那串拍卖打完了 ⇒ 这才轮到新当前玩家的 `0x41c84f`（见 `afterDayRollover`）
-    const who = state.deferredTurnStart ?? null;
-    if (who !== null && state.pending === null && state.phase !== 'gameOver') {
-      return startActorTurn({ ...state, currentPlayer: who, phase: 'turnStart' }, topo, who);
+  let s = state;
+  for (;;) {
+    const next = s.pendingQueue[0];
+    if (next === undefined) {
+      // ★ 推日期时开出的那串拍卖打完了 ⇒ 这才轮到新当前玩家的 `0x41c84f`（见 `afterDayRollover`）
+      const who = s.deferredTurnStart ?? null;
+      if (who !== null && s.pending === null && s.phase !== 'gameOver') {
+        return startActorTurn({ ...s, currentPlayer: who, phase: 'turnStart' }, topo, who);
+      }
+      return s;
     }
-    return state;
+    // ★★ 续办项（入账 / 推日期剩下的半段）必须排在**整条清算链**之后：
+    //   队列里还留着 `bankruptcyDraw`（= 后面还有清算拍卖没开）就先让它过去 ——
+    //   原版那几场是阻塞连打的，`0x0041d387` 的入账 / `0x0041d094` 的開獎都在**全部**打完之后。
+    //   （`drawBankruptcyAuction` 会把下一抽插在续办项之前，这里只是兜底。）
+    if (
+      (next.kind === 'credit' || next.kind === 'dayRolloverTail') &&
+      s.pendingQueue.some((q) => q.kind === 'bankruptcyDraw')
+    ) {
+      // ⚠️ 先把队首摘掉再挪到队尾 —— `s.pendingQueue` 此刻仍然含 `next`（先前漏了这一步，
+      //    续办项被复制成两份、队首永远还是它 ⇒ 死循环）
+      s = { ...s, pendingQueue: [...s.pendingQueue.slice(1), next] };
+      continue;
+    }
+    s = { ...s, pendingQueue: s.pendingQueue.slice(1) };
+    if (next.kind === 'auction') return startAuction(s, topo, next);
+    if (next.kind === 'bankruptcyDraw') {
+      // 破产清算的第 2、3 抽 —— 排在**前一场拍卖打完**之后（原版 `0x40d1f7` 抽一处就 `0x40d1e3` 开一场）
+      s = drawBankruptcyAuction(s, topo, next.slots, next.rounds);
+    } else if (next.kind === 'credit') {
+      // `pay_money` 里收款人的那一笔，等付款人的清算拍卖打完才入账（`0x0041d387` 在 `0x0041d376` 之后）
+      s = applyQueuedCredit(s, next);
+    } else {
+      // 推日期剩下的半段（分紅破产的清算拍卖打完才開獎 / 月结 / 清地契）
+      s = finishDayRollover(s, topo, next);
+    }
+    // 这一步又开出了拍卖（清算 / 抽签循环）⇒ 先把它们打完
+    if (s.pending !== null) return s.phase === 'awaitingDecision' ? s : { ...s, phase: 'awaitingDecision' };
   }
-  return startAuction({ ...state, pendingQueue: state.pendingQueue.slice(1) }, topo, next);
+}
+
+/**
+ * 把一笔挂起的入账落到状态上 —— `pay_money` 的收款方那一段（`0x0041d387` 起）。
+ *
+ * @source 0x0041d387 `cmp edi, -1 / jne` → 公库 `add [0x499080], ebx`；
+ *   0x0041d394 `cmp edi, 0x64 / jle` → 企業 `add [企業 + 0x28/+0x2c], ebx`；
+ *   0x0041d3af 玩家：`test byte [esp+0x20], 1` → 進現金 `+0x1c` / 否则進存款 `+0x20`，
+ *   再 `0x0041d3ca add [玩家 + 0x60], ebx`（本月收入）。
+ */
+function applyQueuedCredit(state: GameState, credit: PendingCredit): GameState {
+  const { payee, amount, toCash } = credit;
+  if (payee === PARTY_POOL) return { ...state, pool: state.pool + amount };
+  if (isCompany(payee)) {
+    const i = companyIndexOf(payee);
+    if (i < 0 || i >= state.companyFunds.length) return state;
+    const companyFunds = [...state.companyFunds];
+    const companyProfit = [...state.companyProfit];
+    companyFunds[i] = (companyFunds[i] ?? 0) + amount;
+    companyProfit[i] = (companyProfit[i] ?? 0) + amount;
+    return { ...state, companyFunds, companyProfit };
+  }
+  const q = state.players[payee];
+  if (q === undefined) return state;
+  const players = [...state.players];
+  players[payee] = {
+    ...q,
+    cash: toCash ? q.cash + amount : q.cash,
+    moneyInBank: toCash ? q.moneyInBank : q.moneyInBank + amount,
+    // @source 0x0041d3ca `add [payee*0x68 + 0x496bc8], ebx` —— 本月收入照样记
+    monthlyReceived: q.monthlyReceived + amount,
+  };
+  return { ...state, players };
 }
 
 /**
@@ -1112,6 +1184,8 @@ function npcStepOnce(
     next = { ...respawned, specialActors: next.specialActors, hospitalOccupancy: back };
   }
   for (const who of settled.bankrupted) next = applyBankruptcy(next, who, topo);
+  // ★ PAY-05：被榨破产的人，其清算拍卖打完才轮到主人的入账（`0x0041d376` 早于 `0x0041d387`）
+  next = settleTransferCredits(next, settled.credits);
   return next;
 }
 
@@ -3303,7 +3377,15 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           if (first.phase === 'gameOver') return first;
           // 还有惡人没走 —— 停在 turnEnd，等 `npcStep`；**不**换玩家、**不**推日期
           if ((first.pendingNpcSlots ?? []).length > 0) {
-            return { ...first, phase: 'turnEnd', pending: null };
+            // ★★ 2026-09-25（follow-up 审计 · 扫 `pending: null`）：惡人那一步可能把某人
+            //   拖破产（小偷 `robBank` / 惡人收費 `toll`，见 `rules/npc-walk.ts` 的 `bankrupted`）
+            //   并**当场开出清算拍卖**（`0x40cd87` → `0x40d1e3 call 0x43bde5`，阻塞）。
+            //   这时一轮惡人还没走完，但拍卖必须留着 —— 先前一律 `pending: null` 会把它丢掉，
+            //   队列里剩下的场次再也接不上（`afterDayRollover` 见队列非空却没有 pending ⇒ 卡死）。
+            //   与 `bankruptLandingExit` 同一个处置。
+            return first.pending?.kind === 'auction'
+              ? { ...first, phase: 'awaitingDecision' }
+              : { ...first, phase: 'turnEnd', pending: null };
           }
           // 一轮的惡人已经走完（`npcRoundStep` 已推日期并轮到下一位玩家）
           base = first;
@@ -4027,7 +4109,7 @@ function applyGodPower(
         const p = players[i];
         // @source `cmp byte [player+0x15], 0 / je 跳过` —— 出局/托管为 0 的不收
         if (p === undefined || !isAlive(p) || p.whoPlays === 0) continue;
-        const r = transferMoney(players, [], pool, i, host, power.amount, PAY_FLAG_CREDIT_TO_CASH);
+        const r = transferMoney(players, [], pool, i, host, power.amount, PAY_FLAG_CREDIT_TO_CASH, true);
         players = r.players;
         pool = r.pool;
         out = { ...out, players, pool };
@@ -4036,6 +4118,8 @@ function applyGodPower(
         //   先前第一个破产就 `break`，后面的对手一分不付。
         if (r.bankrupted) {
           out = applyBankruptcy(out, i, topo);
+          // ★ PAY-05：附身者（收款人）那一笔排在**这个人的清算拍卖之后**入账
+          out = settleTransferCredits(out, r.deferred ? [r.credit] : []);
           // 破产拍卖掷过的随机数接着用（老虎机那几轮已在前面）
           rng.setState(out.rngState);
           players = out.players;
@@ -4065,13 +4149,15 @@ function applyGodPower(
         const p = players[i];
         if (p === undefined || !isAlive(p) || p.whoPlays === 0) continue;
         // flags = 0 ⇒ 進**存款**（`fcn_0041d2c6` 的 arg4 = 0）
-        const r = transferMoney(players, [], pool, host, i, power.amount, 0);
+        const r = transferMoney(players, [], pool, host, i, power.amount, 0, true);
         players = r.players;
         pool = r.pool;
         out = { ...out, players, pool };
         if (r.bankrupted) {
           // 附身者自己破产：`0x40cd87` 清 who_plays，之后原版照样循环但付 0（同一结果）⇒ 直接结束
           out = applyBankruptcy(out, host, topo);
+          // ★ PAY-05：这位对手（收款人）那一笔排在他的清算拍卖之后入账
+          out = settleTransferCredits(out, r.deferred ? [r.credit] : []);
           rng.setState(out.rngState);
           break;
         }
@@ -6511,8 +6597,6 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   }
 
   let players = state.players;
-  let lottery = state.lottery;
-  let pool = state.pool;
 
   // ★★ 節日送卡（`0x0041d07b call 0x452444`，股市收盘之后、分紅/開獎之前）—— 先前整段缺失：
   //   聖誕節（地图 0..3）/ 銀河系和平日 / 恐龍蛋節 / 除夕那天，每位在场玩家各从牌堆抽一张
@@ -6538,7 +6622,7 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
 
   // @source 0041d080 `cmp eax, 0xf` → 先 0x42ba97 上市公司分紅，再 0x431712 樂透開獎
   const companyFunds = [...state.companyFunds];
-  const dividendBankrupts: number[] = [];
+  let dividend: number[] | null = null;
   if (date.day === DIVIDEND_DAY) {
     // ★ 2026-09-24 审计订正：先把每人**各家分紅加总**，最后每个在场玩家**各结一次**（含总额 0 的人）。
     //   @source `0x0042bce3 add [esp + 玩家*4 + 0x90], eax`（按人累加，0x42bac8 清零）→ 对话框之后
@@ -6553,21 +6637,118 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
       // @source 0x0042bd37 `test ebp, ebp / je` —— 有人持股才清零
       if (d.cleared) companyFunds[c.id] = 0;
     }
-    players = players.map((pl, i) => {
-      if (!isAlive(pl)) return pl;
-      const r = applyDividend(pl, acc[i] ?? 0);
-      if (r.bankrupt) dividendBankrupts.push(i);
-      return r.player;
-    });
-    // ★ 2026-09-24 审计订正：分紅破产在原版是**当场**处理的（`0x0042beba call 0x40cd87`），
-    //   清算里 `0x0040d1a8..0x0040d1c4` 释放他的樂透号码 —— 都在 `0x0041d094` 開獎**之前**。
-    //   完整的就地破产（连同变卖持股进公库、拍卖）另列 follow-up；这里至少先把号码放掉，
-    //   免得出局者的号码还参与今天的開獎（「>10 张」判据、抽签分母、得奖）。
-    for (const who of dividendBankrupts) lottery = releaseTickets(lottery, who);
+    dividend = acc;
   }
+
+  // ★ 日期 / 物價 / 行情 / 牌堆 / 分紅清账先落定 —— 原版这几步（0x41cfa1 / 0x41cfbf / 0x41cff9 /
+  //   0x41d07b / 0x42ba97）都在分紅派发之前，而分紅破产开出的清算拍卖（`0x42beba call 0x40cd87`）
+  //   是**阻塞**跑完的 ⇒ 拍卖期间的世界就是「新日期 + 新物价 + 新行情」。
+  let out: GameState = {
+    ...state,
+    ...date,
+    // @source 0041cfab `inc dword [0x4990e4]`
+    totalDays,
+    // @source 0x0041d0f9 `add [0x499084], edi` —— 跨月才 +1
+    totalMonths: state.totalMonths + (newMonth ? 1 : 0),
+    // @source 0x0041cfbf `call 0x423acf`（本函数内算，见上）
+    priceIndex,
+    players,
+    market,
+    cardAmount,
+    companyFunds,
+    rngState: rng.getState(),
+  };
+  for (const n of holidayNotices) out = appendFreshNotice(out, n);
+  const tail: DayRolloverTail = { dividend, next: 0, newMonth };
+  return finishDayRollover(out, topo, tail);
+}
+
+/** 推日期剩下的半段要带的东西（见 `QueuedStep` 的 `dayRolloverTail`） */
+interface DayRolloverTail {
+  /** 每人各家的分紅累计（`0x0042bce3` 那张表）；`null` = 今天不是分紅日 */
+  dividend: readonly number[] | null;
+  /** 分紅派发的游标（下一位还没结的玩家） */
+  next: number;
+  newMonth: boolean;
+}
+
+/**
+ * 分紅派发的逐人循环 `0x0042be6d..0x0042bec3`。
+ *
+ * ```asm
+ * 0042be6f  cmp  ebx, [0x499114] / jge 结束      ; 逐位玩家
+ * 0042be7a  cmp  byte [player + 0x15], 0 / je 下一位
+ * 0042be8a  edi = 存款 + 累计
+ * 0042be92  [存款] = edi / 0042be98 test edi,edi / jge 下一位
+ * 0042be9c  [現金] += edi（负）/ 0042bea4 [存款] = 0
+ * 0042beaa  cmp [現金], 0 / jge 下一位
+ * 0042beb3  [現金] = 0
+ * 0042beba  call 0x40cd87                          ; ★ 当场破产（清算 + 拍卖，阻塞）
+ * ```
+ *
+ * ★ STK-57：破产那一步会把下线拍卖挂出来 —— 原版是**阻塞**的，所以要等那一串拍卖打完
+ *   才轮到下一位（与開獎 / 月結 / 地契到期的先后也是这个道理）。
+ *   打断时返回 `interrupted = true` 与下一位的下标，由 `finishDayRollover` 接着走。
+ */
+function applyDividendLoop(
+  state: GameState,
+  topo: MapTopology,
+  dividend: readonly number[],
+  from: number,
+): { state: GameState; next: number; interrupted: boolean } {
+  let s = state;
+  for (let i = from; i < s.players.length; i++) {
+    const p = s.players[i];
+    if (p === undefined || !isAlive(p)) continue;
+    const r = applyDividend(p, dividend[i] ?? 0);
+    s = { ...s, players: s.players.map((q, k) => (k === i ? r.player : q)) };
+    if (!r.bankrupt) continue;
+    s = applyBankruptcy(s, i, topo);
+    // 清算开出了拍卖（释放 > 3 处）⇒ 停在这里，剩下的半段挂进队列
+    if (s.pending !== null || s.pendingQueue.length > 0) {
+      return { state: s, next: i + 1, interrupted: true };
+    }
+  }
+  return { state: s, next: s.players.length, interrupted: false };
+}
+
+/**
+ * 推日期被打断之后剩下的半段 —— 分紅尾巴 → 樂透開獎 → 月結 → 每月重摆禮物/寶箱 → 地契到期与地块状态扫描。
+ *
+ * @source 0x0041d080（分紅）→ 0x0041d094 `call 0x431712`（開獎）→ 0x0041d09e `call 0x439bfa`（月結）
+ *   → 0x0041d0a3..0x0041d0f6（禮物 / 寶箱）→ 0x0041d0ff 起（逐块地 / 逐处設施的高 nibble 与到期日）。
+ *
+ * ★ STK-57：这半段全都排在分紅破产的清算**之后**（原版那一串拍卖是阻塞的），
+ *   所以由拍卖链收尾时回调进来（见 `chainQueuedAuction` 的 `dayRolloverTail`）。
+ */
+function finishDayRollover(state: GameState, topo: MapTopology, tail: DayRolloverTail): GameState {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  const newMonth = tail.newMonth;
+  let s = state;
+  // ── 分紅：还没结完的接着结（每位在场玩家各一次；破产当场清算，见 `applyDividendLoop`）──
+  if (tail.dividend !== null) {
+    const r = applyDividendLoop(s, topo, tail.dividend, tail.next);
+    if (r.interrupted) {
+      return {
+        ...r.state,
+        pendingQueue: [
+          ...r.state.pendingQueue,
+          { kind: 'dayRolloverTail', dividend: tail.dividend, next: r.next, newMonth },
+        ],
+      };
+    }
+    s = r.state;
+  }
+
+  let players = s.players;
+  let lottery = s.lottery;
+  let pool = s.pool;
+  const market = s.market;
+
   // ★ 开奖屏要显示的「本期号码」—— 只有 core 知道（见 `GameState.lastLotteryDraw`）
   let lotteryHint: LotteryDrawHint | null = null;
-  if (date.day === LOTTERY_DRAW_DAY) {
+  if (s.day === LOTTERY_DRAW_DAY) {
     const draw = drawLottery(lottery, pool, rng);
     // @source 0x00431729 `cmp eax,0x24 / je` —— 一张票都没卖出去就不开屏，也就没有号码可显示
     if (draw.number !== null) {
@@ -6586,26 +6767,26 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   if (newMonth) {
     const pre = players;
     players = players.map((p) => (isAlive(p) ? settleMonthlyBank(p) : p));
-    const lands = allEffectiveLands(state, topo);
-    const facilities = allEffectiveFacilities(state, topo);
-    monthlyHint = monthlySettleHint(pre, players, priceIndex, (p) =>
+    const lands = allEffectiveLands(s, topo);
+    const facilities = allEffectiveFacilities(s, topo);
+    monthlyHint = monthlySettleHint(pre, players, s.priceIndex, (p) =>
       calculatePlayerWealth(
         p,
         lands,
         facilities,
-        (state.holdings[p.index] ?? []).map((h, i) => ({ amount: h.amount, price: market.stocks[i]?.price ?? 0 })),
+        (s.holdings[p.index] ?? []).map((h, i) => ({ amount: h.amount, price: market.stocks[i]?.price ?? 0 })),
       ),
     );
   }
 
   // ★★ 审计 2026-09-24：跨月那一段在月結之后还有一件 —— 禮物 / 寶箱各收回、挑远处一格重新放下
   //   （`0x0041d0a5..0x0041d0f6`，见 `rules/monthly-objects.ts`）。禮物 / 寶箱被拿走后**只有这里**让它们回来。
-  let objects = state.objects;
-  let tools = state.tools;
-  let toolStock = state.toolStock;
+  let objects = s.objects;
+  let tools = s.tools;
+  let toolStock = s.toolStock;
   if (newMonth) {
     const moved = relocateMonthlyObjects(
-      { players, objects, tools, toolStock, specialActors: state.specialActors },
+      { players, objects, tools, toolStock, specialActors: s.specialActors },
       topo.nodes,
       () => rng.next(),
     );
@@ -6620,19 +6801,21 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   //   ① 涨价/查封的高 nibble 每天 −0x10，减到 0 就整字节清零（sweepPriceStatus，
   //      @source 0x0041d114 地块 / 0x0041d160 設施 / 0x0041d129 清查封位）
   //   ② 到期日 == 今天 → owner = 0、到期日 = 0（房子留着）
-  const landPriceStatus = state.landPriceStatus.map(sweepPriceStatus);
-  const facilityPriceStatus = state.facilityPriceStatus.map(sweepPriceStatus);
-  const today = packDate(date);
-  const landOwner = [...state.landOwner];
-  const landTenure = [...state.landTenure];
+  const landPriceStatus = s.landPriceStatus.map(sweepPriceStatus);
+  const facilityPriceStatus = s.facilityPriceStatus.map(sweepPriceStatus);
+  // @source 0x0041d0ff 起那两组循环用的「今天」是**推进之后**的日期
+  //   （0x41cf9b 起读的就是新的 年/月/日）
+  const today = packDate({ year: s.year, month: s.month, day: s.day });
+  const landOwner = [...s.landOwner];
+  const landTenure = [...s.landTenure];
   for (let i = 0; i < landTenure.length; i++) {
     if (tenureExpiresToday(landTenure[i] ?? 0, today)) {
       landOwner[i] = 0;
       landTenure[i] = 0;
     }
   }
-  const facilityOwner = [...state.facilityOwner];
-  const facilityTenure = [...state.facilityTenure];
+  const facilityOwner = [...s.facilityOwner];
+  const facilityTenure = [...s.facilityTenure];
   for (let i = 0; i < facilityTenure.length; i++) {
     if (tenureExpiresToday(facilityTenure[i] ?? 0, today)) {
       facilityOwner[i] = 0;
@@ -6640,15 +6823,8 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     }
   }
 
-  let out: GameState = {
+  const out: GameState = {
     ...state,
-    ...date,
-    // @source 0041cfab `inc dword [0x4990e4]`
-    totalDays: state.totalDays + 1,
-    // @source 0x0041d0f9 `add [0x499084], edi` —— 跨月才 +1
-    totalMonths: state.totalMonths + (newMonth ? 1 : 0),
-    // @source 0x0041cfbf `call 0x423acf`（本函数内算，见上）
-    priceIndex,
     players,
     objects,
     tools,
@@ -6662,16 +6838,11 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
     facilityOwner,
     facilityTenure,
     facilityPriceStatus,
-    companyFunds,
-    cardAmount,
     rngState: rng.getState(),
     // 纯表现提示：只在开了奖的那一天写（其余日子沿用，`reduce` 出口会把旧的清掉）
     ...(lotteryHint !== null ? { lastLotteryDraw: lotteryHint } : {}),
     ...(monthlyHint !== null ? { lastMonthlySettle: monthlyHint } : {}),
   };
-  for (const n of holidayNotices) out = appendFreshNotice(out, n);
-  // @source 0x0042beba `call 0x40cd87` —— 负紅利把人压破產
-  for (const who of dividendBankrupts) out = applyBankruptcy(out, who, topo);
   return out;
 }
 
@@ -9390,7 +9561,9 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       ...(gainSays === null ? {} : { lastGainSays: gainSays }),
     };
     // ★ 付不起就破产——这是对局能真正结束的唯一途径
-    return out.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
+    // ★★ PAY-05：`0x0041d376 call 0x40cd87`（清算 + 拍卖，阻塞）早于 `0x0041d387` 的收款分支 ⇒
+    //   地主 / 同盟那两笔**排在清算拍卖之后**入账（清算期间他们的現金不该多这一笔）
+    return out.bankrupted ? settleTransferCredits(applyBankruptcy(paid, who, topo), out.credits) : paid;
   }
 
   if (route.path === 'facility') {
@@ -9415,9 +9588,18 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
     // ★ 2026-09-25 集成（events × econ 冲突）：台词随机在付钱**之前**（`0x0041a710..0x0041a735`），
     //   而付款人就是主人时 `0x0041a70b je` 把这一整段（付钱 + 進帳台词）都跳过 ⇒ 与 `selfPay` 同一道闸。
     if (!selfPay) s = tollSpeechDraws(s, who, ownerIdx, god.toll, god.toll);
-    const r = selfPay
-      ? { players: s.players, pool: s.pool, bankrupted: false }
-      : transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0);
+    // ★ PAY-05：`deferCredit` —— 付款人破产时主人那一笔等清算拍卖打完才入账
+    const r: TransferResult = selfPay
+      ? {
+          players: s.players,
+          companies: [],
+          pool: s.pool,
+          paid: 0,
+          bankrupted: false,
+          credit: { payee: ownerIdx, amount: 0, toCash: false },
+          deferred: false,
+        }
+      : transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0, true);
     // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
     const facilityLastToll = [...s.facilityLastToll];
     if (!selfPay) facilityLastToll[fac.id] = god.toll;
@@ -9516,7 +9698,9 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
     // @source 0x0041a82d：保險期内由保險公司赔这笔損失
     paid = insureConfinement(paid, topo, who, hotelDays);
   }
-    return r.bankrupted ? applyBankruptcy(paid, who, topo) : paid;
+    // ★★ PAY-05：`0x0041a75e` 记完这一笔之后才轮到 `pay_money` 的收款分支 —— 破产时
+    //   主人那一笔排在清算拍卖之后入账（`0x0041d376` 早于 `0x0041d387`）
+    return r.bankrupted ? settleTransferCredit(applyBankruptcy(paid, who, topo), r) : paid;
   }
 
   // ── 企業 ──
@@ -10437,6 +10621,14 @@ export function applyBankruptcy(
  *   2. 候选表里地块与設施**同一张**，抽签分母是两者之和；
  *   3. 每抽一场就把它划掉（置 0），重复抽到空槽要**重新掷**（`je 0x40d1f7`）——
  *      这一步消耗随机数，不能图省事用「洗牌取前 3」代替。
+ *
+ * ★★ AUC-43（2026-09-25 follow-up 审计）：抽签与开拍**交错**，**不能**先把 3 处抽完再排队 ——
+ *   原版每抽一处就 `call 0x43bde5` 开一场（开拍时还要给每个电脑座位掷心理价位，
+ *   `0x439f0d` 开头就是 `call rand`），那一场**跑完**才回来抽下一处。
+ *   先前这里一次抽满 3 处再 `startAuction`，于是「第 2、3 抽」的 `rand()`
+ *   跑到了第 1 场的心理价位**之前** ⇒ 整条随机流从此错位。
+ *   现在第 1 抽在此处完成，第 2、3 抽挂成 `{kind:'bankruptcyDraw'}` 队列项，
+ *   由前一场落槌后的 `chainQueuedAuction` 接上（见 `drawBankruptcyAuction`）。
  */
 function queueBankruptcyAuctions(
   state: GameState,
@@ -10448,55 +10640,124 @@ function queueBankruptcyAuctions(
   const total = lands.length + facilities.length;
   if (total <= 3) return state;
 
-  const slots: ({ kind: 'land' | 'facility'; index: number } | 0)[] = [
+  const slots: (BankruptcySlot | 0)[] = [
     ...lands.map((index) => ({ kind: 'land' as const, index })),
     ...facilities.map((index) => ({ kind: 'facility' as const, index })),
   ];
+  return drawBankruptcyAuction(state, topo, slots, 0);
+}
 
+/**
+ * 破产清算抽签循环的**一轮**：抽一处（空槽重抽）→ 开它那一场 → 把下一轮挂进队列。
+ *
+ * @source 破产清算 VA 0x0040d1d5..0x0040d20f：
+ * ```asm
+ * 0040d1d5  xor  ebx, ebx             ; ebx = 已抽轮次
+ * 0040d1d7  jmp  0x40d1f7
+ * 0040d1d9:
+ *   push 0 / mov ax, dx / push eax
+ *   push -1                           ; ★ 卖方 = -1 ⇒ 成交款进**公库**
+ *   call 0x43bde5                     ; ★ 开拍：这一场**跑完**才返回（含心理价位那几次 rand）
+ *   [esp + edi] = 0                   ; 从候选表里划掉
+ *   inc  ebx / cmp ebx, 3 / jge 0x40d211
+ * 0040d1f7:
+ *   call rand / idiv esi              ; ★ rand() % 实体数（esi = 释放总数，**不随划掉而变**）
+ *   lea  edi, [edx + edx]             ; 字表下标
+ *   mov  dx, [esp + edi]
+ *   test dx, dx / je 0x40d1f7         ; 抽到空槽（已被划掉）就重抽
+ *   jmp  0x40d1d9
+ * ```
+ *
+ * @param slots  候选表（地块 + 設施同一张；`0` = 已被划掉）
+ * @param rounds 已经抽过的轮次（`ebx`）；到 3 就停
+ */
+function drawBankruptcyAuction(
+  state: GameState,
+  topo: MapTopology,
+  slots: readonly (BankruptcySlot | 0)[],
+  rounds: number,
+): GameState {
   const rng = new WatcomRng();
   rng.setState(state.rngState);
-  const picked: { kind: 'land' | 'facility'; index: number }[] = [];
-  while (picked.length < 3) {
-    // @source 0x40d1f7..0x40d20f：抽到空槽就重抽（每次重抽都真正消耗一个随机数）
-    //
-    // ⚠️ 原版的重抽是**无界**的（`test dx,dx / je 0x40d1f7`）——它能这么写，
-    //   是因为上一句 `cmp esi,3 / jle` 保证了至少还剩一个非空槽。
-    //   这里给它加一道**上限**：真到了「一个非空槽都没有」的地步就收手，
-    //   宁可少拍一场也不能把整局卡死（引擎里死循环比拍错更糟）。
-    //   在能走到的那条路上（total > 3、最多拍 3 场）上限永不触发，
-    //   抽签次数与原版**逐次相同**，故随机序列不受影响。
-    let at = -1;
-    for (let tries = 0; tries < slots.length; tries++) {
-      const c = rng.next() % slots.length;
-      if (slots[c] !== 0) {
-        at = c;
-        break;
-      }
+  // @source 0x40d1f7..0x40d20f：抽到空槽就重抽（每次重抽都真正消耗一个随机数）
+  //
+  // ⚠️ 原版的重抽是**无界**的（`test dx,dx / je 0x40d1f7`）——它能这么写，
+  //   是因为上一句 `cmp esi,3 / jle` 保证了至少还剩一个非空槽。
+  //   这里给它加一道**上限**：真到了「一个非空槽都没有」的地步就收手，
+  //   宁可少拍一场也不能把整局卡死（引擎里死循环比拍错更糟）。
+  //   在能走到的那条路上（total > 3、最多拍 3 场）上限永不触发，
+  //   抽签次数与原版**逐次相同**，故随机序列不受影响。
+  let at = -1;
+  for (let tries = 0; tries < slots.length; tries++) {
+    const c = rng.next() % slots.length;
+    if (slots[c] !== 0) {
+      at = c;
+      break;
     }
-    if (at < 0) break;
-    const hit = slots[at];
-    if (hit === undefined || hit === 0) break; // 不可达；仅为类型收窄
-    picked.push(hit);
-    slots[at] = 0;
   }
+  const drawn: GameState = { ...state, rngState: rng.getState() };
+  if (at < 0) return drawn; // 不可达（见上）；仅作活口
+  const hit = slots[at];
+  if (hit === undefined || hit === 0) return drawn;
+  const rest = [...slots];
+  rest[at] = 0;
 
-  let out: GameState = { ...state, rngState: rng.getState() };
-  for (const p of picked) {
-    const entity =
-      p.kind === 'land' ? effectiveLand(out, topo, p.index) : effectiveFacility(out, topo, p.index);
-    if (entity === null) continue;
-    out = startAuction(out, topo, {
-      kind: 'auction',
-      entityId: entity.id,
-      basePrice: auctionBasePrice(entity, out.priceIndex),
-      // @source 0x40d1e1 破产清算传 **−1** ⇒ 谁都不排除（连破产者都不在 `out.players` 的在场集合里）
-      bidders: eligibleBidders(out.players, entity, -1),
-      // @source push -1 —— 没有发起者（破产者已出局），成交款进公库
-      seller: -1,
-      ...(p.kind === 'facility' ? { facility: true } : {}),
-    });
+  const entity = hit.kind === 'land' ? effectiveLand(drawn, topo, hit.index) : effectiveFacility(drawn, topo, hit.index);
+  const opened =
+    entity === null
+      ? drawn
+      : startAuction(drawn, topo, {
+          kind: 'auction',
+          entityId: entity.id,
+          basePrice: auctionBasePrice(entity, drawn.priceIndex),
+          // @source 0x40d1e1 破产清算传 **−1** ⇒ 谁都不排除（连破产者都不在 `out.players` 的在场集合里）
+          bidders: eligibleBidders(drawn.players, entity, -1),
+          // @source push -1 —— 没有发起者（破产者已出局），成交款进公库
+          seller: -1,
+          ...(hit.kind === 'facility' ? { facility: true } : {}),
+        });
+  // ★ 下一轮排在**这一场之后**（`0x40d1f1 inc ebx / cmp ebx,3 / jl 0x40d1f7`）——
+  //   但要排在**续办项**（入账 / 推日期剩下的半段）之前：那两样都得等整条清算链打完。
+  if (rounds + 1 >= 3) return opened;
+  return {
+    ...opened,
+    pendingQueue: enqueueDrawStep(opened.pendingQueue, { kind: 'bankruptcyDraw', slots: rest, rounds: rounds + 1 }),
+  };
+}
+
+/**
+ * 把「下一抽」插进队列 —— **续办项之前**（`credit` / `dayRolloverTail` 要等整条清算链打完，
+ * 见 `chainQueuedAuction` 的说明）。队列里没有续办项就追加到队尾。
+ */
+function enqueueDrawStep(queue: readonly QueuedStep[], step: QueuedStep): QueuedStep[] {
+  const at = queue.findIndex((q) => q.kind === 'credit' || q.kind === 'dayRolloverTail');
+  return at < 0 ? [...queue, step] : [...queue.slice(0, at), step, ...queue.slice(at)];
+}
+
+/**
+ * 把 `transferMoney` 的结果收尾：付款人破产时，收款人那一笔**排在清算拍卖之后**入账。
+ *
+ * @source `0x0041d2c6`：`0x0041d376 call 0x40cd87`（清算 + 拍卖，阻塞跑完）
+ *   早于 `0x0041d387` 的收款分支 —— 见 PAY-05。
+ */
+function settleTransferCredit(state: GameState, r: TransferResult): GameState {
+  return r.deferred ? settleTransferCredits(state, [r.credit]) : state;
+}
+
+/**
+ * 同上的多笔版本（过路费要分别付地主与同盟，`0x00419fb4` / `0x0041a003`）。
+ *
+ * ★ 清算一场都没开（释放 ≤3 处 / 已终局）时原版 `0x40cd87` 已经返回 ⇒ 当场入账。
+ */
+function settleTransferCredits(state: GameState, credits: readonly PendingCredit[]): GameState {
+  let s = state;
+  for (const credit of credits) {
+    s =
+      s.pending === null && s.pendingQueue.length === 0
+        ? applyQueuedCredit(s, credit)
+        : { ...s, pendingQueue: [...s.pendingQueue, { kind: 'credit', ...credit }] };
   }
-  return out;
+  return s;
 }
 
 /**

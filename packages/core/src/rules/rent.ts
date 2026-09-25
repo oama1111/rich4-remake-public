@@ -12,7 +12,7 @@
 import type { Player } from '../state/types.ts';
 import type { LandInfo } from '../loaders/map.ts';
 import { calculateLandToll, tollLands } from './toll.ts';
-import { transferMoney, type Company } from './payment.ts';
+import { transferMoney, type Company, type PendingCredit } from './payment.ts';
 import { adjustTollByGod } from './god-toll.ts';
 import { truncTowardZero } from './rounding.ts';
 import { updateHostility } from './hostility.ts';
@@ -69,6 +69,14 @@ export interface RentResult {
   counted: number[];
   /** 付款方是否因此破产 */
   bankrupted: boolean;
+  /**
+   * ★ PAY-05：付款人破产时**还没入账**的那几笔（地主份 / 同盟份）。
+   *
+   * 原版 `0x00419fb4` / `0x0041a003` 两次 `pay_money` 里，`0x0041d376 call 0x40cd87`
+   * （清算 + 拍卖，**阻塞跑完**）都在 `0x0041d387` 的收款分支之前 ⇒ 收款人拿钱排在清算拍卖之后。
+   * 本引擎的拍卖是待决交互，故由调用方（`finishToll`）把这几笔挂进 `pendingQueue`。
+   */
+  credits: PendingCredit[];
 }
 
 /**
@@ -164,6 +172,7 @@ export function collectRent(
     allyToll: 0,
     ownerDue: 0,
     bankrupted: false,
+    credits: [],
     counted: [],
   });
   if (land.owner === 0 || owner === undefined || ownerIdx === payer) return none();
@@ -208,15 +217,18 @@ export function collectRent(
   }
 
   const shares: RentShare[] = [];
+  const credits: PendingCredit[] = [];
   let ownerDue = 0;
   let next = [...players];
   let bankrupted = false;
 
   if (allyId === 0) {
     // @source 无同盟分支 0x00419fcf → 单笔付全额
-    const r = transferMoney(next, companies, 0, payer, ownerIdx, total, 0);
+    // ★ PAY-05：`deferCredit` —— 付款人破产时这一笔要等清算拍卖打完才入账
+    const r = transferMoney(next, companies, 0, payer, ownerIdx, total, 0, true);
     next = r.players;
     bankrupted = r.bankrupted;
+    if (r.deferred) credits.push(r.credit);
     shares.push({ payee: ownerIdx, amount: r.paid });
     ownerDue = total;
   } else {
@@ -228,18 +240,20 @@ export function collectRent(
     const ownerGets = total - allyGets;
     ownerDue = ownerGets;
     // ★ 顺序照搬：先付地主（0x00419fb4），再付同盟（0x0041a003）
-    const r1 = transferMoney(next, companies, 0, payer, ownerIdx, ownerGets, 0);
+    const r1 = transferMoney(next, companies, 0, payer, ownerIdx, ownerGets, 0, true);
     next = r1.players;
+    if (r1.deferred) credits.push(r1.credit);
     shares.push({ payee: ownerIdx, amount: r1.paid });
 
-    const r2 = transferMoney(next, companies, 0, payer, allyId - 1, allyGets, 0);
+    const r2 = transferMoney(next, companies, 0, payer, allyId - 1, allyGets, 0, true);
     next = r2.players;
+    if (r2.deferred) credits.push(r2.credit);
     shares.push({ payee: allyId - 1, amount: r2.paid });
 
     bankrupted = r1.bankrupted || r2.bankrupted;
   }
 
-  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, allyToll, ownerDue, bankrupted, counted };
+  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, allyToll, ownerDue, bankrupted, credits, counted };
 }
 
 /**
