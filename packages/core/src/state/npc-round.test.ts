@@ -407,11 +407,12 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     expect(after.lastNpcWalks).toEqual([]);
   });
 
-  it('★ 保釋上路那一趟也记下来：起点是監獄格', () => {
+  it('★ 保釋那一下**不**走（0x0043d7e0 只摆到门口）⇒ 没有新的走子提示；等轮到他那一趟才从監獄门口起步', () => {
     const s = makeGameState({
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, points: 900 })),
       prisonOccupancy: initialConfinement('prison', 8),
       phase: 'turnEnd',
+      currentPlayer: 3,
       pending: {
         kind: 'bail',
         place: 'prison',
@@ -419,16 +420,17 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
         points: 900,
       },
     });
-    const after = reduce(s, { type: 'bail', slot: 4 }, away);
+    const bailed = reduce(s, { type: 'bail', slot: 4 }, away);
+    expect(bailed.lastNpcWalks).toBe(s.lastNpcWalks);
+    expect(bailed.specialActors[0]!.nodeId).toBe(1);
+    const after = reduce(bailed, { type: 'endTurn' }, away);
     const hint = after.lastNpcWalks;
     expect(hint).toHaveLength(1);
     expect(hint[0]!.slot).toBe(0);
     const path = hint[0]!.path;
     expect(path[0]).toBe(1); // 監獄格
     expect(path.length).toBeGreaterThanOrEqual(2);
-    // 这条直路一路向前，末格就是 state 里的落点
     expect(path[path.length - 1]).toBe(after.specialActors[0]!.nodeId);
-    expect(path).toEqual(Array.from({ length: path.length }, (_, i) => i + 1));
     for (let i = 0; i + 1 < path.length; i++) {
       expect(away.nodes[path[i]! - 1]!.adjacent).toContain(path[i + 1]);
     }
@@ -518,7 +520,7 @@ describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标
     expect(doll.lastNpcTurn ?? null).toBeNull();
   });
 
-  it('★ 保釋当场那一趟不写（原版保釋 0x0043d7e0 不动 `[0x49910c]`，侧栏仍是保釋的那位玩家）', () => {
+  it('★ 保釋那一下不写（原版保釋 0x0043d7e0 不动 `[0x49910c]`，侧栏仍是保釋的那位玩家）；轮到他那条才写', () => {
     const s = makeGameState({
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, points: 900 })),
       prisonOccupancy: initialConfinement('prison', 8),
@@ -526,8 +528,10 @@ describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标
       pending: { kind: 'bail', place: 'prison', candidates: [{ slot: 4, player: -1, name: '', cost: 300, affordable: true }], points: 900 },
     });
     const after = reduce(s, { type: 'bail', slot: 4 }, away);
-    expect(after.lastNpcWalks).toHaveLength(1);
+    expect(after.lastNpcWalks).toBe(s.lastNpcWalks);
     expect(after.lastNpcTurn ?? null).toBeNull();
+    const round = reduce({ ...after, currentPlayer: 3 }, { type: 'endTurn' }, away);
+    expect(round.lastNpcTurn).toEqual({ actor: 4 });
   });
 
   it('只活一条 action：没生效的 action 原样留着（恒等），生效的清成 null', () => {

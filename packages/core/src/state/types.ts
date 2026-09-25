@@ -412,7 +412,8 @@ export interface NpcWalkHint {
  * core 一条 `npcStep`（或绕回的那条 `endTurn`）就是一个惡人的整个回合，下一条 action 就是下一位行动者
  * ⇒ 本字段**只活一条 action**（`reduce` 出口按引用相等清成 null，同 `lastBlockedSays`），
  *   表现层在它还在时画惡人那一版。不进指纹、不进存档、不进 history。
- *   保釋当场那一趟**不写**：原版保釋（`0x0043d7e0` / `0x0043ee8f`）不动 `[0x49910c]`。
+ *   保釋那一下**不写**：原版保釋（`0x0043d7e0` / `0x0043ee8f`）只把他摆到门口、不动 `[0x49910c]`；
+ *   他要等游标轮到他才走，那一条照常写。
  */
 export interface NpcTurnHint {
   /** 行动者号 4..7（= 槽 + 4）*/
@@ -1359,8 +1360,8 @@ export interface GameState {
    *   逐格算完才回一个 `path`），而 `path` 的中间格是岔路上 `rand()` 选的、
    *   消费掉的 RNG 状态已经回不去，渲染器事后**推不出来**。原版是逐格 tick 播的，
    *   要 1:1 就得把这份路径原样交给渲染器（见 `client/render.ts` 的 `ActorWalk`）。
-   *   三个覆写点：`reduce.ts` 的 `npcRound`（一輪里每个在盘上的惡人各一趟）、
-   *   `bail`（保釋当场那一趟）、以及用道具 1 时 `runDoll` 的九格。
+   *   两个覆写点：`reduce.ts` 的 `npcStepOnce`（一輪里每个在盘上的惡人各一趟，含刚被保釋出来的）、
+   *   以及用道具 1 时 `runDoll` 的九格。（保釋那一下不走，见 `bail` 那一支。）
    *
    * ★ **只保留最近一次**（每次覆写整份，不做累积）—— 它描述的是「刚刚发生了什么」，
    *   用于起一段补间；累积起来既没有消费者，也会让读档后的画面莫名滑一段。

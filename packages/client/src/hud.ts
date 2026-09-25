@@ -415,7 +415,7 @@ export function compactRows(p: { cash: number; moneyInBank: number }): readonly 
  *   **停留**不走的那一回合都画惡人那一版。本引擎一个惡人回合 = 一条 action，core 在那一条里交出
  *   `GameState.lastNpcTurn`（只活一条 action，见 `NpcTurnHint`）⇒ 由 `panelActorSlot` 取槽号。
  *   （先前按补间在走的那几格判 —— 走完就回到玩家、停留的惡人从不出现，已订正。）
- *   保釋当场那一趟不算（原版保釋不动 `[0x49910c]`）；小地图白框仍跟着补间走（`minimapFrameCenter`）。
+ *   保釋那一下只摆到门口、不走（原版保釋不动 `[0x49910c]`）；小地图白框仍跟着补间走（`minimapFrameCenter`）。
  *
  * ★ 機器娃娃（槽 4）画 `[0x498e70]` = 用道具的人（`0x00446b7b [0x498e70] = [0x49910c]`，道具只能在
  *   自己回合用）⇒ 就是 `currentPlayer`。不读 `specialActors[4].owner`：core 走完那一趟就把娃娃

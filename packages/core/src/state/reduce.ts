@@ -32,7 +32,6 @@ import {
   ACTOR_PLACE,
   actorActive,
   npcBittenByDog,
-  npcSteps,
   npcTurnSteps,
   releaseNpc,
   runDoll,
@@ -875,7 +874,7 @@ function activeNpcSlots(state: GameState): number[] {
  * 讓**一个**惡人走一趟 @source 0x0040dd1f（步数：停留 0 / 龜行 1 / 其余 rand()%9+2）
  * + `tick_blocking` 的 actor 分支（他**轮到时**先走一天计数）。
  *
- * 与保釋当场那一趟同一条 `runNpc`；不同点是这一条**只看一个槽**，
+ * 刚被保釋出来的惡人也走这一条（保釋那一下只摆到门口，0x0043d7e0）；这一条**只看一个槽**，
  * 好让表现层拿到「一趟一条」的 `lastNpcWalks`（串行播放，T-047 的 D-T047-5）。
  *
  * 返回 `null` 表示这个槽不在了（不在盘上 / 已出局），调用方跳过它。
@@ -2572,67 +2571,26 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (!r.ok) return { ...state, pending: null, phase: 'turnEnd' };
       let paid: GameState = { ...state, players: r.players, pending: null, phase: 'turnEnd' };
 
-      // ★ 保釋的若是 NPC（槽 4..7），他会**当场上路** —— 从監獄/醫院那一格
-      //   起步走 rand()%9+2 步，主人记成保釋他的人。
-      //   @source 0x0043d7e0（出獄）/ 0x0043ee8f（出院），两段同构。
-      let occupancy = r.occupancy;
+      // ★★ 第二十六份 panel（协调方拍板）：保釋的若是 NPC（槽 4..7），原版**只把他摆到门口**，不当场上路：
+      //   ```asm
+      //   0043d7e6  mov dl, [0x49910c] / mov [slot×16 + 0x498e30], dl   ; +8 主人 = 保釋他的人
+      //   0043d7f4  mov [slot×16 + 0x498e32], 0                         ; +0x0a = 0 ⇒ 在盘上（游标 0x00418fdc 不再跳过他）
+      //   0043d801  mov [slot×16 + 0x498e2c], [0x48bae0] / +0x0e 上一格 = 0 ; 監獄门口那一格
+      //   0043d82b  +0 / +2 = 那一格的世界坐标；0043d84e +0x0b = 1（节点类型 4 再 |0x80）
+      //   0043d884  call 0x40b93b                                        ; 只重画他的精灵，然后返回
+      //   ```
+      //   出院 `0x0043ee8f` 同构（+0x0b = 2）。**不**掷步数（`rand()%9+2` 在他自己的回合 `0x0040de50` 才掷）、
+      //   **不**动 `[0x49910c]` ⇒ 他要等行动者游标轮到 4..7（`0x00418f93..`，本引擎 `endTurn` 绕回时的
+      //   `activeNpcSlots`）才按槽位顺序走那一趟 —— 与其他在盘上的惡人同一条路（`npcStepOnce`，侧栏 / `lastNpcTurn` 也跟着）。
+      //   先前这里当场 `runNpc` 走完一趟（多耗一次随机数、第一轮多走一趟）。
+      const occupancy = r.occupancy;
       const slotIdx = specialSlotOf(action.slot);
       if (slotIdx >= 0) {
         const gate = gateNodeOf(topo, place);
         if (gate > 0) {
-          const rng = new WatcomRng();
-          rng.setState(paid.rngState);
-          const npc = releaseNpc(gate, state.currentPlayer, npcSteps(rng));
-
-          // ★ 放出来就**立刻上路** —— 原版把 [0x49910c] 切成 4..7 走完再切回，
-          //   期间没有玩家输入，所以对 core 来说这就是同一个动作（与機器娃娃同理）。
-          const walk = runNpc(
-            action.slot,
-            npc,
-            paid,
-            topo,
-            (from, prev) => pickNextNode(topo, from, prev, rng) ?? 0,
-            rng,
-          );
-          const settled = applyNpcEvents(paid, npc.owner, walk.events);
-
           const specialActors = [...paid.specialActors];
-          specialActors[slotIdx] = walk.actor;
-          // ★ 保釋当场那一趟也交给表现层（纯表现提示，覆写；见 GameState.lastNpcWalks）
-          const notices = npcNotices(state, walk.events, npc.owner);
-          paid = {
-            ...settled.state,
-            specialActors,
-            rngState: rng.getState(),
-            lastNpcWalks: [{ slot: slotIdx, path: walk.path, steps: npc.stepsRemaining }],
-            ...(notices.length > 0 ? { notices } : {}),
-          };
-
-          // 半路又被收回去了 —— 占用表要跟着改（可能换了一张表）
-          const home = walk.events.find((e) => e.kind === 'home');
-          if (home !== undefined) {
-            const back = [...(home.place === 'prison' ? paid.prisonOccupancy : paid.hospitalOccupancy)];
-            back[action.slot] = 1;
-            paid = home.place === 'prison'
-              ? { ...paid, prisonOccupancy: back }
-              : { ...paid, hospitalOccupancy: back };
-            // 他是从**另一处**被保釋出来的，原表那一格已经清了，不要再写回去
-            if (home.place !== place) occupancy = r.occupancy;
-          }
-
-          // 被榨破产的人逐个收口 —— 与过路费同一条路
-          let after: GameState = place === 'prison'
-            ? { ...paid, prisonOccupancy: home?.place === 'prison' ? paid.prisonOccupancy : occupancy }
-            : { ...paid, hospitalOccupancy: home?.place === 'hospital' ? paid.hospitalOccupancy : occupancy };
-          // ★ 半路踩到地雷被送医（@source 0x41be5f → `0x43ec3f(actor, 3)`）：
-          //   出狱的那张表照旧（源已清），**医院表要置上**。
-          if (walk.events.some((e) => e.kind === 'trap' && e.hospital)) {
-            const back = [...after.hospitalOccupancy];
-            back[action.slot] = 1;
-            after = { ...after, hospitalOccupancy: back };
-          }
-          for (const who of settled.bankrupted) after = applyBankruptcy(after, who, topo);
-          return after;
+          specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0);
+          paid = { ...paid, specialActors };
         }
       }
 

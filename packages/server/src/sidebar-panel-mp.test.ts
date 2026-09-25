@@ -20,6 +20,7 @@ import {
   newGame,
   parseMap,
   reduce,
+  initialConfinement,
   releaseNpc,
   stateFingerprint,
   type Action,
@@ -113,6 +114,37 @@ describe('★★ 联机：侧栏面板的输入两端一致', () => {
     expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
     expect(submitBoth(room, mirror, topo, room.actingSeat, { type: 'startTurn' }).ok).toBe(true);
     expect(room.state.lastNpcTurn ?? null).toBeNull();
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
+  });
+
+  run('★★ 保釋惡人：那一下只摆到监狱门口（0x0043d7e0，不走、不掷随机数），轮到游标 4..7 才走；侧栏两端一致', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = landAll(
+      newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 21, mode: 'multiplayer' }),
+      map.nodes,
+    );
+    const state: GameState = {
+      ...base,
+      currentPlayer: 3,
+      phase: 'turnEnd',
+      pendingNpcSlots: [],
+      prisonOccupancy: initialConfinement('prison', 8),
+      players: base.players.map((p) => ({ ...p, points: 900 })),
+      pending: { kind: 'bail', place: 'prison', candidates: [{ slot: 5, player: -1, name: '', cost: 300, affordable: true }], points: 900 },
+    };
+    const room = new Room({ id: 'PANMP4', map, globalMapId: 0, seed: 21, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state, snapshot: '' } });
+    room.start();
+    const mirror = { s: state };
+    expect(submitBoth(room, mirror, topo, 3, { type: 'bail', slot: 5 }).ok).toBe(true);
+    const bailed = room.state;
+    expect(bailed.specialActors[1]).toMatchObject({ owner: 3, stepsRemaining: 0 });
+    expect(bailed.rngState).toBe(state.rngState);
+    expect(bailed.lastNpcTurn ?? null).toBeNull();
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(bailed));
+    expect(submitBoth(room, mirror, topo, 3, { type: 'endTurn' }).ok).toBe(true);
+    expect(room.state.lastNpcTurn).toEqual({ actor: 5 });
+    expect(room.state.lastNpcWalks[0]?.path[0]).toBe(bailed.specialActors[1]!.nodeId);
     expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
   });
 

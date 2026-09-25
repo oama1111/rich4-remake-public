@@ -403,7 +403,7 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 //  保釋 → 上路
 // ============================================================
 
-describe('★ 保釋 NPC —— 他会当场上路', () => {
+describe('★ 保釋 NPC —— 摆到门口，等行动者游标轮到他才走（0x0043d7e0 / 0x0043ee8f）', () => {
   /**
    * 一条环线 1→2→3→4→1，**监狱在 2 号**（所以他绕一圈会自投罗网）。
    *
@@ -468,19 +468,37 @@ describe('★ 保釋 NPC —— 他会当场上路', () => {
     expect(after.specialActors[1]?.owner).toBe(2);
   });
 
-  it('★ 走完就收场 —— 替身不留在场上', () => {
+  it('★★ 只摆到门口：在盘上、站关押格、没掷步数（随机流不动）、没有走子提示、不换行动者', () => {
     const s = visiting(4);
     const after = reduce(s, { type: 'bail', slot: 4 }, away);
-    expect(actorActive(after.specialActors[0])).toBe(false);
-    expect(after.rngState).not.toBe(s.rngState);
+    expect(actorActive(after.specialActors[0])).toBe(true);
+    expect(after.specialActors[0]).toMatchObject({ nodeId: 2, lastNodeId: 0, owner: 0, stepsRemaining: 0, place: ACTOR_PLACE.board });
+    expect(after.rngState, '步数在他自己的回合 0x0040de50 才掷').toBe(s.rngState);
+    expect(after.lastNpcWalks).toBe(s.lastNpcWalks);
+    expect(after.lastNpcTurn ?? null).toBeNull();
+    expect(after.prisonOccupancy[4]).toBe(0);
+    expect(after.phase).toBe('turnEnd');
+    expect(after.pendingNpcSlots ?? []).toEqual([]);
   });
 
-  it('★★ 环线上绕回監獄格 → 他自投罗网，占用表又满上', () => {
-    const s = visiting(4);
-    const after = reduce(s, { type: 'bail', slot: 4 }, loop);
+  it('★★ 保釋者是最后一名 ⇒ 这一轮收回合时他按槽位顺序走那一趟（环线上绕回監獄格 → 自投罗网）', () => {
+    const s = { ...visiting(4), currentPlayer: 3 };
+    const bailed = reduce(s, { type: 'bail', slot: 4 }, loop);
+    expect(bailed.prisonOccupancy[4]).toBe(0);
+    const after = reduce(bailed, { type: 'endTurn' }, loop);
+    expect(after.lastNpcTurn).toEqual({ actor: 4 });
+    expect(after.lastNpcWalks[0]!.path[0]).toBe(2);
     // 这张四格环线怎么走都会踩回 2 号
     expect(after.prisonOccupancy[4]).toBe(1);
     expect(after.specialActors[0]?.place).toBe(ACTOR_PLACE.prison);
+  });
+
+  it('★ 保釋者不是最后一名 ⇒ 下一位玩家先走，他等游标到 4..7', () => {
+    const bailed = reduce(visiting(4), { type: 'bail', slot: 4 }, away);
+    const after = reduce(bailed, { type: 'endTurn' }, away);
+    expect(after.currentPlayer).toBe(1);
+    expect(after.specialActors[0]!.nodeId).toBe(2);
+    expect(after.lastNpcTurn ?? null).toBeNull();
   });
 
   it('★★★ 可证伪：出獄起点是**关押格**（`type` 0x1f42），不是落点特殊格', () => {
@@ -498,9 +516,9 @@ describe('★ 保釋 NPC —— 他会当场上路', () => {
       ],
     };
     const after = reduce(visiting(4), { type: 'bail', slot: 4 }, split);
-    // ★ 旧实现（`specialKind` 判据）会从 2 号起步 ⇒ 这两条当场红
-    expect(after.lastNpcWalks[0]!.path[0]).toBe(1);
-    expect(after.lastNpcWalks[0]!.path[0]).not.toBe(2);
+    // ★ 旧实现（`specialKind` 判据）会摆在 2 号 ⇒ 这两条当场红
+    expect(after.specialActors[0]!.nodeId).toBe(1);
+    expect(after.specialActors[0]!.nodeId).not.toBe(2);
   });
 
   it('保釋玩家（槽 0..3）不碰替身表', () => {
