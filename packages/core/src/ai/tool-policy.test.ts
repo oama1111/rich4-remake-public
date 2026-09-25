@@ -15,6 +15,7 @@ import { OBJECT_COUNT } from '../rules/objects.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { FACILITY_TYPE } from '../rules/facility.ts';
 import { TRAFFIC_ENGINEERING } from '../rules/tool-effects.ts';
+import { initialSpecialActors, releaseNpc } from '../rules/special-actors.ts';
 import { decideTool, type AiContext } from './policy.ts';
 import {
   AI_NEVER_USES,
@@ -257,6 +258,30 @@ describe('2 路障（0x0042107f）', () => {
     expect(aiToolChoice(2, view)).toEqual({ kind: 'place', nodeId: 3 });
     const poor = viewOf({ nodes, players: meOnLine(1, 0, { points: 100 }) });
     expect(aiToolChoice(2, poor)).toBeNull();
+  });
+
+  // ★★ 审计（ai-move）：阶段一的「空格」是 `+0x24 & 0x3fff00` —— 玩家位只在他站在盘上时才置，
+  //   住店 / 关押 / 消失的人把自己那一位清掉了（0x0040d5d2 / 0x0043d61d / 0x0040d444）
+  it('★★ 阶段一：住店的人脚下那格照样算空（他的占用位已清）；站着的人才挡', () => {
+    const lands = [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })];
+    const standing = meOnLine(1, 0);
+    standing[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    expect(aiToolChoice(2, viewOf({ nodes: stageOneNodes(), lands, players: standing }))).toBeNull();
+    const inHotel = meOnLine(1, 0);
+    inHotel[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    inHotel[2]!.blocking.inHotel = 2;
+    expect(aiToolChoice(2, viewOf({ nodes: stageOneNodes(), lands, players: inHotel }))).toEqual({
+      kind: 'place',
+      nodeId: 3,
+    });
+  });
+
+  it('★★ 阶段一：格上有惡人（bits 12-15）→ 不算空', () => {
+    const lands = [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })];
+    const specialActors = initialSpecialActors();
+    specialActors[0] = releaseNpc(3, 1, 0);
+    const view = viewOf({ nodes: stageOneNodes(), lands, players: meOnLine(1, 0), state: { specialActors } });
+    expect(aiToolChoice(2, view)).toBeNull();
   });
 
   it('阶段二：反瞻 6 格 ∩ 画面里我的地，取同區过路费最大的一格', () => {
@@ -599,6 +624,33 @@ describe('8 遙控骰子（0x00421827）', () => {
       players: meOnLine(1, 0),
     });
     expect(aiToolChoice(8, view)).toEqual({ kind: 'dice', steps: 3 }); // node4 = 第 3 步
+  });
+
+  // ★★ 审计（ai-move）：`0x00421a12 and edx, 0xf000` 查的是 bits 12-15 = **惡人**（actor 4..7，
+  //   `0x100 << actor`），不是玩家（玩家在 bits 8-11）
+  it('★★ 格上站着玩家 → 照样可以定这格（原版不查玩家位）', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 5 }]]));
+    const players = meOnLine(1, 0);
+    players[1] = makePlayer({ index: 1, character: 1, nodeId: 3 });
+    const view = viewOf({
+      nodes,
+      lands: [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })],
+      players,
+    });
+    expect(aiToolChoice(8, view)).toEqual({ kind: 'dice', steps: 2 });
+  });
+
+  it('★★ 格上站着惡人 → 该格跳过', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 5 }]]));
+    const specialActors = initialSpecialActors();
+    specialActors[1] = releaseNpc(3, 2, 0);
+    const view = viewOf({
+      nodes,
+      lands: [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })],
+      players: meOnLine(1, 0),
+      state: { specialActors },
+    });
+    expect(aiToolChoice(8, view)).toBeNull();
   });
 
   it('格上有坏物件（类型 16/17/18 等）→ 该格跳过', () => {
