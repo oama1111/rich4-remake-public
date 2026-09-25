@@ -1911,7 +1911,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         //     答掉之后才换成貸款屏（第十三份试玩回报 #2，见 `enterBankRoom`）；
         //   - 其余（电脑 / 托管）：按 `cashRatio`(+0x19) 重分現金／存款（`loc_00437acd`），再进柜台。
         if (node.specialKind === SPECIAL_KIND.BANK) {
-          next = bankAtmEntry(next, true);
+          next = bankAtmEntry(next, true, topo);
           if (next.pending?.kind === 'atm') return next;
           // ★ ATM 入口返回 ⇒ `0x0041b3af call 0x436668`：真人开貸款屏，其余当场走电脑那一支
           return enterBankRoom(next, topo);
@@ -6509,7 +6509,7 @@ function passingBank(state: GameState, topo: MapTopology): GameState {
   if (state.stepsRemaining <= 0) return state;
   const handle = objectHandleAt(state, me.nodeId);
   if (handle !== 0 && state.objects[handle - 1]?.type === OBJECT_TYPE_ROADBLOCK) return state;
-  return bankAtmEntry(state, false);
+  return bankAtmEntry(state, false, topo);
 }
 
 /**
@@ -6528,7 +6528,7 @@ function passingBank(state: GameState, topo: MapTopology): GameState {
  *
  * @param landing 落点那台（关掉之后接着进貸款屏）；`false` = 路过那台
  */
-function bankAtmEntry(state: GameState, landing: boolean): GameState {
+function bankAtmEntry(state: GameState, landing: boolean, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return state;
   if (me.daysRejectedByBank !== 0) {
@@ -6542,7 +6542,7 @@ function bankAtmEntry(state: GameState, landing: boolean): GameState {
     if (me.bankFreezeDays === 0) return opened;
     return { ...opened, notices: [{ key: 'bank.frozen', args: [displayRemainingDays(me.bankFreezeDays)] }] };
   }
-  return rebalanceBankOnArrival(state);
+  return rebalanceBankOnArrival(state, topo);
 }
 
 /**
@@ -6664,7 +6664,7 @@ function aiBankRoom(state: GameState, topo: MapTopology): GameState {
  * ⚠️ 原版对电脑也照样往下开柜台（`_rich4_ui_bank_entry` 的电脑支去借款），
  *   所以这里只做「重分」，`pending` 照旧由 `pendingForSpecial` 给出。
  */
-function rebalanceBankOnArrival(state: GameState): GameState {
+function rebalanceBankOnArrival(state: GameState, topo: MapTopology): GameState {
   const me = state.players[state.currentPlayer];
   if (me === undefined || !isAlive(me)) return state;
   // @source 0x00437a04 `cmp byte [player + 0x3b], 0 / jne`（+0x3b = days_rejected_by_bank）
@@ -6674,10 +6674,15 @@ function rebalanceBankOnArrival(state: GameState): GameState {
 
   const next = rebalanceCashByRatio(me, state.day);
   if (next === me) return state;
-  return withPlayer(state, state.currentPlayer, (p) => {
+  const moved = withPlayer(state, state.currentPlayer, (p) => {
     p.cash = next.cash;
     p.moneyInBank = next.moneyInBank;
   });
+  // ★★ 审计（provenance-ai-econ）：重分之后原版紧跟一次**銀行資金準備对账** ——
+  //   `0x00437c0a call 0x41d433`（重画侧栏）→ `0x00437c12 push 1 / call 0x436b0a`，与真人 ATM 取款之后
+  //   （`0x0043784d push 1 / call 0x436b0a`）同一个函数：别家存款合计不够董事長的特別融資 ⇒ 董事長垫差额。
+  //   电脑把存款挪成现金同样会掏空準備金；先前这一支漏了。只在真的重分了才调（「差不多就不动」那一支直接返回）。
+  return settleBankReserve(moved, topo);
 }
 
 /**
