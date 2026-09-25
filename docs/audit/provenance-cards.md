@@ -340,7 +340,7 @@ TX-1 / T14、T11-1 / T11-3 / T11-10 / T11-11 / T11-12、I-25 都已由 `471ef9e`
 | T05-5 | from engineering car → no refund | rules/tool-effects.ts:111 | 0x446e66 | verified | |
 | T07-1 | missile pick, take_tool, view, film | state/reduce.ts | 0x447013-0x447065 | verified | |
 | T07-2 | damage_area(0x64/−1, 0x26, heavy, attacker) | rules/tool-effects.ts:306 | 0x447074/0x447b86 | verified | |
-| T07-3 | blast window view-space | state/reduce.ts | 0x40a45c, 0x409de7 | approx | Q-TOOL-1 |
+| T07-3 | blast window view-space | rules/board-window.ts, state/reduce.ts | 0x40a45c, 0x409de7, 0x4090fc | fixed | Q-TOOL-1 2026-09-25 结项：投影表 + 实例锚点 + 半开区间，恒用视角 0；镜头钳位仍缺（D-005） |
 | T07-4 | land light: 30pi if owned; level−1; chain → 0 | rules/tool-effects.ts:355 | 0x40acf2-0x40ad38 | verified | |
 | T07-5 | land heavy: level·30·pi; clear owner/level/type/+0x30 | rules/tool-effects.ts | 0x40ad3a-0x40ad77 | verified | |
 | T07-6 | facility light | state/reduce.ts | 0x40adcb-0x40ae0d | verified | |

@@ -203,7 +203,10 @@
 ## F. 仓库 / 分支状态
 
 1. **`ds/audit-provenance` 还没开 PR**（本日所有 `ds/*` 修复都合进了它，已推到 origin）。需求方确认后开一个 PR 对准上一轮的分支。
-2. **`ds/ai-visible-cell-order`（`9bf8cbb`）没合并**：「可見節點表照原版屏幕行序收 —— §7.139(6) 第 2 條『並列次序』收口」。worktree 在另一个会话的 scratchpad 里。要么复核后合进来（跑全门禁 + e2e），要么在台账里写明放弃。
+2. ~~**`ds/ai-visible-cell-order`（`9bf8cbb`）没合并**：「可見節點表照原版屏幕行序收 —— §7.139(6) 第 2 條『並列次序』收口」。worktree 在另一个会话的 scratchpad 里。要么复核后合进来（跑全门禁 + e2e），要么在台账里写明放弃。~~
+   **✅ 2026-09-25 已并入**（按当时代码手工并入 = `b67bad7`，合并 `95d26d9`）：`screenScanOrder`
+   接手 `visibleNodeIds` 的次序（`docs/audit/provenance-ai-move.md` 的 V-1a，真值用
+   `tools/audit/visible-order-emu.py` 实跑 `0x409ef9` 复现）；`0x40a45c` 实例路径的次序仍留，见 V-1a 末句。
 3. **`ds/hd-stage`（`wt-hd`）属于另一个会话正在跑的画质升级任务（W-80），不要碰**，也不要在那个 worktree 里改代码。
 4. `wt28/*` 下 17 个 worktree 的分支**都已合进** `ds/audit-provenance`，也都是干净的，可以清理：`git worktree remove`，然后 `git branch -d`。
 5. 同一个 checkout 里曾有两个会话同时改代码：另一方合并时把对方未提交的修改 stash 走了。以后分工时，**每个会话用自己的 worktree**，主目录只做合并。

@@ -16,6 +16,12 @@
  * 这里预期值用它**看不到**的一条独立路径重算：直接调 `@rich4/data` 的 `projectWorld`
  * 逐节点投影再按 (屏幕Y, 屏幕X) 排 —— 抄自 0x409ef9 的算法，但不复用 core 的实现，
  * 免得实现错了这条测试跟着一起错。
+ *
+ * ★★ 合并 `ds/oi-qtool1`（Q-TOOL-1）之后，`visibleNodeIds` 的**成员**由那张 440×440 id 图的
+ * **屏幕方窗**说了算（±220、两轴半开、恒用视角 0），**次序**仍按当时的视角档位 —— 两半分工。
+ * 本文件按同样的分工各自独立重算：成员走 `inWindowAtView0`（`projectWorld` + 半开区间），
+ * 次序走 `screenOrder`。先前这里用「世界 ±220 方框」圈候选，投影是斜的 ⇒ 圈出来的集合
+ * 与 AI 实际看到的不再是一套（两条用例的预期格因此从 node39 挪到 node42 / node43）。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -47,8 +53,21 @@ const topoOf = (map: Map0) => ({ nodes: map.nodes, lands: map.lands, facilities:
 const seats = (): SeatInfo[] =>
   [0, 1, 2, 3].map((i) => ({ seat: i, name: `P${i}`, character: i, kind: i === 0 ? ('human' as const) : ('computer' as const) }));
 
-/** 画面半宽（同 `card-policy.ts` 的 `VIEW_HALF`，D-005 的 ±220 方窗） */
+/** 画面半宽（同 `card-policy.ts` 的 `VIEW_HALF`）@source 0x40a469 `mov edi,0x1b8` ÷ 2 = 0xdc */
 const VIEW_HALF = 220;
+
+/**
+ * 「这个**节点**在不在这幅画面里」—— 独立抄一遍 Q-TOOL-1 的窗口：
+ * 把镜头放在 `cam` 上投影，`−220 ≤ 偏移 < 220`（两轴、**半开区间**；`0x40a472..0x40a4c5`）。
+ *
+ * ★ 成员口径与次序是两件事：成员按这条（恒用视角 0，见 `rules/board-window.ts`），
+ *   次序按下面那条（随 `[0x499088]` 的档位）。两条合起来才是 `visibleNodeIds` 的语义 ——
+ *   先前这里用「世界 ±220 方框」圈候选，等距投影下那是**斜的**，圈出来的集合与 AI 实际看到的不是一套。
+ */
+function inWindowAtView0(cam: { x: number; y: number }, n: { x: number; y: number }): boolean {
+  const p = projectWorld(0, n.x, n.y, cam.x >> 5, cam.y >> 5, cam.x, cam.y);
+  return p !== null && p.x >= -VIEW_HALF && p.x < VIEW_HALF && p.y >= -VIEW_HALF && p.y < VIEW_HALF;
+}
 
 /**
  * 独立的「原版可见节点表次序」：逐节点投影后按行优先（先屏幕 Y 后屏幕 X）排。
@@ -80,11 +99,7 @@ describe('★★ 联机：AI 道具候选按原版屏幕行序（0x409ef9 / 0x40
     for (const at of map.nodes) {
       if (landAt(at) === 0 || at.adjacent.length === 0) continue;
       const near = houses.filter(
-        (n) =>
-          n.id !== at.id &&
-          Math.abs(n.x - at.x) <= VIEW_HALF &&
-          Math.abs(n.y - at.y) <= VIEW_HALF &&
-          landAt(n) !== landAt(at),
+        (n) => n.id !== at.id && inWindowAtView0(at, n) && landAt(n) !== landAt(at),
       );
       if (near.length < 2) continue;
       const byScreen = screenOrder(near, at, 0);
@@ -182,7 +197,7 @@ describe('★★ 联机：AI 道具候选按原版屏幕行序（0x409ef9 / 0x40
     for (const at of map.nodes) {
       if (landAt(at) === 0 || at.adjacent.length === 0) continue;
       const near = houses.filter(
-        (n) => n.id !== at.id && Math.abs(n.x - at.x) <= VIEW_HALF && Math.abs(n.y - at.y) <= VIEW_HALF && landAt(n) !== landAt(at),
+        (n) => n.id !== at.id && inWindowAtView0(at, n) && landAt(n) !== landAt(at),
       );
       if (near.length < 2) continue;
       const first = (v: number) => screenOrder(near, at, v)[0]!;

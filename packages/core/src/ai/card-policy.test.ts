@@ -17,6 +17,8 @@ import {
   cardLoopEsiAfterFill,
   cardsToConsider,
   mostHated,
+  visibleEntities,
+  visibleRivals,
   type CardAiView,
 } from './card-policy.ts';
 
@@ -87,6 +89,76 @@ describe('共用机制', () => {
     const view = viewOf();
     for (const id of AI_NEVER_PLAYS) expect(aiCardChoice(id, view)).toBeNull();
     expect(aiCardChoice(99, view)).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ Q-TOOL-1：视野 = `0x40a45c(-1)` 摊平的那张 440×440 id 图（**屏幕空间**）
+//  镜头位置 = 当前行动者（`0x415e70` 取 `[0x49910c]`），故中心就是我的节点。
+//  下面的实测投影偏移（视角 0、镜头 (0,0)）来自 `rules/board-window.test.ts` 的预言机。
+// ============================================================
+
+describe('★★ 视野（Q-TOOL-1，@source 0x40a45c 的 -1 那一档）', () => {
+  /** 我站节点 1 (0,0)，且节点 1 上挂地块 1（`visibleEntities` 是按**节点**枚举实体的） */
+  const meAt0 = (extra: MapNode[]): MapNode[] => [
+    makeNode({ id: 1, x: 0, y: 0, ref: { kind: 'land', index: 1 } }),
+    ...extra,
+  ];
+
+  it('世界 +x 200 的地块**不在**画面里（投影 px = 224 > 220）—— 旧的节点方框会误判', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 200, y: 0, ref: { kind: 'land', index: 2 } })]);
+    const lands = [
+      makeLand({ id: 1, x: 0, y: 0, owner: 1 }),
+      makeLand({ id: 2, x: 200, y: 0, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([1]);
+  });
+
+  it('世界 +y 220 的地块**在**画面里（投影 (101,175)）—— 旧的节点方框也会误判', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 0, y: 220, ref: { kind: 'land', index: 2 } })]);
+    const lands = [
+      makeLand({ id: 1, x: 0, y: 0, owner: 1 }),
+      makeLand({ id: 2, x: 0, y: 220, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([1, 2]);
+  });
+
+  it('锚点是**记录自己的 x/y**：节点出画、记录在画面里的地块照样进候选（反之亦然）', () => {
+    // 节点 2 在世界 (0,0)（画面正中），它那块地的记录却在 (400,0)（投影早已出窗）；
+    // 节点 3 在世界 (200,0)（出窗），它那块地的记录贴着镜头 (0,10) ⇒ 在窗里。
+    const nodes = meAt0([
+      makeNode({ id: 2, x: 0, y: 0, ref: { kind: 'land', index: 2 } }),
+      makeNode({ id: 3, x: 200, y: 0, ref: { kind: 'land', index: 3 } }),
+    ]);
+    const lands = [
+      makeLand({ id: 2, x: 400, y: 0, owner: 1 }),
+      makeLand({ id: 3, x: 0, y: 10, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([3]);
+  });
+
+  it('id 图上没有实例的地块/設施不进候选（没房子又没主）', () => {
+    const nodes = meAt0([
+      makeNode({ id: 2, x: 10, y: 0, ref: { kind: 'land', index: 2 } }),
+      makeNode({ id: 3, x: 20, y: 0, ref: { kind: 'facility', index: 2 } }),
+      makeNode({ id: 4, x: 30, y: 0, ref: { kind: 'land', index: 3 } }),
+    ]);
+    const lands = [
+      makeLand({ id: 2, x: 10, y: 0, level: 0, owner: 0 }), // 空、无主 ⇒ 不在图上
+      makeLand({ id: 3, x: 30, y: 0, level: 0, owner: 2 }), // 无主但**有主**的另一种：在图上
+    ];
+    const facilities = [makeFacility({ id: 2, x: 20, y: 0, level: 0, owner: 0 })];
+    expect(
+      visibleEntities(viewOf({ nodes, lands, facilities })).map((e) => `${e.kind}${e.id}`),
+    ).toEqual(['land3']);
+  });
+
+  it('对手按**节点**（棋子站在节点上）：世界 +x 200 的看不见，+y 220 的看得见', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 200, y: 0 }), makeNode({ id: 3, x: 0, y: 220 })]);
+    const players = [0, 1, 2, 3].map((i) =>
+      makePlayer({ index: i, nodeId: i === 0 ? 1 : i === 1 ? 2 : i === 2 ? 3 : 2 }),
+    );
+    expect(visibleRivals(viewOf({ nodes, players }))).toEqual([2]);
   });
 });
 

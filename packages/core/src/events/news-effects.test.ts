@@ -689,18 +689,42 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     expect(r.amount).toBe(2);
   });
 
-  it('★★★ 半径 100 是**窗**不是全图：heavy=1 不代表打全地图（证伪 `fireMissile` 那个形状）', () => {
-    // 只有两块地，第二块离爆心 0x64 + 1 = 101（刚好出窗）
-    const lands = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 101, 0)];
-    const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
-    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
-    // 距离恰好 100 的还在窗内（`<=`）
-    const lands2 = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 100, 100)];
-    const r2 = applyNewsEffect(4, ctx({ lands: lands2, facilities: [], rng: { below: () => 0 } }));
-    expect(r2.landMutations).toEqual([
-      { id: 1, level: 0, type: 0, owner: 0, tenure: 0 },
-      { id: 2, level: 0, type: 0, owner: 0, tenure: 0 },
-    ]);
+  it('★★★ 半径 100 是**屏幕窗**：heavy=1 不代表打全地图，也不是世界坐标的方框（Q-TOOL-1 订正）', () => {
+    // ★ 先前这里写的是「离爆心**世界距离** ≤ 100 就在窗里」—— 那是本引擎的近似口径。
+    //   原版取窗在**屏幕空间**（`0x40a45c` 摊平 440×440 的 id 图），等距投影既不保距也不保角：
+    //   视角 0、中心 (1000,1000) 的实测偏移（见 `rules/board-window.test.ts` 的预言机）：
+    //     +x 89 → px 99（在窗里）　+x 90 → px 100（**出窗**，上界取不到）
+    //     +y 126 → py 99（在窗里）　+y 127 → py 100（出窗）
+    //     +x 100 → (110,−33) ⇒ **世界距离 100 却已出窗**；+y 126 ⇒ 世界距离 126 反而在窗里。
+    const hit = (d: number, axis: 'x' | 'y'): number => {
+      const lands = [
+        built(1, 2, 0, 1, 1000, 1000), // 爆心（`below()=0` 选中的唯一/首个候选）
+        built(2, 2, 0, 1, axis === 'x' ? 1000 + d : 1000, axis === 'y' ? 1000 + d : 1000),
+      ];
+      const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
+      return r.landMutations?.length ?? 0;
+    };
+    expect(hit(89, 'x')).toBe(2);
+    expect(hit(90, 'x')).toBe(1);
+    expect(hit(100, 'x')).toBe(1); // ★ 世界距离 100 —— 旧口径会误伤
+    expect(hit(126, 'y')).toBe(2); // ★ 世界距离 126 —— 旧口径会漏掉
+    expect(hit(127, 'y')).toBe(1);
+    // 半径 0x64 仍然远小于「整幅画面」（核彈那一档是 −1，这一发不是）
+    expect(hit(300, 'x')).toBe(1);
+  });
+
+  it('★ id 图里没有实例的地块/設施扫不到：「没盖房又没主」的格子一个字节都不动', () => {
+    // @source 0x4091df..0x409240 / 0x4093f3..0x409488：level == 0 && owner == 0 ⇒
+    //   贴图指针 +4 写 0 ⇒ `0x409e3d cmp dword [eax+0x48a84c],0 / je 跳过` 不填进 id 图。
+    //   先前这一格照样会被「重击」清一遍种类、并且把旅館住客放出来。
+    const lands = [built(1, 2, 0, 1, 1000, 1000), built(2, 0, 1, 0, 1000, 1010)]; // 地 2：0 级、无主、却带着种类
+    const facilities = [fac(1, 0, 1, 0, 1000, 1020)]; // 設施 1：同上
+    const r = applyNewsEffect(
+      4,
+      ctx({ lands, facilities, rng: { below: () => 0 }, players: [] }),
+    );
+    expect(r.landMutations?.some((m) => m.id === 2)).toBe(false);
+    expect(r.facilityMutations?.some((m) => m.id === 1)).toBe(false);
   });
 
   it('★★ 爆心只从「盖了房子」的地块/設施里挑（`level != 0`），空地块不进候选', () => {
