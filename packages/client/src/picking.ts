@@ -295,7 +295,10 @@ export function pickCandidates(
 
   const ok = (target: CardTarget, nodeId: number): boolean =>
     source.kind === 'card'
-      ? canUseCard(state, topo, source.cardId, target)
+      ? canUseCard(state, topo, source.cardId, target) ||
+        // 天使卡打 0 级設施：种类要等选類別窗（`0x440aac(0)`）给，候选时先按「会选一种」预演
+        (target.kind === 'facility' && target.buildType === undefined &&
+          canUseCard(state, topo, source.cardId, { ...target, buildType: 0 }))
       : canUseTool(state, topo, source.toolId, nodeId);
 
   const at = (nodeId: number): { x: number; y: number } | undefined => {

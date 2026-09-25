@@ -393,15 +393,12 @@ describe('★ T-010：actor 目标经 reduce 端到端落回 specialActors', () 
     expect(after.players[0]!.cards).toHaveLength(0);
   });
 
-  it('对在監獄的惡人出停留卡：actor 状态不动，但**手牌里的卡照样消失**', () => {
-    // ★ 订正（2026-09-17）：原版 `remove_card`（`0x00443fca`）在取位号之后、
-    //   写 halted 之前，收尾返回非 0 ⇒ 成功 + 已扣。先前这条断言的是
-    //   `reduce(...) === s`（整份状态原样），那是「消耗点在函数末尾」时的旧行为。
+  // ★★ 2026-09-25 审计订正：在監獄的惡人不在拾取精灵表里（`0x00408b87 cmp byte [+0x0a],0 / jne`）⇒ 点不中
+  it('对在監獄的惡人出停留卡：点不中，状态原样、卡不扣', () => {
     const { state, topo } = scene();
-    const s = give(state, 0, 14); // 初始 actor 4 在監獄
+    const s = { ...give(state, 0, 14), phase: 'awaitingRoll' as const }; // 初始 actor 4 在監獄
     const after = reduce(s, { type: 'useCard', cardId: 14, target: { kind: 'actor', actor: 4 } }, topo);
-    expect(after.specialActors).toEqual(s.specialActors); // 替身确实没被动
-    expect(after.players[0]!.cards).toEqual([]); // ★ 但卡被扣掉了
+    expect(after).toBe(s);
   });
 });
 

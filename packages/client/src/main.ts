@@ -11783,6 +11783,17 @@ function bindInput(): void {
           });
           return;
         }
+        // ★★ 天使卡（9）打**0 级設施**：原版在 `0x40b110` 里给真人开「請選擇設施類別」
+        //   （`0x0040b1e4 call 0x440aac(0)`），种类挂在 facility 目标的 `buildType` 上
+        const tgt = hit.target;
+        if (source.cardId === 9 && tgt.kind === 'facility' && pickerNeededFor(state, topo, hit.nodeId)) {
+          const cardId = source.cardId;
+          openFacilityPicker((type) => {
+            if (type === null) return;
+            dispatch({ type: 'useCard', cardId, target: { ...tgt, buildType: type } });
+          });
+          return;
+        }
         dispatch({ type: 'useCard', cardId: source.cardId, target: hit.target });
       } else if (source.toolId === PICKER_TOOL_ID && pickerNeededFor(state, topo, hit.nodeId)) {
         // ★ 機器工人盖**等级 0 的設施**：原版先开「請選擇設施類別」

@@ -1141,17 +1141,15 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..7；機�
     });
   }
 
-  it('不在棋盘上的 NPC（place ≠ board）→ 状态不动，但**卡照扣**、判成功', () => {
-    // ★ 订正（2026-09-17）：`remove_card`（`0x00443fca`）在掩码取位号之后、
-    //   真正写 halted 之前，收尾返回非 0 ⇒ 原版算成功。
-    // 初始状态：小偷(actor 4)在監獄
+  // ★★ 2026-09-25 审计订正：不在棋盘上的惡人**根本点不中** —— 拾取的精灵表只收 `+0x0a == 0` 的惡人
+  //   （`0x00408b87 cmp byte [惡人+0x0a], 0 / jne 跳过`），卡片函数走不到「扣卡后不写」那一步。
+  it('不在棋盘上的 NPC（place ≠ board）→ 点不中（actorOffBoard），卡不扣', () => {
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [14] }), makePlayer({ index: 1 })],
     });
     const r = useCard(ctx, 14, { kind: 'actor', actor: 4 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[0]!.halted).toBe(0);
-    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('actorOffBoard');
   });
 
   // ★ 2026-09-24 审计订正：機器娃娃的拾取码是 0（`0x00408a4a`），`0x40d293` 只认低字节 ⇒ 点不中
@@ -1218,16 +1216,15 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..7；機�
     expect(r.players[0]!.cards).toEqual([]); // ★ 但卡被扣掉了
   });
 
-  it('夢遊卡(16) 对不在棋盘上的替身 → 状态不动，但**卡照扣**、判成功', () => {
+  it('夢遊卡(16) 对不在棋盘上的替身 → 点不中、卡不扣', () => {
     // ★ 订正（2026-09-17）：`remove_card`（`0x00444219`）在取位号之后，
     //   替身分支的 `cmp ebx,4 / jl` 只是跳过写天数，收尾 `mov eax, esi` 非 0。
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })],
     });
-    // 初始：小偷(4)在監獄、機器娃娃(8)未出场
+    // 初始：小偷(4)在監獄 ⇒ 点不中（`0x00408b87`）；機器娃娃(8)未出场
     const a = useCard(ctx, 16, { kind: 'actor', actor: 4 });
-    expect(a.ok).toBe(true);
-    expect(a.players[0]!.cards).toEqual([]);
+    expect(a.error).toBe('actorOffBoard');
     const b = useCard(ctx, 16, { kind: 'actor', actor: 8 });
     expect(b.error).toBe('actorOutOfRange'); // 機器娃娃点不中
   });
@@ -1235,5 +1232,22 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..7；機�
   it('夢遊卡(16) 仍然不接受「自己」这个玩家目标（0xe0c0710 不含自己）', () => {
     const ctx = makeCtx({ players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })] });
     expect(useCard(ctx, 16, { kind: 'player', index: 0 }).error).toBe('cannotTargetSelf');
+  });
+});
+
+describe('★★ 天使卡打 0 级設施的首建种类（0x40b110：0x0040b1ad test [+0x15],6）', () => {
+  const ctxFor = (whoPlays: number, owner: number) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [9], whoPlays }), makePlayer({ index: 1 })],
+      facilities: [makeFacility({ id: 1, owner, level: 0, type: 0 })],
+      rng: { next: () => 6 },
+    });
+  it('电脑、自己的設施 ⇒ rand()%4+1；别人的 ⇒ 公園', () => {
+    expect(useCard(ctxFor(2, 1), 9, { kind: 'facility', facilityId: 1 }).facilities[0]!.type).toBe(6 % 4 + 1);
+    expect(useCard(ctxFor(2, 2), 9, { kind: 'facility', facilityId: 1 }).facilities[0]!.type).toBe(0);
+  });
+  it('真人：种类由选類別窗给（buildType）；没给 ⇒ 不生效、卡不扣', () => {
+    expect(useCard(ctxFor(1, 1), 9, { kind: 'facility', facilityId: 1, buildType: 3 }).facilities[0]!.type).toBe(3);
+    expect(useCard(ctxFor(1, 1), 9, { kind: 'facility', facilityId: 1 }).ok).toBe(false);
   });
 });

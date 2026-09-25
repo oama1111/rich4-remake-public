@@ -71,6 +71,7 @@ import {
   applySealCard,
 } from './land-cards.ts';
 import { markFacility, PRICE_STATUS } from '../rules/land-mutation.ts';
+import { FACILITY_TYPE, aiPickFacilityType } from '../rules/facility.ts';
 
 export type HostilityDelta = { from: number; to: number; delta: number };
 
@@ -88,7 +89,12 @@ export type UseCardError =
   /** 購地卡：现金不够（原版弹「您的現金不足！」`0x004425fb`，卡不扣）*/
   | 'notEnoughCash'
   /** 目标玩家已出局（选择器 `0x004462d9` 不收）*/
-  | 'targetNotAlive';
+  | 'targetNotAlive'
+  /**
+   * 惡人不在棋盘上（关着 / 未出场）—— 他根本不在拾取的精灵表里：`0x00408b87 cmp byte [惡人+0x0a], 0 / jne 跳过`
+   * （0x0a = 所在处：0 棋盘、1 監獄、2 醫院、3 未出场）⇒ 选不中、卡不扣。
+   */
+  | 'actorOffBoard';
 
 /** 卡片使用的结果 */
 export interface UseCardResult {
@@ -527,7 +533,7 @@ export function useCard(
         //   @source `0x00442f8a call 0x441343`（remove_card）在选完掩码之后、
         //   `0x00443025 call 0x40c78c`（真正掉头）之前；收尾 `0x00443069 mov eax, ebx`
         //   （`ebx` = 掩码，恒非 0）。故走 `noEffect()` 而不是 `fail`。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) =>
           i === slot ? applyTurnCardToActor(x, ctx.nodes, draw) : x,
         );
@@ -546,7 +552,7 @@ export function useCard(
         // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
         //   @source `0x00443fca call 0x441343`（remove_card）在 `0x00443fb5 call 0x40d293`
         //   （掩码取位号）之后；之后只剩「目标≠自己就说一句」的台词分支。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyStayCardToActor(x) : x));
         break;
       }
@@ -594,7 +600,7 @@ export function useCard(
         // 不在棋盘上（監獄/醫院/未出场）不生效 —— 与停留/轉向/烏龜同一条规矩。
         // ⚠️ 原版那一支没有 `actorActive` 这个判断（它按鼠标点得到谁就是谁），
         //   但 picker 画的就是在场的那几个，故行为一致。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         // ★★ 已经冬眠的替身：**不写天数**，但原版在 `0x004444b3` 只做
         //   `call 0x41d546` 收尾 + `mov eax, esi`（`esi` = 选中的目标，恒非 0）
         //   ⇒ 返回值非 0 = **成功**，而 `remove_card` 早在 `0x00444219` 执行过了。
@@ -682,7 +688,7 @@ export function useCard(
         //   先前 17 不收惡人目标。
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        if (a === undefined || !actorActive(a)) return noEffect();
+        if (a === undefined || !actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? npcBittenByDog(x, ACTOR_PLACE.prison) : x));
         prisonOccupancy = prisonOccupancy.map((v, i) => (i === target.actor ? 1 : v));
         break;
@@ -729,7 +735,7 @@ export function useCard(
         // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
         //   @source `0x00445929 call 0x441343`（remove_card）在 `0x00445914 call 0x40d293`
         //   之后；收尾 `0x004458d8 mov eax, esi`（`esi` = 选中目标，恒非 0）。
-        if (!actorActive(a)) return noEffect();
+        if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyTortoiseCardToActor(x) : x));
         break;
       }
@@ -940,7 +946,22 @@ export function useCard(
       if (target.kind === 'facility') {
         const fac = facilities.find((f) => f.id === target.facilityId) ?? null;
         if (fac === null) return fail('facilityOutOfRange');
-        const r = applyAngelFacilityCard(fac, target.buildType ?? 0);
+        // ★★ 0 级設施首建的种类 —— 设施支走 `0x004436ad call 0x40b110`，里面分电脑 / 真人：
+        //   `0x0040b1ad test byte [出牌者+0x15], 6 / je 真人支`：
+        //   电脑（含託管）：設施是自己的 ⇒ `rand()%4+1`（`0x0040b1c5 call 0x456f2d`），不是 ⇒ 公園 0；
+        //   真人：选類別窗 `0x0040b1e4 call 0x440aac(0)`（这一窗不能取消），种类由 `buildType` 带进来。
+        //   先前一律取 `buildType ?? 0`：电脑不掷随机、真人没给也当公園。
+        let buildType = 0;
+        if (fac.level === 0) {
+          if ((me.whoPlays & 0x06) !== 0) {
+            buildType = fac.owner === cur + 1 ? aiPickFacilityType(ctx.rng?.next() ?? 0) : FACILITY_TYPE.park;
+          } else {
+            const t = target.buildType;
+            if (t === undefined || !Number.isInteger(t) || t < 0 || t > FACILITY_TYPE.lab) return fail('wrongTargetKind');
+            buildType = t;
+          }
+        }
+        const r = applyAngelFacilityCard(fac, buildType);
         // ★ 满级不动 → 状态不变，**但卡照扣、原版算成功**。
         //   先前这里写着「原版返回 0」，那是**读反了**：
         //   @source `0x004436b7 je 0x4436c0` → `0x004436ce cmp dword [esp],0` →
