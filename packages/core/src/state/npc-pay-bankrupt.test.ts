@@ -142,7 +142,7 @@ describe('FU-6 搶銀行把人抢破产：破产在 pay_money 里当场发生 @s
     const { state, partnerSlot, cards } = fixture(false);
     const after = reduce(state, { type: 'npcStep' }, topo);
 
-    const steps = after.lastNpcWalks[0]!.steps;
+    const steps = after.lastNpcWalks[0]!.steps!;
     // 走不到第 4 步就换种子 —— 这场戏要「踩银行」和「再走一格夺卡」都发生
     expect(steps).toBeGreaterThanOrEqual(4);
     // 一开头「1 号被抢破产」这件事必须发生

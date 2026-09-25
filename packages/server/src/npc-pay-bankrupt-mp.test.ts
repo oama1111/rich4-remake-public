@@ -39,7 +39,7 @@ const topoOf = (map: Map0) => ({ nodes: map.nodes, lands: map.lands, facilities:
 
 /** 0/1 真人、2/3 电脑 —— 破产拍卖的 AI 心理价位（`0x439f0d` 每家掷两次）也跟着走一遍 */
 const seats = (): SeatInfo[] =>
-  [0, 1, 2, 3].map((i) => ({ seat: i, name: `P${i}`, character: i, kind: i < 2 ? ('human' as const) : ('ai' as const) }));
+  [0, 1, 2, 3].map((i) => ({ seat: i, name: `P${i}`, character: i, kind: i < 2 ? ('human' as const) : ('computer' as const) }));
 
 function submitBoth(room: Room, mirror: { s: GameState }, topo: ReturnType<typeof topoOf>, seat: number, action: Action) {
   const r = room.submit(seat, action);
