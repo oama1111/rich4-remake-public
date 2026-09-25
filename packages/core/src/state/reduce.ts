@@ -3562,13 +3562,13 @@ function manifestGodOnLanding(before: GameState, next: GameState, topo: MapTopol
  *   原版靠地图格里那一字节（node +0x26）区分，附身时会把它抹掉。
  *
  * ★★ 2026-09-22（第九份试玩回报 #5「路障和神灵重合时经过路障没有把我阻拦下来」）：
- *   同格有**多件**时取**槽号最大的那一件**，不再取下标最小的。
+ *   同格有**多件**时要在那一字节上**按位或**，不是取槽号最大的那一件。
  *
  *   原版并不扫物件表，而是读地图节点里的**反向索引** `node+0x26`
  *   （`_rich4_player_move_one_step_done` VA 0x0041b4b4：
  *   `mov eax,[eax+0x24] / and eax,0xff0000 / shr eax,0x10` ⇒ 第 3 字节 = 槽号+1）；
- *   而 `place_object` 往那一字节里**按位或**槽号（`rich4_objects.asm:118-126`
- *   `lea edx,[ebx+1] / shl edx,0x10 / or [eax+0x24],edx`）。
+ *   而 `place_object` 往那一字节里**按位或**槽号（VA 0x0040e13c
+ *   `lea edx,[ebx+1] / shl edx,0x10 / or [node+0x24],edx`）。
  *
  *   ⇒ 神明占槽 0..11（handle 1..12）、路障占槽 16..25（handle 17..26），
  *     两件同格时 OR 的结果落在**路障**那一侧（`1 | 17 = 17`）——
@@ -3577,19 +3577,29 @@ function manifestGodOnLanding(before: GameState, next: GameState, topo: MapTopol
  *     `if (moving) return`（`rules/object-landing.ts` 的 default 分支，
  *     @source `0x41c164`），于是路过时**什么都不发生** —— 既不被拦、也不附身。
  *
- *   ⚠️ 这是**近似**而非逐位复刻：真正的 OR 在极端组合下会落到第三件物件
- *     （例：同一个格上两个神明 handle 1|2 = 3 ⇒ 槽 2）。可实际构造出来的重叠
- *     （路障 17 压神明 1、路障 17 | 地雷 27 = 27、路障 17 | 炸彈 19 = 19）
- *     取最大值与 OR 结果一致。要逐位复刻得在 state 里加一张「每格一件」的反向索引
- *     （见 `docs/gaps/04-events-places-gods.md` 的 G26），那是独立的一步。
+ * ★★ 2026-09-25（本分支）：**改成逐位 OR**（原先取最大值 —— 在有重叠的常见组合下
+ *   两者相同，如 `1|17 = 17`、`17|27 = 27`，但**不总是**：
+ *   死神槽 14（handle 15）压第 10 个路障槽 25（handle 26）⇒ `15|26 = 31`，
+ *   而 31 是**地雷**槽 30 的 handle（`OBJECT_TYPE_TABLE[30] = 17`）⇒
+ *   原版会把这一格当地雷炸（住院 3 天），取最大值只会当路障拦下。
+ *   原版随后所有分支（跳表分派 `0x41b3e5`、`remove_object`）用的都是
+ *   **这一字节**，包括 `objects[字节-1].type` 也是照它查 `0x496d08`（`0x41b4ca..db`）
+ *   ⇒ 引擎照抄：返回 OR 结果，调用方仍按 `objects[handle-1].type` 分派。
+ *
+ *   ⚠️ 仍然**不是**逐位复刻：原版那一字节是**存下来**的，`release_object`
+ *     （VA 0x0040e243 `mov byte [node+0x26], 0`）与 `attach_object`
+ *     （VA 0x0040ebc7 同一条）都把它**整字节清零**——所以「同格两件，先收走一件」
+ *     在原版里那一格就空了，本引擎按现存的物件重算 OR 仍会看见剩下那件。
+ *     要逐位复刻得在 state 里存这张反向索引（见 `docs/gaps/04-events-places-gods.md` G26）。
  */
 function objectHandleAt(state: GameState, nodeId: number): number {
-  let found = 0;
+  // @source 0x0040e13c `or [node+0x24], (槽+1)<<16` —— 那一字节是**按位或**出来的
+  let handle = 0;
   for (let i = 0; i < state.objects.length; i++) {
     const o = state.objects[i];
-    if (o !== undefined && o.nodeId === nodeId && o.attached === 0) found = i + 1;
+    if (o !== undefined && o.nodeId === nodeId && o.attached === 0) handle |= i + 1;
   }
-  return found;
+  return handle;
 }
 
 /**

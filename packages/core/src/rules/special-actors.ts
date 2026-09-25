@@ -451,15 +451,20 @@ export function dollSweepNode(objects: readonly MapObject[], nodeId: number): Ma
  *   仍跟着主人走（`syncEscortNodes`），光比 `nodeId` 会把**别人身上的神明 / 定時炸彈**当成地上的。
  *   第 24 份试玩回报 `20260924-182247766`「我身上背的窮神莫名其妙消失了」：電腦放機器娃娃，
  *   九格里正好走过真人脚下，娃娃把他身上的小窮神「扫」掉（物件清零，玩家的 `godInfo` 却还指着它）。
- * ★ 同格多件取**槽号最大**的那一件（与 `reduce.ts` 的 `objectHandleAt` 同一近似：那一字节是 `or` 进去的）。
+ * ★ 同格多件取那一字节**按位或**的结果（与 `reduce.ts` 的 `objectHandleAt` 同一条规则：
+ *   `place_object` 往 `node+0x26` 里 `or` 槽号 —— VA 0x0040e13c `or [node+0x24], (槽+1)<<16`）
+ *   ⇒ 返回的下标**可能不是**同格任何一件真正所在的那个槽（例：死神槽 14 与第 10 个路障槽 25
+ *   压在一格 ⇒ `15|26 = 31` ⇒ 槽 30 的地雷）。原版随后正是拿这一字节去查
+ *   `objects[字节-1]`（`0x0041b4ca..db`）与 `remove_object`（`0x0041b529`），所以这里照抄。
  */
 export function nodeObjectIndex(objects: readonly MapObject[], nodeId: number): number {
-  let found = -1;
+  // @source 0x0040e13c `or [node+0x24], (槽+1)<<16`
+  let handle = 0;
   for (let i = 0; i < objects.length; i++) {
     const o = objects[i];
-    if (o !== undefined && o.nodeId === nodeId && o.nodeId !== 0 && o.attached === 0) found = i;
+    if (o !== undefined && o.nodeId === nodeId && o.nodeId !== 0 && o.attached === 0) handle |= i + 1;
   }
-  return found;
+  return handle - 1;
 }
 
 /**
