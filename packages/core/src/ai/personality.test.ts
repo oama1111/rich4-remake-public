@@ -42,9 +42,10 @@ describe('f24：借贷激进度', () => {
     expect(maxed).toEqual(['沙隆巴斯', '錢夫人', '宮本寶藏']);
   });
 
-  it('身家为负或零时借不出来', () => {
+  it('身家为零借不出来；★ 为负时照算（负数）—— 原版只拦 0（0x00436902 test eax,eax / je）', () => {
     expect(autoLoanAmount(0, 100)).toBe(0);
-    expect(autoLoanAmount(-5000, 100)).toBe(0);
+    expect(autoLoanAmount(-5000, 100)).toBe(-5000);
+    expect(autoLoanAmount(-5050, 50)).toBe(-2525);
   });
 });
 

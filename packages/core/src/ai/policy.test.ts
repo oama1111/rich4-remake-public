@@ -570,6 +570,18 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
     expect(auctionNextBid(dead, p)).toBeNull();
   });
 
+  it('★ 审计（AUC-22/23）：真人支只认整字节 == 1；钱不够现价的真人由 core 替他放棄（0x0043b001 / 0x0043b06c）', () => {
+    const p = pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000], price: 5000 });
+    const poorHuman = at(p, [{ whoPlays: WHO_PLAYS_HUMAN, cash: 4999 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(poorHuman, p)).toEqual({ type: 'auctionBid', bidder: 0, status: 'giveUp', step: 0 });
+    const richHuman = at(p, [{ whoPlays: WHO_PLAYS_HUMAN, cash: 5000 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(richHuman, p)).toBeNull();
+    // 走回棋盘位 0x10 的真人：走电脑支，限价 0（开拍时没给他算）⇒ 出得起也只 PASS
+    const noLimit = pendingAuction({ seat: 0, bidders: [0, 1], limits: [0, 20_000], price: 5000 });
+    const returning = at(noLimit, [{ whoPlays: WHO_PLAYS_HUMAN | 0x10, cash: 90_000 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(returning, noLimit)).toMatchObject({ bidder: 0, status: 'pass' });
+  });
+
   it('auctionNextBid：已 PASS / 已放棄的座位返回 null', () => {
     const p = pendingAuction({
       seat: 0,

@@ -74,7 +74,8 @@ import type {
   LandscapeInfo,
 } from '../loaders/map.ts';
 import { GOD_BLOCKS_PURCHASE, housingIndexOf, canPurchase, canUpgrade, landingOnLand } from '../rules/land.ts';
-import { collectRent, LAND_TOLL_FEE_NAME } from '../rules/rent.ts';
+import { collectRent, LAND_TOLL_FEE_NAME, rentHostility } from '../rules/rent.ts';
+import { truncTowardZero } from '../rules/rounding.ts';
 import { PARTY_POOL, PAY_FLAG_CREDIT_TO_CASH, companyParty, receiveMoney, transferMoney, type Company } from '../rules/payment.ts';
 import {
   aiScapegoat,
@@ -345,6 +346,7 @@ import {
   auctionAiLimits,
   auctionBasePrice,
   auctionCanAfford,
+  AUCTION_RAISE_STEPS,
   auctionFinished,
   auctionFirstSeat,
   auctionOutcome,
@@ -513,7 +515,7 @@ function openAuction(
     topCash: 0,
     // ★ 卖家单列（见 `AuctionPending.seller` 的注释）：出价循环两处都要跳过他
     seller,
-    // ★ 开场席位从 slot 0 起（原版 `loc_0043a365` 把 `[0x48c4a4]` 清 0），
+    // ★ 开场席位是**下标最大**的在场座位（2026-09-24 审计订正，`0x0043af13..0x0043af45`，见 `auctionFirstSeat`），
     //   并跳过卖家与非 active 的座位。找不到返回 -1
     //   （此时已判流标/成交，客户端据此不再等任何人点钮）。见 `auctionFirstSeat`。
     seat: auctionFirstSeat(pending.bidders, status, seller),
@@ -640,6 +642,7 @@ function settleAuctionExplicit(
     const fr = settleFacilityAuction(state.players, fac, { winner: w, price: p }, state.pool, [], {
       payee: pending.seller ?? -1,
       expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+      ...(pending.fromCard === true ? { clearOnPassIn: true } : {}),
     });
     const facilityOwner = [...state.facilityOwner];
     // 魔法屋那一场流拍不改归属（`keepOwnerOnPass`，见 interaction.ts）
@@ -649,11 +652,10 @@ function settleAuctionExplicit(
       players: fr.players,
       facilityOwner,
       ...(fr.tenure === 0 ? {} : { facilityTenure: withTenure(state.facilityTenure, entityId, fr.tenure) }),
-      // ★ 拍賣卡流拍：到期日也清零 @source 0x0044348a `mov dword [fac+0x34], eax`（eax = 0）
-      ...(w < 0 && pending.fromCard === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
+      ...(fr.clearTenure === true ? { facilityTenure: withTenure(state.facilityTenure, entityId, 0) } : {}),
       pool: fr.pool,
       pending: null,
-      phase: 'turnEnd',
+      phase: pending.resumePhase ?? 'turnEnd',
     };
     // 中标者若因付款破产，破产流程本身会把该结的都结掉，队列交给它继续
     return fr.bankrupted ? applyBankruptcy(settled, w, topo) : chainQueuedAuction(settled, topo);
@@ -666,6 +668,7 @@ function settleAuctionExplicit(
   const r = settleAuction(state.players, land, { winner: w, price: p }, state.pool, [], {
     payee: pending.seller ?? -1,
     expiry: tenureExpiry(packDate(state), state.landTenureIndex),
+    ...(pending.fromCard === true ? { clearOnPassIn: true } : {}),
   });
   const landOwner = [...state.landOwner];
   // 魔法屋那一场流拍不改归属（`keepOwnerOnPass`，见 interaction.ts）
@@ -675,12 +678,10 @@ function settleAuctionExplicit(
     players: r.players,
     landOwner,
     ...(r.tenure === 0 ? {} : { landTenure: withTenure(state.landTenure, entityId, r.tenure) }),
-    // ★ 拍賣卡流拍：到期日也清零 @source 0x0044335f `mov dword [esi+0x30], eax`（eax = 0）——
-    //   先前留着原主的日子，之后被換地卡换到手的人会按那个旧日子失去它
-    ...(w < 0 && pending.fromCard === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
+    ...(r.clearTenure === true ? { landTenure: withTenure(state.landTenure, entityId, 0) } : {}),
     pool: r.pool,
     pending: null,
-    phase: 'turnEnd',
+    phase: pending.resumePhase ?? 'turnEnd',
   };
   return r.bankrupted ? applyBankruptcy(settled, w, topo) : chainQueuedAuction(settled, topo);
 }
@@ -2264,7 +2265,28 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           const tollLandsHint = preview.counted.length > 1 ? preview.counted : null;
           let pre: GameState = { ...state, lastTollLands: tollLandsHint };
           for (const n of notices) pre = appendFreshNotice(pre, n);
+          // ★ 2026-09-25 集成（events × econ 冲突）：这两段**都要**，且台词在前 ——
+          //   神明把费抹成 0 时，原版是**先**在 `pay_money`（`0x00419d70 call 0x41d709`）里头说那句
+          //   庆幸台词，**再**带着返回值回到这里判「实付 0」收尾：函数体 `0x41d706` 起，
+          //   `0x0041d7b4 test ebx,ebx / jne 0x41d7c9` ⇒ 实付 0 才 `0x0041d7c1 call 0x44f567`；
+          //   而 `0x00419d7c test eax,eax / 0x00419d7e je 0x41b077` 在这**之后**。
           pre = godReliefSpeechDraw(pre, godNotice);
+          // ★ 2026-09-24 审计：神明把金额抹成 0 ⇒ 当场收尾 —— @source `0x00419d7c test eax, eax /
+          //   0x00419d7e je 0x41b077`：敌意、被动卡、死神、付钱、`[land+0x2c]` 一概不走
+          //   （先前落进 `finishToll` 的 `toll === 0` 支，把「上次过路费」改写成 0）。
+          if (preview.total === 0) return { ...pre, phase: 'turnEnd' };
+          // ★ 2026-09-24 审计补：付钱之前先记敌意（`0x00419db1` / `0x00419df3 call 0x40df69`），见 `rentHostility`
+          pre = {
+            ...pre,
+            players: rentHostility(
+              pre.players,
+              state.currentPlayer,
+              land.owner - 1,
+              landlord.alliedPlayer,
+              preview.total,
+              preview.allyToll,
+            ),
+          };
           // ★ 尾巴照 0x00419e36 起：免費卡 → 嫁禍卡 → 死神顯靈由他人賠償 → 付钱（`runTollTail`）
           return runTollTail(pre, topo, {
             route: { path: 'rent', landId: land.id },
@@ -2349,10 +2371,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     case 'buildFacility': {
       if (state.phase !== 'awaitingDecision' || state.pending?.kind !== 'buildFacility') return state;
       const player = state.players[state.currentPlayer];
-      const fac = facilityAtPlayer(state, topo);
+      // 建設公司那一支选的設施不在脚下 ⇒ 按 pending 里记的那一处
+      const fac =
+        state.pending.company === undefined
+          ? facilityAtPlayer(state, topo)
+          : effectiveFacility(state, topo, state.pending.facilityId);
       if (player === undefined || fac === null) return state;
       // ★ `facilityType: null` = 电脑那一支定种类（开着选种类窗被托管的真人，由 AI 代答）；真人座位不收
       if (action.facilityType === null && !isAiControlled(player)) return state;
+      if (state.pending.free === true && state.pending.company !== undefined) {
+        if (action.facilityType !== null && !state.pending.choices.includes(action.facilityType)) return state;
+        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType ?? -1);
+        return companyBuildTail(state, topo, state.pending.company, 0xfa0 + fac.id, built);
+      }
       if (state.pending.free === true) {
         // ★ 神明顯靈代蓋的那一次（`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
         //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
@@ -2388,7 +2419,7 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         chosen = action.facilityType;
       }
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return godBlockedPurchase(rolledState, bought.reason);
+      if (!bought.ok) return godBlockedPurchase(withFacilityType(rolledState, fac.id, chosen, bought.reason), bought.reason);
       const paid = withPlayer(rolledState, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
@@ -2439,11 +2470,28 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (state.pending?.kind !== 'chooseBuildTarget') return state;
       const pend = state.pending;
       if (!pend.choices.includes(action.entityId)) return state;
+      const company = { commercialId: pend.commercialId, charge: pend.charge };
+      // ★ 2026-09-25 审计：选中等级 0 的設施（真人）⇒ `0x40b110` 里先弹选种类窗（`0x0040b1e4 call 0x440aac`），
+      //   种类定了再接着走建設公司收尾（`companyBuildTail`）
+      const picked = decodeEstate(action.entityId);
+      const me = state.players[state.currentPlayer];
+      if (picked.kind === 'facility' && me !== undefined && (me.whoPlays & 0x06) === 0) {
+        const fac = effectiveFacility(state, topo, picked.index);
+        if (fac !== null && fac.level === 0) {
+          return {
+            ...state,
+            phase: 'awaitingDecision',
+            pending: { kind: 'buildFacility', facilityId: fac.id, name: fac.name, price: 0, choices: [0, 1, 2, 3, 4], free: true, company },
+          };
+        }
+      }
       // ★ 第十五份：自家公司（`charge` 为假）蓋两次（`ownCompanyBuild`）；别人的公司一次
       const built = pend.charge
         ? freeBuildEntity(state, topo, action.entityId, -1)
         : ownCompanyBuild(state, topo, action.entityId);
-      if (built === null) return state;
+      // ★ 2026-09-25 审计：蓋不成（满级 / 連鎖店…，`0x40b110` 返回 0）也照走收尾 —— 原版 `0x0041ad7e call 0x40b110`
+      //   不看返回值，大锤照播、工程費照收（`0x0041adb9` 起）
+      if (built === null) return companyBuildTail(state, topo, company, action.entityId, null);
       // ⚠️ 建設公司这一支在原版里也播 0x229 大锤 + 消费 bit7
       //   （@source 0x0041ad7e → 0x0041ad99 call 0x45144f（大锤）→ 0x0041adaa
       //   test byte [esp+0xbc], 0x80 → 0x0041adb4 call 0x40b0cd）。
@@ -2593,10 +2641,17 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
     }
 
     case 'shop':
-      return shopAction(state, action);
+      return shopAction(state, action, topo);
 
     case 'noticeBoard':
       return noticeBoardAction(state, topo, action);
+
+    case 'stockScreen': {
+      // @source `0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a` —— 股市屏的两条出口都走到这里
+      const me = state.players[state.currentPlayer];
+      if (me === undefined || !isAlive(me)) return state;
+      return sweepSpecialFinance(state, topo);
+    }
 
     case 'declineDecision': {
       // ★ 「不了」对**任何**待决交互都合法（rules/interaction.ts 的
@@ -2623,6 +2678,19 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         const tail = state.pending.tail;
         if ('card' in tail) return resumeCardPassive(state, topo, tail, { scapegoat: -1 });
         return runTollTail(state, topo, tail, { scapegoat: -1 });
+      }
+      // ★ 2026-09-25 审计：建設公司选地窗右键 ⇒ 窗交回 0（`0x004466c6` 掩码没有 8 位 ⇒ 可取消）：
+      //   别人家 `0x0041ad28 je 0x41adff` ⇒ 照收 1000 × 物價；自家 `0x0041aa95 je 0x41b062` ⇒ 直接到出口。
+      if (state.pending?.kind === 'chooseBuildTarget') {
+        const pend = state.pending;
+        const c = topo.commercials?.find((x) => x.id === pend.commercialId);
+        const cleared: GameState = { ...state, pending: null, phase: 'turnEnd' };
+        if (pend.charge && c !== undefined) return chargeCompanyFee(cleared, topo, state.currentPlayer, c, 1000 * state.priceIndex);
+        return afterCompany(cleared, topo, pend.commercialId);
+      }
+      // 建設公司那一支的选种类窗取消 ⇒ 不蓋（有意偏离同神明代蓋，见上），但收尾照走（工程費照收）
+      if (state.pending?.kind === 'buildFacility' && state.pending.company !== undefined) {
+        return companyBuildTail(state, topo, state.pending.company, 0xfa0 + state.pending.facilityId, null);
       }
       if (state.phase === 'awaitingDecision') {
         // 不加蓋也照样走到落点尾块：自己的研究所要问研發（0x0041b0b3，由 `labPanelTail` 接）
@@ -2789,7 +2857,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       if (me === undefined || me.whoPlays === 0) return state;
 
       const raising = action.status === 'raise';
-      if (raising && (action.step <= 0 || !auctionCanAfford(pending.price, action.step, me.cash))) {
+      // ★ 2026-09-25 审计补：加价额只能是档位表里的值 —— 原版只有五个钮，`0x0043a49b` 按钮号取 `[钮*4 + 0x475ba2]`
+      //   （100/500/1000/5000/10000），没有任意金额的入口。先前任何 > 0 且付得起的数都收（联机可以伪造）。
+      if (raising && (!AUCTION_RAISE_STEPS.includes(action.step) || !auctionCanAfford(pending.price, action.step, me.cash))) {
         return state;
       }
 
@@ -3244,6 +3314,19 @@ function landingTailDue(before: GameState, next: GameState, action: Action, topo
  * 现金不够（`notEnoughCash`）到不了这里 —— 框只在现金够时才弹；真到了就原样返回（交互留着），
  * 与先前一致。
  */
+/**
+ * 首建設施被衰神 / 死神挡下时，**种类已经写进去了** —— 留下一块「等级 0 但有种类」的地。
+ * @source 真人 `0x0041a228 call 0x440aac` → `0x0041a239 mov [設施+0x18], al`、电脑 `0x0041a257 mov [設施+0x18], dl`，
+ *   都在 `0x0041a261 call 0x40fa61`（衰神闸）**之前**；闸一挡就 `jne 0x41b077`，种类不回滚。
+ *   （2026-09-24 审计补，ai-econ 审计转来。）
+ */
+function withFacilityType(state: GameState, facId: number, type: number, reason: PurchaseFailure | null): GameState {
+  if (reason !== 'blockedByGod') return state;
+  const facilityType = [...state.facilityType];
+  facilityType[facId] = type;
+  return { ...state, facilityType };
+}
+
 function godBlockedPurchase(state: GameState, reason: PurchaseFailure | null): GameState {
   if (reason !== 'blockedByGod') return state;
   const player = state.players[state.currentPlayer];
@@ -3581,6 +3664,8 @@ function applyArrival(state0: GameState, topo: MapTopology): GameState {
 
   // ★ 第八份试玩回报 #4：**路过銀行**（还有步数）先过 ATM 入口 `0x4379c9`（在乞丐 `0x0041b5fd` 之前）
   const state = passingBank(state0, topo);
+  // @source `0x0041b5b0 cmp byte [0x46caf8], 0 / jne 0x41c844` —— ATM 里的準備垫付把董事長拖破产、分出胜负就收
+  if (state.phase === 'gameOver') return state;
   const me = state.players[state.currentPlayer]!;
 
   // ★ 物件派发**之前**先过一遍乞丐（原版顺序，VA 0x0041b5fd）
@@ -4379,7 +4464,15 @@ function applyMagicHouse(
       }
       const upgradesBefore = s.lastBuildUpgrades?.length ?? 0;
       const noticesBefore = s.notices;
+      const poolBefore = s.cardAmount;
+      const handsBeforeMagic = s.players;
       s = applyMagicRequest(s, topo, req);
+      // ★★ 2026-09-25 合并 econ × events：`applyMagicRequest` 的關押/住院两支现在会过
+      //   「免罪(21) → 嫁禍(19)」二级判定（`0x441210`，见 `secondaryJudgement`），它**只改手牌**；
+      //   与出牌 / 收卡那几条出口同一套规矩，这里按守恒把牌堆记回来（否则用掉的那张卡从此消失，
+      //   长局的「牌堆 + 四人手牌 ≡ 開局」不变量会红 —— full-game.test.ts 的哨兵）。
+      const conserved = conserveCardPool(poolBefore, handsBeforeMagic, s.cardAmount, s.players);
+      if (conserved !== s.cardAmount) s = { ...s, cardAmount: conserved };
       if (s.notices !== noticesBefore) {
         // 子流程（關押 / 拍賣…）自己又弹了框、把 `notices` 整个换掉 ⇒ 魔法屋那一扇排在前面
         const own = notice === null ? [] : [notice];
@@ -5218,8 +5311,12 @@ function tradeStock(
   const commit = (r: TradeResult): GameState => commitTrade(state, state.currentPlayer, action.stock, r);
 
   if (action.type === 'buyStock') {
-    // 可流通股不够就买不到
-    if (action.shares > stock.shares) return state;
+    // ★ 2026-09-24 审计订正：上限是**今日可成交量** `+0x0a`（`f10`），不是流通股 `+8` ——
+    //   真人柜台 `0x0042af43 mov cx, word [股*36 + 0x49698a]`、电脑 `0x0042c716` 都夹这个。
+    if (action.shares > stock.f10) return state;
+    // 真人柜台的第二道：`0x0042af66 fild 存款 / fdiv 現價 / 0x457dbc / fistp` ⇒ 最多 trunc(存款 ÷ 現價) 股
+    //   （存款 99、價 9.95 ⇒ 9 股；按「成本 ≤ 存款」会放行 10 股）。电脑那一支（0x42c6e2 起）另算，不走这道。
+    if (isPlainHuman(me) && action.shares > truncTowardZero(me.moneyInBank / stock.price)) return state;
     const cost = Math.trunc(action.shares * stock.price);
     // @source 柜台买入扣的是存款
     if (cost > me.moneyInBank) return state;
@@ -5939,7 +6036,9 @@ function playCard(
   //   挂出来时就把座位表、心理价位、现价、轮到谁一并建好（见 openAuction）。
   if (r.followUp !== null) {
     if (r.followUp.kind === 'auction') {
-      return startAuction(next, topo, r.followUp);
+      // ★ 2026-09-25 审计（AUC-45）：落槌之后回到出卡时的相位（掷骰前），不是 turnEnd —— 见 `resumePhase`
+      const resume = state.phase === 'awaitingRoll' || state.phase === 'turnStart' ? state.phase : undefined;
+      return startAuction(next, topo, { ...r.followUp, ...(resume === undefined ? {} : { resumePhase: resume }) });
     } else {
       next = { ...next, pending: r.followUp, phase: 'awaitingDecision' };
     }
@@ -6313,19 +6412,30 @@ function advanceGameDay(state: GameState, topo: MapTopology): GameState {
   const companyFunds = [...state.companyFunds];
   const dividendBankrupts: number[] = [];
   if (date.day === DIVIDEND_DAY) {
+    // ★ 2026-09-24 审计订正：先把每人**各家分紅加总**，最后每个在场玩家**各结一次**（含总额 0 的人）。
+    //   @source `0x0042bce3 add [esp + 玩家*4 + 0x90], eax`（按人累加，0x42bac8 清零）→ 对话框之后
+    //   `0x0042be6d..0x0042bec3`：`who_plays != 0` 的每个人 `存款 += 累计`，为负才折进現金、再负就破产。
+    //   先前逐家企业结一次：保险公司理赔后盈餘为负的那一笔先把存款扣穿、提前折现金甚至误判破产，
+    //   后面正的分紅又进不回来。
+    const acc = players.map(() => 0);
     for (const c of topo.commercials ?? []) {
       const holdings = players.map((_, p) => state.holdings[p]?.[c.stockIndex]?.amount ?? 0);
       const d = companyDividends(companyFunds[c.id] ?? 0, holdings, players);
-      for (const row of d.rows) {
-        const pl = players[row.player];
-        if (pl === undefined) continue;
-        const r = applyDividend(pl, row.amount);
-        players = players.map((x, i) => (i === row.player ? r.player : x));
-        if (r.bankrupt) dividendBankrupts.push(row.player);
-      }
+      for (const row of d.rows) acc[row.player] = (acc[row.player] ?? 0) + row.amount;
       // @source 0x0042bd37 `test ebp, ebp / je` —— 有人持股才清零
       if (d.cleared) companyFunds[c.id] = 0;
     }
+    players = players.map((pl, i) => {
+      if (!isAlive(pl)) return pl;
+      const r = applyDividend(pl, acc[i] ?? 0);
+      if (r.bankrupt) dividendBankrupts.push(i);
+      return r.player;
+    });
+    // ★ 2026-09-24 审计订正：分紅破产在原版是**当场**处理的（`0x0042beba call 0x40cd87`），
+    //   清算里 `0x0040d1a8..0x0040d1c4` 释放他的樂透号码 —— 都在 `0x0041d094` 開獎**之前**。
+    //   完整的就地破产（连同变卖持股进公库、拍卖）另列 follow-up；这里至少先把号码放掉，
+    //   免得出局者的号码还参与今天的開獎（「>10 张」判据、抽签分母、得奖）。
+    for (const who of dividendBankrupts) lottery = releaseTickets(lottery, who);
   }
   // ★ 开奖屏要显示的「本期号码」—— 只有 core 知道（见 `GameState.lastLotteryDraw`）
   let lotteryHint: LotteryDrawHint | null = null;
@@ -7411,9 +7521,10 @@ function landOnLottery(state: GameState): GameState {
     };
   }
 
-  // @source 0x0042f8ba `cmp dword [eax + 0x496b84], 0x3e8 / jge`
-  if (me.cash < LOTTERY_TICKET_PRICE) return state;
-
+  // ★ 2026-09-25 审计订正（LOT-09）：現金不足 1000 **也开屏** —— 投注窗在 `0x004315e7..0x00431653 call 0x4018e7`
+  //   就开了，现金是窗里 `WM_CREATE` 才判（`0x0042f8d7 cmp [現金], 0x3e8 / jge`，否则 `0x0042f8e3` 进状态 4
+  //   → 说 #0015「太可惜了！您的現金不足～」→ `0x0042fae5` 状态 5 #0016「下次再來吧！」→ `0x0042faf8` 关窗）。
+  //   先前这里直接返回，客户端那段 `noCash` 永远走不到。买是买不成的（`buyTicket` 拦 `notEnoughCash`），关窗 = `declineDecision`。
   return {
     ...state,
     pending: {
@@ -8356,7 +8467,31 @@ function poolDelta(cardAmount: readonly number[], cardId: number, delta: number)
   return out;
 }
 
-function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
+/**
+ * ★ 2026-09-24 审计补（ai-econ 审计转来）：百貨公司的**營業額**进这家上市企業的盈餘（→ 15 日分紅）。
+ *
+ * @source 真人那一支每一笔都把返回值累加进 `[0x48c343]`（进店 `0x0042d441` 清零）：
+ *   买卡 `0x0042e214`（`0x42d237` 返回 **標價 × 10**，`0x0042d267..0x0042d26e`）、
+ *   买道具 `0x0042e498`（`0x42d272` 同一尾巴，× 10）、卖卡 `0x0042e0c5`（`0x42d145` 返回 **標價**）、
+ *   卖道具 `0x0042e126`（`0x42d1b2` 返回 **標價 × 个数**）；关窗 `0x0042e8b2 call 0x401966([0x48c343])` 交回，
+ *   `0x0042ed0d mov ebp, eax` → 节点格值在 (0x1770, 0x1f40) 之间（百貨格的格值 = 百貨企業的实体码）⇒
+ *   `0x0042ed75 add [企業+0x28], ebp` / `0x0042ed7e add [企業+0x2c], ebp`。电脑那一支（`0x0042ed8d` 起）不记。
+ *   窗是模态的、期间没人读盈餘 ⇒ 这里每成交一笔就加一笔，与关窗时一次加总等价。
+ */
+function shopRevenueTo(state: GameState, topo: MapTopology, amount: number): GameState {
+  const me = state.players[state.currentPlayer];
+  const node = me === undefined ? undefined : topo.nodes[me.nodeId - 1];
+  if (node === undefined || amount === 0) return state;
+  if (node.type <= 0x1770 || node.type >= 0x1f40) return state;
+  const cid = node.type - 0x1770;
+  const companyFunds = [...state.companyFunds];
+  const companyProfit = [...state.companyProfit];
+  companyFunds[cid] = ((companyFunds[cid] ?? 0) + amount) | 0;
+  companyProfit[cid] = ((companyProfit[cid] ?? 0) + amount) | 0;
+  return { ...state, companyFunds, companyProfit };
+}
+
+function shopAction(state: GameState, action: Action & { type: 'shop' }, topo: MapTopology): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'shop') return state;
   const me = state.players[state.currentPlayer];
@@ -8366,14 +8501,20 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
     player: Player,
     tools: readonly number[] = state.tools,
     stock: readonly number[] = state.toolStock,
-  ): GameState => ({
-    ...state,
-    players: state.players.map((p, i) => (i === state.currentPlayer ? player : p)),
-    tools: [...tools],
-    toolStock: [...stock],
-    // 刷新待决交互里的點數，商店还开着
-    pending: { ...pending, points: player.points },
-  });
+    revenue = 0,
+  ): GameState =>
+    shopRevenueTo(
+      {
+        ...state,
+        players: state.players.map((p, i) => (i === state.currentPlayer ? player : p)),
+        tools: [...tools],
+        toolStock: [...stock],
+        // 刷新待决交互里的點數，商店还开着
+        pending: { ...pending, points: player.points },
+      },
+      topo,
+      revenue,
+    );
 
   switch (action.op) {
     case 'buyCard': {
@@ -8390,7 +8531,7 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       //   手牌满 15 在 `buyCard` 里已拦（原版 `0x0042e1ec call 0x441262 / cmp eax,0xf / jge`），
       //   receive_card 的「满手先丢最便宜」那一支真人这里走不到。
       const cardAmount = poolDelta(state.cardAmount, action.id, -1);
-      const bought = { ...commit(r.player), cardAmount };
+      const bought = { ...commit(r.player, state.tools, state.toolStock, cardPrice(action.id) * 10), cardAmount };
       const cards = pending.cards.map((c, i) => (i === at ? { ...c, sold: true as const } : c));
       return { ...bought, pending: { ...pending, points: r.player.points, cards } };
     }
@@ -8400,7 +8541,7 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       // ★★ 第二十六份（pt26-car）：卖掉的那张**回牌堆**。
       //   @source 真人卖卡 `0x0042e0bd call 0x42d145` → `0x0042d152 call 0x441343`（consume_card，删第一张同号）
       //   → `0x004413a2 inc byte [卡号 + 0x499197]`。
-      return { ...commit(r.player), cardAmount: poolDelta(state.cardAmount, action.id, 1) };
+      return { ...commit(r.player, state.tools, state.toolStock, cardPrice(action.id)), cardAmount: poolDelta(state.cardAmount, action.id, 1) };
     }
     case 'buyTool': {
       // ★ 与 buyCard 同构：买过的那一行记 `sold`、本次进店不能再买 —— 原版两页都这么干
@@ -8414,13 +8555,13 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
       if (at === -1) return state;
       const r = buyTool(me, state.tools, state.toolStock, action.id);
       if (!r.ok) return state;
-      const bought = commit(r.player, r.tools, r.stock);
+      const bought = commit(r.player, r.tools, r.stock, toolPrice(action.id) * 10);
       const tools = pending.tools.map((t, i) => (i === at ? { ...t, sold: true as const } : t));
       return { ...bought, pending: { ...pending, points: r.player.points, tools } };
     }
     case 'sellTool': {
       const r = sellTool(me, state.tools, state.toolStock, action.id, action.count ?? 1);
-      return r.ok ? commit(r.player, r.tools, r.stock) : state;
+      return r.ok ? commit(r.player, r.tools, r.stock, toolPrice(action.id) * (action.count ?? 1)) : state;
     }
     default:
       return state;
@@ -8646,6 +8787,44 @@ function freeBuildEntity(
   return freeBuildFacilityById(state, topo, e.index, chosenType);
 }
 
+/**
+ * 建設公司选定一处之后的收尾（真人那一支）：自家公司再蓋一次、别人家付工程費，然后到企業出口。
+ *
+ * @source 自家 `0x0041aae8 call 0x40b110` / `0x0041aaf2 test [esp+0xbc],0x80` / `0x0041aafb call 0x40b110`（第二次）；
+ *   别人家 `0x0041ad7e call 0x40b110`（不看返回值）→ 大锤 → `0x0041adb9..0x0041adfd` 工程費 = 那处地價 × 物價 →
+ *   `0x0041ae37` 收費段。`built === null` = 蓋不成（满级 / 連鎖店 / 选种类窗取消），工程費照收。
+ */
+function companyBuildTail(
+  state: GameState,
+  topo: MapTopology,
+  company: { commercialId: number; charge: boolean },
+  entityId: number,
+  built: FreeBuildOutcome | null,
+): GameState {
+  let outcome = built;
+  if (outcome !== null && !company.charge && !outcome.reachedMaxLevel) {
+    // 自家公司第二次（选种类那一下已经是第一次）
+    const second = freeBuildEntity(outcome.state, topo, entityId, -1);
+    if (second !== null) outcome = { ...second, reachedMaxLevel: outcome.reachedMaxLevel };
+  }
+  const viewTarget = entityViewTarget(state, topo, entityId);
+  let next: GameState = {
+    ...(outcome === null ? state : withSingleBuildUpgrade(outcome.state, buildHintOf(outcome, 'companyBuild'))),
+    pending: null,
+    phase: 'turnEnd',
+    ...(viewTarget === null ? {} : { lastViewTarget: viewTarget }),
+  };
+  if (company.charge) {
+    const fee = entityLandPrice(next, topo, entityId) * next.priceIndex;
+    const c = topo.commercials?.find((x) => x.id === company.commercialId);
+    if (c !== undefined) return chargeCompanyFee(next, topo, state.currentPlayer, c, fee);
+    next = payCompany(next, topo, state.currentPlayer, company.commercialId, fee);
+    if (next.phase === 'gameOver') return next;
+    if (!isAlive(next.players[state.currentPlayer]!)) return bankruptLandingExit(next);
+  }
+  return afterCompany(next, topo, company.commercialId);
+}
+
 /** 实体（地块/設施）的地價 —— 建設公司算工程費用 @source 0x0041adc7 / 0x0041ade3 */
 /**
  * 某个实体（`0x7d0 + land.id` / `0xfa0 + facility.id`）的**屏幕坐标** —— 给 `lastViewTarget` 用。
@@ -8682,23 +8861,23 @@ function entityLandPrice(state: GameState, topo: MapTopology, entityId: number):
 }
 
 /** 当前玩家名下可加蓋的实体编码（给建設公司的选择框） */
-function buildableEntities(state: GameState, topo: MapTopology, player: number, human: boolean): number[] {
-  const out: number[] = [];
-  for (const l of topo.lands ?? []) {
-    if ((state.landOwner[l.id] ?? 0) !== player + 1) continue;
-    const eff = effectiveLand(state, topo, l.id);
-    if (eff !== null && buildOneLevel(eff.type, eff.level, MAX_LAND_LEVEL).ok) out.push(0x7d0 + l.id);
-  }
-  for (const f of topo.facilities ?? []) {
-    if ((state.facilityOwner[f.id] ?? 0) !== player + 1) continue;
-    const level = state.facilityLevel[f.id] ?? 0;
-    const type = state.facilityType[f.id] ?? 0;
-    // 真人对等级 0 的設施还得选种类，那个界面属 P2 —— 先不列进来
-    if (level === 0 && human) continue;
-    if (level === 0 || canUpgradeFacility(type, level)) out.push(0xfa0 + f.id);
-  }
-  return out;
+/**
+ * 建設公司真人选地窗的候选 —— **全图每一块地、每一处設施**（不看归属、不看等级）。
+ *
+ * @source 自家 `0x0041aa6a` / 别人家 `0x0041acff push 0x2090086 / call 0x446ae8` → 窗口过程 `0x445e4d`：
+ *   `0x00445ee6` 低字 = 0x0086 → `0x0044624e test [0x48c594],2`（地块 0x7d0..0xfa0 都算）/
+ *   `0x0044627d test …,4`（設施 0xfa0..0x1770 都算）；高字节 `[0x48c595]` = 0 ⇒ `0x0044630a` 不再按归属细筛。
+ *   点中的就交回（`0x00446691 push [0x48c584] / call 0x401966`）；右键（`0x004466c6 test …,8` 未置）交回 0。
+ *   选了蓋不成的（别人的、满级的…）`0x40b110` 什么都不做，但别人家公司的工程費照收。
+ *   （先前只列「自己的、还能蓋的」，并排除等级 0 的設施 —— 原版没有这层筛选。）
+ */
+function buildTargetCandidates(topo: MapTopology): number[] {
+  return [
+    ...(topo.lands ?? []).map((l) => 0x7d0 + l.id),
+    ...(topo.facilities ?? []).map((f) => 0xfa0 + f.id),
+  ];
 }
+
 
 /**
  * 保險理賠 @source 0x0044ba63(玩家, 損失, 旗标)：
@@ -8748,21 +8927,15 @@ function insurancePayoutMoney(state: GameState, topo: MapTopology, index: number
  * 住店／坐牢／住院的「意外損失」= 2000 × 天 × 物價，保險期内由保險公司赔
  * @source `0x0040d402` / `0x0043d72c` / `0x0043edd9`
  *
- * ⚠️ **旅館这一支的原版天数字段是一处未初始化读**（2026-09-18 查清，见
- *   `rich4-spec/docs/systems/game-loop.md` §四之二末）：
+ * ★ 2026-09-24 审计订正：旅館这一支取的**就是住宿天数**，不是未初始化读。
  * ```asm
- * 0041a807  mov  edx, dword ptr [esp + 0xd4]   ; ★ 旅館路径上此槽**没有写点**
- * …2000×edx×物價…  0041a82d  call 0x44ba63    ; 保险理赔
+ * 0041a805  push 0                              ; ★ 先压一个参数 ⇒ esp −4
+ * 0041a807  mov  edx, dword ptr [esp + 0xd4]   ; = 压栈之前的 [esp + 0xd0] = 天数（0x41a460 写入）
+ * …2000×edx×物價…  0041a82d  call 0x44ba63(edi, 值, 0)   ; 保险理赔
  * ```
- *   `sub_0041982d`（落点分派器，帧 `sub esp,0xf8`）里 `[esp+0xd4]` 全函数只有
- *   **6 个写点**（`0x41a503` 加油站交通倍率 / `0x41aa09`、`0x41aa85`、`0x41ac47`、
- *   `0x41acb1`、`0x41ad1a` 各公司支线），**都不在旅館路径上**；而同一路径的
- *   住宿天数明明在 `[esp+0xd0]`（`0x41a460` 写入，`0x41a7e8`/`0x41a838` 都在读它）。
- *   ⇒ 原版索赔金额取的是一个**残留/未初始化的栈槽**。
- *
- *   **复刻的处置（有意偏离）**：沿用 `[esp+0xd0]` 的天数（= 转盘值），即
- *   「住几天就赔几天」。理由是原版那一格取不到确定值，逐位对齐无意义。
- *   登记在 `docs/gaps/README.md` §7.56。
+ *   先前（2026-09-18，`docs/gaps/README.md` §7.56）把 `[esp+0xd4]` 当成同一帧里的另一个槽，
+ *   漏算了紧挨着的那条 `push 0`，于是记成「未初始化读 + 有意偏离」。实际「住几天就赔几天」
+ *   与原版逐位一致，不是偏离。
  */
 function insureConfinement(state: GameState, topo: MapTopology, index: number, days: number): GameState {
   return insurancePayoutTo(state, topo, index, hotelStayLoss(days, state.priceIndex));
@@ -8922,13 +9095,13 @@ function runTollTail(
         use = aiUsesFreeCard(c.toll, p, s.priceIndex, rng.next());
       }
       if (use) {
+        // `0x444a60(当前玩家, 收款方, 費)` 的第二参：住宅 = 地主（0x00419e51）、設施 = 主人（0x0041a62c）
         const owner =
           c.route.path === 'rent'
             ? rentOwnerOf(s, topo, c.route.landId)
             : c.route.path === 'facility'
               ? (effectiveFacility(s, topo, c.route.facilityId)?.owner ?? 0) - 1
               : -1;
-        // ★ 免費卡用掉 = `remove_card(付款人, 20)`（`0x00444b30 call 0x441343`）⇒ 回牌堆 +1（`0x004413a2`）
         s = withPlayer(s, c.payer, (q) => {
           Object.assign(q, consumeCard(q, PASSIVE_CARDS.FREE));
         });
@@ -9060,6 +9233,13 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       who = reaper;
     }
     const landlord = s.players[land.owner - 1];
+    // ★ 2026-09-24 审计订正：最后付钱的人（嫁禍 / 死神换过之后的 `edi`）**就是地主或地主的同盟**
+    //   ⇒ 整段跳过（不付、不记 `[land+0x2c]`、不说台词）—— @source `0x00419f30 cmp edi, 地主 / je 0x41b077`、
+    //   `0x00419f40 cmp edi, 同盟 − 1 / je 0x41b077`。先前付给同盟自己那一份会把他的現金搬进存款、
+    //   白记一笔本月收支；付给地主自己则把「上次过路费」改写成 0。
+    if (who === land.owner - 1 || (landlord !== undefined && who === landlord.alliedPlayer - 1)) {
+      return { ...s, phase: 'turnEnd' };
+    }
     // ★ 付的是**神明调整之后**的那一笔（`ebp`），不按替死鬼 / 死神身上的神明再调一次
     const out = collectRent(s.players, allEffectiveLands(s, topo), who, land, s.priceIndex, [], c.toll);
     // @source 0x0041a00b `mov [land + 0x2c], ebp` —— 记下这一笔（間諜要用）
@@ -9099,14 +9279,22 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
         who = reaper;
       }
     }
-    // 台词随机在付钱之前（`0x0041a710..0x0041a735`，付款人就是主人时 `0x0041a70b je` 整段跳过）
-    if (who !== ownerIdx) s = tollSpeechDraws(s, who, ownerIdx, god.toll, god.toll);
-    const r = transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0);
+    // ★ 2026-09-24 审计订正：最后付钱的人**就是主人**（嫁禍 / 死神换成了他）⇒ 不付钱、不记 `[設施+0x30]`、
+    //   不说進帳台词，但**旅館照住** —— @source `0x0041a709 cmp edi, 主人 / je 0x41a761`（跳过的只是
+    //   `0x41a70d..0x41a75e` 付钱那一段，旅館那段从 `0x41a761` 开始）。先前照样 `transferMoney(主人→主人)`，
+    //   把他的現金搬进存款、还白记一笔本月收支。
+    const selfPay = who === ownerIdx;
+    // ★ 2026-09-25 集成（events × econ 冲突）：台词随机在付钱**之前**（`0x0041a710..0x0041a735`），
+    //   而付款人就是主人时 `0x0041a70b je` 把这一整段（付钱 + 進帳台词）都跳过 ⇒ 与 `selfPay` 同一道闸。
+    if (!selfPay) s = tollSpeechDraws(s, who, ownerIdx, god.toll, god.toll);
+    const r = selfPay
+      ? { players: s.players, pool: s.pool, bankrupted: false }
+      : transferMoney(s.players, [], s.pool, who, ownerIdx, god.toll, 0);
     // @source 0x0041a75e `mov [設施 + 0x30], ebp` —— 记的是**这一笔**，不是累计
     const facilityLastToll = [...s.facilityLastToll];
-    facilityLastToll[fac.id] = god.toll;
+    if (!selfPay) facilityLastToll[fac.id] = god.toll;
     // ★ 第十四份：設施主人的「進帳」台词 `0x0041a735 call 0x44f354(主人, ebp)`（付款人就是主人时 `0x0041a70b je` 跳过）
-    const gainSays = who !== ownerIdx ? [{ player: ownerIdx, amount: god.toll }] : null;
+    const gainSays = !selfPay ? [{ player: ownerIdx, amount: god.toll }] : null;
     let paid: GameState = {
       ...s,
       players: r.players,
@@ -9117,13 +9305,16 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
     };
   // @source 0x0041a7aa 旅館：住 N 天、記「本月意外損失」2000×N×物價、倒楣天数 +N
   if (hotelDays > 0 && !r.bankrupted) {
-    // ★★ 2026-09-24（provenance 审计）补两步（都在写天数之前）：
+    // ★★ 2026-09-24（合并两处审计，两条都要留）：
     //   ① 敌意：`0x0041a78f..0x0041a7bc` `0x40df69([0x49910c] 当前玩家, 设施主人−1, 20×天×物價)` ——
-    //      记在**当前玩家**头上（死神换人付钱时也是当前玩家记仇），不是住店的人；
-    //   ② `0x0041a7c5 call 0x40d761(住店者)`：先把他原来的住宿/消失/監獄/醫院四项清零、在押的占用表清掉。
+    //      `[0x49910c]` = **当前玩家**（= `c.payer`，见 `TollTailCtx`），不是住店的 `who`
+    //      （死神换人付钱时也记当前玩家的仇）；
+    //   ② `0x0041a7c5 call 0x40d761(住店者)`：先把他的住宿/消失/監獄/醫院四项计数整个 dword 清零
+    //      （`0x0040d7a9`），在押的占用表格子清掉（`0x0040d774` / `0x0040d793`）。
+    //      ⇒ 消除「住店 + 坐牢」并存（占用表那份仍走 `release()`）。
     const meNow = s.currentPlayer;
     if (ownerIdx >= 0) {
-      paid = { ...paid, players: updateHostility(paid.players, meNow, ownerIdx, 20 * hotelDays * s.priceIndex).players };
+      paid = { ...paid, players: updateHostility(paid.players, c.payer, ownerIdx, 20 * hotelDays * s.priceIndex).players };
     }
     const lodger0 = paid.players[who];
     if (lodger0 !== undefined) {
@@ -9141,13 +9332,16 @@ function finishToll(s: GameState, topo: MapTopology, c: TollTailCtx): GameState 
       paid = { ...paid, rngState: hr.getState() };
     }
     paid = withPlayer(paid, who, (p) => {
-      p.blocking = { ...p.blocking, inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0 };
+      // ★ `0x40d761`（上面那一步）已把 +0x32 起四个计数整个 dword 清零 ⇒ 这里不必再逐项写 0；
+      //   下面这块按 `0x0041a7f4` 写住宿天数（+0x33/+0x34/+0x35 一并显式写 0）
       // @source 0x0041a7f4 `[+0x32] = 天数 − 1`，为 0 时挂 0x80（当天就出）
       const left = hotelDays - 1;
-      p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left };
+      p.blocking = { ...p.blocking, inHotel: left === 0 ? RELEASE_PENDING : left, disappearing: 0, inPrison: 0, inHospital: 0 };
       // @source 0x0041a83f `add byte ptr [eax + 0x496baa], dl` —— 8 位累加「本月倒楣天數」
       p.totalWinterSleepDays = misfortuneDaysAfter(p.totalWinterSleepDays, hotelDays);
-      p.monthlyPaid += hotelStayLoss(hotelDays, s.priceIndex);
+      // ⚠️ 2026-09-24 审计删：先前这里还有一句 `monthlyPaid += 2000×天×物價`。原版全 exe 写 `+0x5c`
+      //   的只有 `pay_money` 一处（`xref 0x496bc4`：0x0041d381 累加、0x00439ee6 月结清零），
+      //   `0x44ba63`（保險理賠）也不碰它 ⇒ 那一句是自拟的，删掉（对局状态会变：本月支出少一笔）。
       // ★★ 第 88 条：住店时**贴图位置**要挪到**旅館設施**上（不是格子坐标）
       //   @source `0x41a85e call 0x40d5a5(玩家, 原节点, 設施号)` → 支 A：
       //   `or [player+0x15], 0x20` + 按 `设施 x/y − 玩家 x/y` 重算朝向 + `call 0x40dd1f`
@@ -9338,7 +9532,7 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
         // ★ 2026-09-23：真人先弹「%s\n\n請選擇欲加蓋地點」（`%s` = 企業名，1500 ms）再选地
         //   @source 自己的建設公司 `0x0041aa3c cmp [+0x15],1` → `0x0041aa46 push 0x463a4a` → `0x0041aa62 call 0x440cac`
         next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
-        const choices = buildableEntities(next, topo, me, true);
+        const choices = buildTargetCandidates(topo);
         if (choices.length > 0) {
           return {
             ...next,
@@ -9396,10 +9590,13 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           return chargeCompanyFee(pre, topo, me, c, entityLandPrice(built.state, topo, target) * built.state.priceIndex);
         }
       }
+      // ★ 2026-09-24 审计补：没地可蓋 ⇒ 照收 **1000 × 物價** —— @source `0x0041ad28 test ebp,ebp / je 0x41adff`
+      //   → `0x0041adff..0x0041ae18`（物價 → 3 → 24 → 25 → 200 → 1000 倍）→ `0x0041ae37` 同一段收費。先前一分不收。
+      if (target === 0) return chargeCompanyFee(next, topo, me, c, 1000 * next.priceIndex);
     } else {
       // ★ 2026-09-23：别人的建設公司同一句（`0x0041acd1 cmp [+0x15],1` → `0x0041acdb push 0x463a4a` → `0x0041acf7`）
       next = appendFreshNotice(next, { key: 'company.pickBuildSite', args: [c.name] });
-      const choices = buildableEntities(next, topo, me, true);
+      const choices = buildTargetCandidates(topo);
       if (choices.length > 0) {
         return {
           ...next,
@@ -9407,6 +9604,8 @@ function landOnCompany(state: GameState, topo: MapTopology, node: MapNode): Game
           pending: { kind: 'chooseBuildTarget', commercialId: c.id, name: c.name, choices, charge: true },
         };
       }
+      // ★ 2026-09-24 审计补：真人这一侧也没地可蓋（选地窗 `0x446ae8` 拿不到目标 ⇒ 0）⇒ 同样 1000 × 物價（`0x0041adff`）
+      return chargeCompanyFee(next, topo, me, c, 1000 * next.priceIndex);
     }
   }
   return companyExit(next, topo, me, c.id);
@@ -9590,7 +9789,9 @@ function landOnFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
         rng.setState(state.rngState);
         const chosen = aiPickFacilityType(rng.next());
         const bought = purchase(player, price);
-        if (!bought.ok) return godBlockedPurchase({ ...state, rngState: rng.getState() }, bought.reason);
+        if (!bought.ok) {
+          return godBlockedPurchase(withFacilityType({ ...state, rngState: rng.getState() }, fac.id, chosen, bought.reason), bought.reason);
+        }
         const paid = withPlayer({ ...state, rngState: rng.getState() }, me, (p) => {
           p.cash = bought.player.cash;
         });
@@ -9743,19 +9944,29 @@ function settleFacility(state: GameState, topo: MapTopology, fac: FacilityInfo):
   if (godNotice !== null) notices.push(godNotice);
   if (god.toll === 0) return godReliefSpeechDraw({ ...withRng, notices, phase: 'turnEnd' }, godNotice);
 
-  // ★ 尾巴：免費卡（**旅館除外**）→ 嫁禍卡 → 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
+  // ★ 尾巴照 0x0041a5c8 起：免費卡（**旅館除外**）→ 嫁禍卡 → 死神顯靈由他人賠償（費 != 0 或是旅館）→ 付钱（`runTollTail`）
   let pre: GameState = { ...withRng, rngState: rng.getState() };
   for (const n of notices) pre = appendFreshNotice(pre, n);
+  // ★ 2026-09-24 审计补：敌意 += 調整後費 / 100（有符号、向零）—— @source `0x0041a59e mov ecx, 0x64 /
+  //   0x0041a5a8 idiv ecx / 0x0041a5c0 call 0x40df69(当前玩家, 主人, 商)`，在被动卡之前。
+  //
+  // ★★ 2026-09-25 合并 econ × events 订正：**旅館这一支不走这句** ——
+  //   `0x0041a5d5 cmp byte [設施+0x18], 1` / `0x0041a5d9 je 0x41a63d` 直接从「費/100 敌意」
+  //   **跳到** 嫁禍卡那一段（`0x41a63d`），旅館的敌意只剩落点里那一句 `0x0041a7bc`
+  //   （20×天×物價）。先前照收 ⇒ 住店多记一笔 費/100（C-29 用例实测 112 vs 80）。
+  if (fac.type !== FACILITY_TYPE.hotel) {
+    pre = { ...pre, players: updateHostility(pre.players, payer, ownerIdx, Math.trunc(god.toll / 100)).players };
+  }
   return runTollTail(pre, topo, {
     route: { path: 'facility', facilityId: fac.id, hotelDays },
     payer,
     who: payer,
     toll: god.toll,
     feeName,
-    // ★★ 2026-09-24 审计订正：設施这一路**有**免費卡，只有旅館跳过 ——
-    //   @source `0x0041a5d5 cmp byte [fac+0x18], 1 / je 0x41a63d`（旅館 ⇒ 直接到嫁禍）；
-    //   否则同一道门槛（`0x0041a5f7` ≥ 2000×物價 / `0x0041a60a` > 现金+存款）→ `0x0041a611 has_card(20)` →
-    //   `0x0041a62e call 0x444a60(付款人, 設施主−1, 費)`。先前一律 `freeDone`，購物中心/加油站从不问免費卡。
+    // ★ 2026-09-24 审计订正：購物中心 / 加油站**也问免費卡**，只有旅館跳过 ——
+    //   @source `0x0041a5d5 cmp byte [設施+0x18], 1 / 0x0041a5d9 je 0x41a63d`（旅館直接跳到嫁禍卡那一段），
+    //   其余走 `0x0041a5db..0x0041a63b`（与住宅 `0x00419e01..0x00419e65` 同一套：費 ≥ 2000×物價 或 > 現金+存款
+    //   → 有 0x14 免費卡 → `call 0x444a60` → `xor ebp, ebp`）。先前一律 `freeDone: true`。
     freeDone: fac.type === FACILITY_TYPE.hotel,
   });
 }
@@ -9876,6 +10087,11 @@ export function npcNotices(state: GameState, events: readonly NpcEvent[], owner:
 }
 
 /** 在场人数 */
+/** 在场的真人数 @source `0x0040d013..0x0040d024`：`who_plays != 0 && (who_plays & 1)`（託管 1|4 也算） */
+function aliveHumanCount(players: readonly Player[]): number {
+  return players.filter((p) => isAlive(p) && (p.whoPlays & WHO_PLAYS_HUMAN) !== 0).length;
+}
+
 function aliveCount(state: GameState): number {
   return state.players.filter((p) => isAlive(p)).length;
 }
@@ -9938,7 +10154,16 @@ export function applyBankruptcy(
     const node = topo.nodes.find((n) => n.id === p.nodeId);
     return node === undefined ? p : { ...p, xpos: node.x, ypos: node.y };
   };
-  const players = freed.players.map((p, i) => (i === playerIndex ? markPlayerBankrupt(resynced(p)) : p));
+  // ★ 2026-09-24 审计补：别人对他的敌意也清零 —— @source `0x0040cf47..0x0040cf6b`：
+  //   `for (b = 0; b < 人数; b++) if (b != 破产者) hostility[b][破产者] = 0`（`[b*0x68 + 破产者*4 + 0x496bb4]`），
+  //   在 memset（他自己那一行）之后、终局判定之前，两条路都走。
+  const players = freed.players.map((p, i) => {
+    if (i === playerIndex) return markPlayerBankrupt(resynced(p));
+    if ((p.hostility[playerIndex] ?? 0) === 0) return p;
+    const hostility = [...p.hostility];
+    hostility[playerIndex] = 0;
+    return { ...p, hostility };
+  });
   // ★★ 2026 本轮：破产还要**腾出监狱/医院的床位**。原版在清玩家结构**之前**
   //   就把两张占用表的那一格清了（**按玩家号**索引）：
   //   ```asm
@@ -9955,7 +10180,7 @@ export function applyBankruptcy(
   let next: GameState = { ...freed, players, prisonOccupancy, hospitalOccupancy };
 
   const remaining = players.filter((p) => isAlive(p)).length;
-  const outcome = resolveBankruptcyOutcome(remaining, humanCount(state));
+  const outcome = resolveBankruptcyOutcome(remaining, humanCount(state), aliveHumanCount(players));
 
   // 樂透号码无论哪条路径都要释放 —— @source 破产处理 VA 0x0040d1a8
   next = { ...next, lottery: releaseTickets(next.lottery, playerIndex) };
@@ -10181,8 +10406,8 @@ export function isGameOver(state: GameState): boolean {
 /**
  * 终局码 —— 与原版 `ref_0046caf8` 同制。
  *
- * 1 = 全员出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
- * 返回 0 表示尚未结束。
+ * 1 = 真人全出局、2 = 只剩一人且本局只有一名人类、3 = 只剩一人且多名人类。
+ * 返回 0 表示尚未结束（`isGameOver` 为假）。
  *
  * ★ **因勝利條件（遊戲時間／勝利條件）达标而结束**的对局不适用上面那套
  *   「还剩几个人」的推算——原版那条路是拿**赢家是不是真人**定的
@@ -10192,6 +10417,8 @@ export function isGameOver(state: GameState): boolean {
  */
 export function gameOverCode(state: GameState): 0 | 1 | 2 | 3 {
   if (state.victory !== null) return state.victory.code;
-  const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state));
+  // 全电脑的局（测试 / 旁观）一开局「在场真人」就是 0 —— 没结束就是没结束，别凭人数推出一个码
+  if (!isGameOver(state)) return 0;
+  const outcome = resolveBankruptcyOutcome(aliveCount(state), humanCount(state), aliveHumanCount(state.players));
   return outcome.kind === 'gameOver' ? outcome.code : 0;
 }

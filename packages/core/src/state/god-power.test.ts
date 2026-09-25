@@ -16,6 +16,7 @@ import { parseMap } from '../loaders/map.ts';
 import { newGame as newGameRaw } from '../rules/new-game.ts';
 import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import { WHO_PLAYS_HUMAN } from './types.ts';
 import type { GameState } from './types.ts';
 import { placeObjectOfType, tickGod } from '../rules/object-landing.ts';
 import { seizeHostilityDelta } from '../rules/god-manifest.ts';
@@ -164,7 +165,11 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★★ 小財神：前面的对手被收破产，**后面的照收**（循环只在分出胜负时跳出，0x0040ec7b）', () => {
     const { state } = fresh();
-    const players = rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p));
+    // ★ 同上（G-08）：2/3 号位开局 `who_plays == 0`（惰性摆人）⇒ 先摆上盘、给真人档，收钱循环才进得去。
+    const placed = landAll(rich(state), loadMap().nodes);
+    const players = placed.players.map((p, i) =>
+      i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : i > 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p,
+    );
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players });
     const amount = autoSlot(rngAtAttach).three;
     expect(after.players[1]!.whoPlays).toBe(0); // 1 号付不起 ⇒ 破产
@@ -541,7 +546,20 @@ describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金�
 describe('★★ provenance 审计：神明', () => {
   run('G-08 小財神：一位付不起破产后，**后面的人照付**（0x0040ec7b 只在终局跳出）', () => {
     const { state } = fresh();
-    const broke = { ...rich(state), players: rich(state).players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : p)) };
+    // ★★ 2026-09-25（econ 区审计合入 provenance 之后复核）：`newGame` 的**惰性摆人**让第 2..N 位
+    //   开局 `who_plays == 0`（轮到自己才落地），而 `collectFromOpponents` 的判据正是
+    //   `whoPlays === 0 ⇒ 跳过`（`0x0040ec99` 的 `cmp byte [player+0x15], 0 / je`）——
+    //   先前这条用例的 2/3 号位**根本没上盘**，收钱循环一个对手都没进：
+    //   `autoSlot` 掷出 0 时 `if (amount === 0) return` 还会让断言整个不跑（那是它一直绿的原因）。
+    //   ⇒ 先用 `landAll` 把四位摆上盘，再给 2/3 号位**真人**那一档（`who_plays = 1`）：
+    //     1 号破产后 `remainingHumans != 0` ⇒ 不判终局（`0x0040d029`），循环才继续往下收。
+    const placed = landAll(rich(state), loadMap().nodes);
+    const broke = {
+      ...placed,
+      players: placed.players.map((p, i) =>
+        i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : i > 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p,
+      ),
+    };
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players: broke.players });
     const amount = autoSlot(rngAtAttach).three;
     if (amount === 0) return; // 掷出 0 就没人付得起不起的问题

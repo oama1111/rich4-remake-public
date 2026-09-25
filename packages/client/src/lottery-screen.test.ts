@@ -630,8 +630,11 @@ describe('整屏出口 @source 窗口过程 0x0042f7fc', () => {
     expect(lotteryPhase()).toBe('noCash');
     lotteryScreen.tick!(mkEnv(s, 2000).env);
     expect(lotteryPhase()).toBe('closing');
-    lotteryScreen.tick!(mkEnv(s, 4000).env);
+    const last = mkEnv(s, 4000);
+    lotteryScreen.tick!(last.env);
     expect(lotteryScreen.active(mkEnv(s, 4000).env)).toBe(false);
+    // ★ 审计（LOT-09）：关屏那一拍交「不买」（core 现在也给現金不足的真人挂 pending）
+    expect(last.actions).toEqual([{ type: 'declineDecision' }]);
   });
 
   it('★ 现金刚好 1000 可以买（原版是 `jge 0x3e8`）', () => {

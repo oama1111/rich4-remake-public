@@ -1169,4 +1169,58 @@ describe('★★ 第十四份（D-008 收口）：企業 / 設施两条路的真
     expect(after.players[0]!.cards).toEqual([20]);
     expect(after.players[2]!.monthlyPaid).toBeGreaterThan(0);
   });
+
+  it('★ 審計補：嫁禍給正在坐牢的人 ⇒ 先出獄（0x0041a7c5 call 0x40d761）再住店', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.hotel, steps: 12 });
+    const jailed = makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 });
+    const prisonOccupancy = [...state.prisonOccupancy];
+    prisonOccupancy[2] = 1;
+    const withCards: typeof state = {
+      ...state,
+      prisonOccupancy,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [19] } : p)),
+        { ...jailed, blocking: { ...jailed.blocking, inPrison: 3 } },
+      ],
+    };
+    const asked = reduce(withCards, { type: 'settle' }, t);
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[2]!.blocking.inPrison).toBe(0);
+    expect(after.prisonOccupancy[2]).toBe(0);
+    expect(after.players[2]!.blocking.inHotel).not.toBe(0);
+  });
+
+  it('★ 審計訂正：加油站 / 購物中心**也问**免費卡（`0x0041a5db..0x0041a63b`，与住宅同一套），用了就不付', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const asked = reduce(withCards, { type: 'settle' }, t);
+    expect(asked.pending?.kind).toBe('freeCard');
+    const used = reduce(asked, { type: 'answerFreeCard', use: true }, t);
+    // 費抹成 0 ⇒ 嫁禍卡那一问不再触发（`0x0041a659 cmp ebp, 2000×物價` 且 `0 > 現金+存款` 都不成立）
+    expect(used.pending?.kind ?? null).not.toBe('scapegoat');
+    expect(used.players[0]!.cards).toEqual([19]);
+    expect(used.players[0]!.cash).toBe(100);
+  });
+
+  it('★ 審計保留：加油站拒用免費卡 ⇒ 接着问嫁禍卡', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const asked = reduce(reduce(withCards, { type: 'settle' }, t), { type: 'answerFreeCard', use: false }, t);
+    expect(asked.pending?.kind).toBe('scapegoat');
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.players[2]!.monthlyPaid).toBeGreaterThan(0);
+  });
 });

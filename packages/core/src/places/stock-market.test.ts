@@ -114,7 +114,8 @@ describe('开局行情', () => {
   it('股票取自对应地图的那一段', () => {
     const m = newStockMarket(1);
     expect(m.stocks[0]!.price).toBe(STOCKS[STOCKS_PER_MAP]!.price);
-    expect(m.stocks[0]!.volatility).toBe(STOCKS[STOCKS_PER_MAP]!.volatility);
+    // ★ 审计订正：波动率存成 float32（`0x00429266 fmul dword [股+0x18]`）
+    expect(m.stocks[0]!.volatility).toBe(Math.fround(STOCKS[STOCKS_PER_MAP]!.volatility));
   });
 });
 

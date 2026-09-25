@@ -36,7 +36,7 @@ import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
 import { aiCommercialShareCount, aiPickConstructionTarget } from '../places/company.ts';
-import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
+import { auctionActiveSeatCount, auctionAiChoice, auctionSeatWaitsForHuman } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
 /**
@@ -501,7 +501,15 @@ export function auctionNextBid(
   // @source `word [0x48c436 + 槽] == 0` —— 出过价 / 放弃过的座位不再轮到他
   if ((pending.status[bidder] ?? 'active') !== 'active') return null;
   const who = state.players[bidder];
-  if (who === undefined || !isAiControlled(who)) return null;
+  // 出局者没有座位（`0x0043c11f cmp byte [p+0x15],0`）
+  if (who === undefined || who.whoPlays === 0) return null;
+  // ★ 2026-09-25 审计订正（AUC-22 / AUC-23）：出价那一刻判真人用的是**整字节 == 1**
+  //   （`0x0043b001 cmp byte [p+0x15], 1 / jne 0x43b0a0`）—— 带走回棋盘 0x10 / 被挪 0x20 位的真人走**电脑支**
+  //   （开拍时没给他算心理价位 ⇒ 限价 0 ⇒ 出得起就 PASS）。
+  //   真人那一支还先看钱：`0x0043b06c mov edx,[现价] / cmp edx,[現金] / jle 0x43b08a`（等他点），
+  //   否则 `0x0043b07a..0x0043b085` 直接替他按「放棄」（钮 6）——先前会一直等一个只能 PASS 的穷真人。
+  if (auctionSeatWaitsForHuman(who, pending.price)) return null;
+  if (who.whoPlays === 1) return { type: 'auctionBid', bidder, status: 'giveUp', step: 0 };
   // @source `loc_0043b183` 的压价线：最高出价者现金 + 500（出价时记下的快照）
   const topWho = pending.top < 0 ? undefined : state.players[pending.top];
   const choice = auctionAiChoice({

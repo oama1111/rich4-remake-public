@@ -136,6 +136,10 @@ export function borrow(player: Player, amount: number, wealth: number): LoanResu
 export function repay(player: Player, amount: number): Player {
   if (amount <= 0 || player.loan <= 0) return player;
   const repaid = Math.min(amount, player.loan);
+  // ★ 2026-09-24 审计补：还款额 > 現金 + 存款 ⇒ 拒收，什么都不动（弹「現金不足」气泡 `[0x475850]`）——
+  //   @source `0x0043537e..0x0043538c`：`ecx = [+0x1c] + [+0x20]` / `cmp edx, ecx / jle 0x4353a3`，否则
+  //   `0x00435390 mov byte [0x48c3dd], 9` 走提示。先前照扣，現金可以被扣成负数。
+  if (repaid > player.cash + player.moneyInBank) return player;
 
   let bank = player.moneyInBank - repaid;
   let cash = player.cash;

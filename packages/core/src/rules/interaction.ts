@@ -61,6 +61,11 @@ export type PendingInteraction =
        * 不收钱、不看归属。缺席 = 落点问出来的那个普通首建。
        */
       free?: true;
+      /**
+       * ★ 2026-09-25 审计：建設公司那一支选中了**等级 0 的設施**（真人，`0x40b110` 的 `0x0040b1e4 call 0x440aac`）——
+       *   选完种类还要接着走建設公司的收尾（自家：再蓋一次 `0x0041aafb`；别人家：付工程費 `0x0041adb9` 起）。
+       */
+      company?: { commercialId: number; charge: boolean };
     }
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
@@ -198,6 +203,12 @@ export type PendingInteraction =
        * `0x0044335f mov dword [esi+0x30],eax`(=0)；設施 `0x00443486` / `0x0044348a` `+0x34`）。
        */
       fromCard?: boolean;
+      /**
+       * ★ 2026-09-25 审计（AUC-45）：落槌之后回到哪个相位。拍賣卡在掷骰前打出，卡函数 `0x0044336b mov ebx,1` 返回成功，
+       *   回合照常往下走（电脑支 `0x00418e21 call 0x441baa` 之后 `0x00418e75 call 0x40dd1f` 掷骰走子；真人回到选单）
+       *   ⇒ 用卡者**不丢这一掷**。缺省 = `turnEnd`（落点 / 新聞 / 破产那几场本来就在回合收尾里）。
+       */
+      resumePhase?: 'awaitingRoll' | 'turnStart';
       /**
        * ★★ 2026-09-25（cards 审计 cross-area (d)）：魔法屋「拍賣當格土地」挂出的这一场 ——
        *   `0x004324d5 call 0x43bde5` 之后**不看返回值**（直接 `0x004324dd push 1 / call 0x41906a`），
@@ -416,7 +427,7 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard' | 'keepOwnerOnPass'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard' | 'resumePhase' | 'keepOwnerOnPass'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */

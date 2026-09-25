@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { CARDS, stocksOfMap } from '@rich4/data';
-import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer, tradableMarket } from '../testing/factories.ts';
 import { FACILITY_TYPE_MIN, GOD_BLOCKS_PURCHASE, HOUSING_TYPE_MIN } from '../rules/land.ts';
 import { FACILITY_TYPE } from '../rules/facility.ts';
 import { npcNotices, reduce, type MapTopology } from './reduce.ts';
@@ -24,7 +24,7 @@ describe('★ 电脑买卖股 @source 0x0042c78c（買進）/ 0x0042d092（賣�
       year: 1998,
       month: 1,
       day: 5,
-      market: newStockMarket(0),
+      market: tradableMarket(newStockMarket(0)),
       players: [0, 1, 2, 3].map((i) =>
         makePlayer({ index: i, character: i, cash: 50_000, moneyInBank: 1_000_000, whoPlays: i === 0 ? whoPlays : WHO_PLAYS_COMPUTER }),
       ),

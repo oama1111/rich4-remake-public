@@ -86,16 +86,24 @@ describe('★ 起拍价 = trunc(地价 × (1 + 等级×0.5)) × 物价指数', (
 describe('★ 流拍 → 地块变无主', () => {
   it('原主失去地产，且没人付钱', () => {
     const land = makeLand({ id: 1, owner: 2, level: 3 });
-    const r = settleAuction(four(), land, { winner: -1, price: 0 }, 500);
+    const r = settleAuction(four(), land, { winner: -1, price: 0 }, 500, [], { clearOnPassIn: true });
     expect(r.passedIn).toBe(true);
     expect(r.land.owner).toBe(0);
+    expect(r.clearTenure).toBe(true);
     expect(r.pool).toBe(500);
     expect(r.players.map((p) => p.cash)).toEqual([100_000, 100_000, 100_000, 100_000]);
   });
 
   it('★ 这是拍賣卡的要害：即便没人接手，原主也失去它', () => {
     const land = makeLand({ owner: 3 });
-    expect(settleAuction(four(), land, { winner: -1, price: 0 }).land.owner).toBe(0);
+    expect(settleAuction(four(), land, { winner: -1, price: 0 }, 0, [], { clearOnPassIn: true }).land.owner).toBe(0);
+  });
+
+  it('★ 审计订正：别的调用点（魔法屋 0x004324da / 新聞 7 / 破产）丢掉返回值 ⇒ 流拍原样不动', () => {
+    const land = makeLand({ owner: 3 });
+    const r = settleAuction(four(), land, { winner: -1, price: 0 });
+    expect(r.land.owner).toBe(3);
+    expect(r.clearTenure).toBe(false);
   });
 });
 
@@ -214,9 +222,11 @@ describe('★ 設施起拍价与结算（run_auction 設施分支 0x0043bf3a 起
   });
 
   it('流拍 → 設施变无主', () => {
-    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 });
+    const r = settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 }, 0, [], { clearOnPassIn: true });
     expect(r.passedIn).toBe(true);
     expect(r.facility.owner).toBe(0);
+    // 不是拍賣卡 ⇒ 不动
+    expect(settleFacilityAuction(four(), makeFacility({ id: 1, owner: 2, level: 1 }), { winner: -1, price: 0 }).facility.owner).toBe(2);
   });
 
   it('得标：买家付款进公库、設施归得标者', () => {
@@ -372,6 +382,14 @@ describe('★ 拍賣卡敌意 = double 压栈的原版 bug（0x00443286 起）',
 // ============================================================
 
 describe('★ AI 心理价位 auctionAiLimit（fcn_00439f0d）', () => {
+  it('★ 审计订正：系数与缺地系数都存成 float32（0x00439f3b / 0x00439fc7 fstp dword）', () => {
+    // 起拍 60000、无主 7/24、rand 32277：float32 系数下精确积 230699.012 → 230699（全双精度算 230698）
+    const v = auctionAiLimit(
+      { level: 0, landPrice: 1_000_000, cash: 10_000_000, priceIndex: 1, basePrice: 60_000, total: 24, unowned: 7 },
+      () => 32277 / 32768,
+    );
+    expect(v).toBe(230699);
+  });
   /** 序列恒为 0 或 0.5 的假随机源（0 → rand() = 0；0.5 → rand() = 16384） */
   const fixed = (v: number) => () => v;
 
@@ -710,11 +728,11 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     expect(auctionAdvanceSeat([0, 1], ['passed', 'passed'], 0)).toBe(0);
   });
 
-  it('★★ 开场席位从 slot 0 起找第一个 active 的（loc_0043a365 的清零 + 绕圈）', () => {
-    const status: AuctionSeatStatus[] = ['passed', 'active', 'active', 'active'];
-    expect(auctionFirstSeat([0, 1, 2, 3], status)).toBe(1);
-    // 从 slot 0 起 —— 不是「从 currentPlayer 起」（旧行为，见 A-3 订正）
-    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'])).toBe(0);
+  it('★★ 审计订正：开场席位是**下标最大**的 active 座位（0x0043af20 把 −1 缓存进 esi 后不再更新，每个非空座位都覆盖一遍）', () => {
+    const status: AuctionSeatStatus[] = ['passed', 'active', 'active', 'passed'];
+    expect(auctionFirstSeat([0, 1, 2, 3], status)).toBe(2);
+    // 不是「从 currentPlayer 起」，也不是「从 slot 0 起第一个」
+    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'])).toBe(3);
   });
 
   it('★★ 一个可出价的都没有时返回 -1，**绝不能返回 0**（A-3 的卡死根因）', () => {
@@ -722,9 +740,9 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     //   那正好可能是卖家那一格 ⇒ 客户端把出价权交给卖家、屏上等真人点，整局卡死。
     expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'givenUp', 'givenUp', 'givenUp'])).toBe(-1);
     expect(auctionFirstSeat([], [])).toBe(-1);
-    // 卖家被跳过：slot 0 是卖家（givenUp），第一个可出价的是 slot 1
-    const sellerFirst: AuctionSeatStatus[] = ['givenUp', 'active', 'active', 'active'];
-    expect(auctionFirstSeat([0, 1, 2, 3], sellerFirst)).toBe(1);
+    // 卖家被跳过：slot 3 是卖家（givenUp），开场落到 slot 2
+    const sellerLast: AuctionSeatStatus[] = ['active', 'active', 'active', 'givenUp'];
+    expect(auctionFirstSeat([0, 1, 2, 3], sellerLast)).toBe(2);
   });
 
   it('★ 无主地自拍（bidders 含卖家自己）时，出价权必须给**别人**', () => {
@@ -733,13 +751,15 @@ describe('★ 座位表（loc_0043c110 / loc_00439f72 的建表段）', () => {
     //   原版此时 slot 0 就是出卡人自己（原版建表不看「谁是卖家」以外的资格）。
     //   ★ 这里钉住的是**引擎不再把出价权丢给卖家**这条不变量：
     //     一旦卖家被标成非 active（自己的地 / 出不起），首个席位必须跳过它。
-    expect(auctionFirstSeat([0, 1, 2, 3], ['givenUp', 'active', 'active', 'active'])).toBe(1);
+    expect(auctionFirstSeat([0, 1, 2, 3], ['active', 'active', 'active', 'active'], 3)).toBe(2);
     // 卖家在中间（bidders 不含它时下标会错位）—— 用 bidders 与玩家号**不同**的数组钉住
     //   「用 bidders[i] 取 status，而不是用 i 取 status」：
-    //   bidders=[2,0,3]，status 按**玩家下标**索引 ⇒ slot0=玩家2(active) → 返回 0
-    expect(auctionFirstSeat([2, 0, 3], ['givenUp', 'active', 'active', 'active'])).toBe(0);
-    // 玩家2 出不起、玩家0 与玩家3 可出价 ⇒ slot0 被跳过，返回 slot1
-    expect(auctionFirstSeat([2, 0, 3], ['active', 'active', 'givenUp', 'active'])).toBe(1);
+    //   bidders=[3,0,2]，status 按**玩家下标**索引 ⇒ 末格 slot2=玩家2(active) → 返回 2
+    expect(auctionFirstSeat([3, 0, 2], ['givenUp', 'active', 'active', 'active'])).toBe(2);
+    //   末格玩家 2 出不起 ⇒ 往前找：slot1 = 玩家 0（active）
+    expect(auctionFirstSeat([3, 0, 2], ['active', 'active', 'givenUp', 'active'])).toBe(1);
+    // 玩家2 出不起、玩家0 与玩家3 可出价 ⇒ 从末格起：slot2 = 玩家3（active）
+    expect(auctionFirstSeat([2, 0, 3], ['active', 'active', 'givenUp', 'active'])).toBe(2);
   });
 });
 
@@ -783,7 +803,7 @@ describe('★ 终局判据（loc_0043b295）', () => {
   //    复查在每一次出价后都跑）⇒ 这组用例是**契约钉子**，防的是「外部塞进来的
   //    pending（读档还原的中途状态）」以及日后有人把这条判据删掉。
   // ══════════════════════════════════════════════════════════════════
-  it('★★ 全场座位都被挡住 + 有人出过价 ⇒ **流拍**（不是判给最后出价的人）', () => {
+  it('★★ 审计订正：全场座位都被挡住 + 有人出过价 ⇒ **按现价成交给最高出价者**（状态 0xb 收尾 0x0043b5ce push [0x48c4a8]）', () => {
     const status = ['active', 'passed', 'passed', 'passed'] as const;
     expect(auctionAllBlocked({ bidders: [1, 2, 3], status: [...status] })).toBe(true);
     expect(
@@ -794,7 +814,7 @@ describe('★ 终局判据（loc_0043b295）', () => {
         price: 4000,
         basePrice: 3000,
       }),
-    ).toEqual({ winner: -1, price: 0 });
+    ).toEqual({ winner: 2, price: 4000 });
   });
 
   it('★ 只要还有一个 active 就不算「全被挡住」', () => {
@@ -1045,12 +1065,13 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
       expect(first, '第一格出不起底价时开场席位不能是他').not.toBe(1);
       expect(after.pending.status[first!]).toBe('active');
     }
-    expect(s.pending.bidders[s.pending.seat]).toBe(1); // 正常局面下 1 号可出价
+    expect(s.pending.bidders[s.pending.seat]).toBe(3); // 正常局面下开场是末位的 3 号（0x0043af45 覆盖到最后一格）
     expect(s.pending.status[s.pending.bidders[s.pending.seat]!]).toBe('active');
 
     const { state, actions } = runAuction(s);
     expect(state.pending).toBeNull();
-    expect(state.phase).toBe('turnEnd');
+    // ★ 审计（AUC-45）：拍賣卡落槌后回到出卡时的相位，用卡者照常掷骰（0x0044336b 返回 1 → 0x00418e75 call 0x40dd1f）
+    expect(state.phase).not.toBe('turnEnd');
     // 至少有人举过牌（原缺口下这里一口都没有）
     expect(actions.some((a) => a.includes('"status":"raise"'))).toBe(true);
   });
@@ -1287,7 +1308,7 @@ describe('★ Q-AUC-1 端到端：电脑打出拍賣卡 → 竞价一直跑到�
     s = reduce(s, { type: 'useCard', cardId: 8 }, topo);
     // 所有座位一开拍就 givenUp → **当场**流标（pending 都不挂）
     expect(s.pending).toBeNull();
-    expect(s.phase).toBe('turnEnd');
+    expect(s.phase).not.toBe('turnEnd'); // 审计（AUC-45）：用卡者不丢这一掷
     expect(s.landOwner[LAND]).toBe(0); // 变无主
     expect(s.players.map((p) => p.cash)).toEqual([2999, 2999, 2999, 2999]); // 一分钱没动
   });
@@ -1399,6 +1420,18 @@ describe('★ Q-AUC-1 soak：4 个电脑跑满 300 回合，拍卖不得卡死',
   });
 });
 
+describe('★ 2026-09-24 审计：拍賣卡流拍 ⇒ 无主 + 到期日清零（0x0044335b / 0x0044335f）', () => {
+  it('没人买得起（现金 ≤ 底价）⇒ 开拍即流標：1 号失去这块地、到期日归 0', () => {
+    const s0 = auctionGame((i) => (i === 0 ? 60_000 : 1));
+    const landTenure = [...s0.landTenure];
+    landTenure[1] = 0x07cf0101;
+    const after = reduce({ ...s0, landTenure }, { type: 'useCard', cardId: 8 }, topo);
+    const settled = after.pending?.kind === 'auction' ? runAuction(after).state : after;
+    expect(settled.landOwner[1]).toBe(0);
+    expect(settled.landTenure[1]).toBe(0);
+  });
+});
+
 describe('★★ 审计：心理价位里的系数与缺地系数都存成 f32（0x00439f3b / 0x00439fc7 / 0x0043a011 的 `fstp dword`）', () => {
   // 在 Unicorn 里执行原版 `0x439f0d` 得到的值（40 块地；地價×物價、起拍价、无主数、同名数、两个 rand）。
   // 这 6 组都是「按 f64 算会差 1」的边界 —— 旧实现逐组差 1，现在逐组相同。
@@ -1421,5 +1454,26 @@ describe('★★ 审计：心理价位里的系数与缺地系数都存成 f32�
       );
       expect(got).toBe(want);
     }
+  });
+});
+
+describe('★ 2026-09-25 审计（AUC-46）：加价额只能是档位表里的值（0x0043a49b [钮*4 + 0x475ba2]）', () => {
+  it('300 这种不在表里的加价被拒；500 收', () => {
+    const s = reduce(auctionGame(), { type: 'useCard', cardId: 8 }, topo);
+    if (s.pending?.kind !== 'auction' || !('seat' in s.pending)) throw new Error('no auction');
+    const bidder = s.pending.bidders[s.pending.seat]!;
+    expect(reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 300 }, topo)).toBe(s);
+    const ok = reduce(s, { type: 'auctionBid', bidder, status: 'raise', step: 500 }, topo);
+    expect(ok).not.toBe(s);
+  });
+});
+
+describe('★ 2026-09-25 审计（AUC-45）：掷骰前打拍賣卡，落槌后照样能掷骰', () => {
+  it('awaitingRoll 打卡 → 拍完回到 awaitingRoll，能 roll', () => {
+    const s0: GameState = { ...auctionGame(2999), phase: 'awaitingRoll' };
+    const s = reduce(s0, { type: 'useCard', cardId: 8 }, topo);
+    expect(s.pending).toBeNull();
+    expect(s.phase).toBe('awaitingRoll');
+    expect(reduce(s, { type: 'rollDice' }, topo).phase).not.toBe('awaitingRoll');
   });
 });

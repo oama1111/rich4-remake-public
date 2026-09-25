@@ -98,3 +98,39 @@ describe('★ 推日期（15 日分紅）打破產 → 下線拍卖先打完，�
     expect(closed.players[0]!.blocking.inHotel).toBe(2);
   });
 });
+
+describe('★ 2026-09-24 审计：分紅按人加总、每人结一次；分紅破产者的樂透号码开獎前就放掉', () => {
+  run('两家企业：一家大负一家正 ⇒ 净额进存款，不会先扣穿再折现金（0x0042bce3 累加 → 0x0042be83 一次结）', () => {
+    const { state, topo } = setup();
+    const [a, b] = (topo.commercials ?? []) as NonNullable<typeof topo.commercials>;
+    const companyFunds = [...state.companyFunds];
+    companyFunds[a!.id] = -5_000;
+    companyFunds[b!.id] = 8_000;
+    const s: GameState = {
+      ...state,
+      companyFunds,
+      holdings: state.holdings.map((row, p) =>
+        p === 1 ? row.map((h, i) => (i === a!.stockIndex || i === b!.stockIndex ? { ...h, amount: 100 } : { ...h, amount: 0 })) : row.map((h) => ({ ...h, amount: 0 })),
+      ),
+      players: state.players.map((p, i) => (i === 1 ? { ...p, cash: 100, moneyInBank: 0 } : p)),
+    };
+    const r = reduce(s, { type: 'endTurn' }, topo);
+    expect(r.day).toBe(15);
+    // 净 +3000 进存款；現金不动（旧式先 −5000 把存款扣穿、現金 100 折光 ⇒ 破产）
+    expect(r.players[1]!.whoPlays).not.toBe(0);
+    expect(r.players[1]!.moneyInBank).toBe(3_000);
+    expect(r.players[1]!.cash).toBe(100);
+  });
+
+  run('分紅打破产的人手里的樂透号码不参加当天开獎（0x0040d1a8 在 0x0041d094 之前）', () => {
+    const { state, topo } = setup();
+    const lottery = [...state.lottery];
+    lottery[4] = 2; // 1 号（将被分紅打破产）买了唯一一张
+    const r = reduce({ ...state, lottery, pool: 1000 }, { type: 'endTurn' }, topo);
+    expect(r.players[1]!.whoPlays).toBe(0);
+    // 号码放掉 ⇒ 一张票都没卖出 ⇒ 不开獎，奖池留着
+    expect(r.lastLotteryDraw ?? null).toBeNull();
+    expect(r.pool).toBeGreaterThanOrEqual(1000);
+    expect(r.lottery[4]).toBe(0);
+  });
+});

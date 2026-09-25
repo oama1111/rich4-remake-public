@@ -92,7 +92,9 @@ export function aiCanUseTools(aiFlags: number): boolean {
  * 三个 0 的角色**一辈子不借钱**，三个 100 的一进银行就把身家押满。
  */
 export function autoLoanAmount(wealth: number, loanRatio: number): number {
-  if (loanRatio === 0 || wealth <= 0) return 0;
+  // ★ 2026-09-25 审计（econ 跨区）：原版只拦 **0**（`0x00436902 test eax,eax / je 0x436953`）——
+  //   身家为负时算出来的是负数，照样写进 `+0x24`、加进存款（`0x004368fc` / `0x00436906`）。先前多拦了 `wealth <= 0`。
+  if (loanRatio === 0) return 0;
   // @source imul edx, [0x48c3b0] / mov ebx, 100 / idiv ebx —— 向零取整
   // ★ `imul r32, m32` 只留低 32 位（`0x004368e9`）⇒ 比例 × 身家超过 2^31 时原版会绕成负数，
   //   `test eax,eax / je` 拦不住负数 ⇒ 照写进 `+0x24` / 存款。`Math.imul` 就是这条乘法。

@@ -293,3 +293,32 @@ describe('★★ 第二十六份（pt26-car）：真人买卖动到牌堆 / 道�
     expect(s.cardAmount).toEqual(only);
   });
 });
+
+describe('★ 2026-09-24 审计：百貨格的营业额进百貨企業的盈餘（0x0042ed75 / 0x0042ed7e）', () => {
+  it('买道具记 標價×10、卖道具记 標價×个数；格值不是企業码时不记', () => {
+    // 百貨格的格值 = 百貨企業的实体码（0x1770 + 企業号），0001.bin 就是 6002
+    const storeNode = makeNode({ id: 1, adjacent: [1], type: 0x1770 + 2, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
+    const t = { nodes: [storeNode] };
+    const s0 = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      companyFunds: [0, 0, 100, 0],
+      companyProfit: [0, 0, 7, 0],
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK }),
+      ),
+    });
+    const s = reduce(s0, { type: 'settle' }, t);
+    expect(s.pending?.kind).toBe('shop');
+    const bought = reduce(s, { type: 'shop', op: 'buyTool', id: 6 }, t);
+    const carPrice = TOOLS.find((x) => x.id === 6)!.price;
+    expect(bought.companyFunds[2]).toBe(100 + carPrice * 10);
+    expect(bought.companyProfit[2]).toBe(7 + carPrice * 10);
+    const sold = reduce(bought, { type: 'shop', op: 'sellTool', id: 6, count: 1 }, t);
+    expect(sold.companyFunds[2]).toBe(100 + carPrice * 11);
+    // 格值 0 的百貨格（测试夹具那种）：不记
+    const plain = reduce(landed(500), { type: 'shop', op: 'buyTool', id: 6 }, topo);
+    expect(plain.companyFunds).toEqual(landed(500).companyFunds);
+  });
+});

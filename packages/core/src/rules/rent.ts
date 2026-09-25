@@ -15,6 +15,7 @@ import { calculateLandToll, tollLands } from './toll.ts';
 import { transferMoney, type Company } from './payment.ts';
 import { adjustTollByGod } from './god-toll.ts';
 import { truncTowardZero } from './rounding.ts';
+import { updateHostility } from './hostility.ts';
 
 /**
  * 住宅「請付…元」那一句最后那个 `%s`（费名）= **「過路費」**。
@@ -46,6 +47,12 @@ export interface RentResult {
   godAdjusted: boolean;
   /** 实际分账明细，无同盟时只有一项 */
   shares: RentShare[];
+  /**
+   * 同盟者那一份的**原始**租金（`[esp+0xcc]`，第二次 `calculate_land_toll` 的结果；无同盟 = 0）。
+   * 敌意那一步要用它：`0x00419d8e mov edi, [esp+0xcc] / sub edx, edi` —— 地主那份的敌意按
+   * 「调整后总额 − 同盟原始份」算，同盟那份按「同盟原始份」算（见 `rentHostility`）。
+   */
+  allyToll: number;
   /**
    * ★ 第十四份：**地主那一份的应收额**（付款之前算的，不因付款人掏不出而截断）——
    *   原版 `0x00419f92 ebx = ebp − 同盟份` → `0x00419fa1 call 0x44f354(地主, ebx)`（有同盟）、
@@ -101,8 +108,14 @@ export function allianceShareOf(
   if (total === 0) return 0;
   // @source fdivp 后 fstp dword —— 单精度（包在 Math.fround 里，C-DET-3 允许）
   const ratio = Math.fround(allyToll / total);
-  // @source fild(总额) / fmul / call 0x457dbc（向零截断）/ fistp —— 乘回再截断
-  return truncTowardZero(Math.fround(payable * ratio));
+  // @source fild(总额) / fmul dword [比例] / call 0x457dbc（向零截断）/ fistp —— 乘回再截断。
+  // ★ 2026-09-24 审计订正：乘积**不再**压回 float32。`fmul dword` 只是把单精度的比例装进
+  //   x87 寄存器，乘法本身按控制字的精度（Watcom 默认 `0x037f`，PC=11 扩展精度；`0x457dbc`
+  //   也只改 RC 不改 PC）算完就直接 `frndint` / `fistp`，中间没有 `fstp dword`。先前的
+  //   `Math.fround(payable * ratio)` 会把 6.99999988 这类乘积舍成 7.0 再截断
+  //   （总额 10、同盟 7：比例 fround(0.7)=0.699999988 ⇒ 原版同盟得 6，旧式给 7）。
+  //   整数（< 2^29）× float32 的乘积在 double 里是精确的，与扩展精度一致。
+  return truncTowardZero(payable * ratio);
 }
 
 /**
@@ -148,6 +161,7 @@ export function collectRent(
     baseTotal: 0,
     godAdjusted: false,
     shares: [],
+    allyToll: 0,
     ownerDue: 0,
     bankrupted: false,
     counted: [],
@@ -178,7 +192,7 @@ export function collectRent(
     allyId === 0 ? 0 : calculateLandToll(lands, allyId, priceIndex, districtName);
 
   const baseTotal = ownerPart + allyToll;
-  if (baseTotal === 0) return { ...none(), counted };
+  if (baseTotal === 0) return { ...none(), allyToll, counted };
 
   // ★ 神明在**付款之前**调整金额（VA 0x0041d709），
   //   财神减免、穷神加成、福神不影响。
@@ -190,7 +204,7 @@ export function collectRent(
   const total = god.toll;
   if (total === 0) {
     // ★ 神明把金额抹成 0：钱不收，但「算进去的每一块」照给 —— 原版标地在调整之前
-    return { ...none(), total: 0, baseTotal, godAdjusted: god.changed, counted };
+    return { ...none(), total: 0, baseTotal, godAdjusted: god.changed, allyToll, counted };
   }
 
   const shares: RentShare[] = [];
@@ -206,8 +220,11 @@ export function collectRent(
     shares.push({ payee: ownerIdx, amount: r.paid });
     ownerDue = total;
   } else {
-    // 比例由两份**原始**租金决定，再套到（可能被神明改过的）实付总额上
-    const allyGets = allianceShareOf(ownerToll, allyToll, total);
+    // 比例由两份租金决定，再套到（可能被神明改过的）实付总额上。
+    // ★ 2026-09-24 审计订正：地主那份用**翻倍之后**的 `ownerPart` —— 原版 `0x00419b0f add ebp, ebp`
+    //   （涨价位）在 `0x00419cbd add ebp, edx` / `fild ebp`（比例的分母）**之前**，
+    //   分母 = 翻倍后的地主份 + 同盟份。先前传的是未翻倍的 `ownerToll`，涨价地 + 有同盟时比例偏大。
+    const allyGets = allianceShareOf(ownerPart, allyToll, total);
     const ownerGets = total - allyGets;
     ownerDue = ownerGets;
     // ★ 顺序照搬：先付地主（0x00419fb4），再付同盟（0x0041a003）
@@ -222,7 +239,40 @@ export function collectRent(
     bankrupted = r1.bankrupted || r2.bankrupted;
   }
 
-  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, ownerDue, bankrupted, counted };
+  return { players: next, total, baseTotal, godAdjusted: god.changed, shares, allyToll, ownerDue, bankrupted, counted };
+}
+
+/**
+ * 付过路费时记下的**敌意**（付款人 → 地主 / 同盟）。
+ *
+ * ★ 2026-09-24 审计补（先前整段没接）：神明调整之后、免費卡 / 嫁禍卡之前，原版按付的钱记敌意。
+ * @source 0x00419d7c `test eax, eax / je 0x41b077`（调整成 0 就连敌意都不记）之后：
+ * ```asm
+ * ; 有同盟（[esp+0xe4] != 0）：
+ * 00419d8e  mov  edi, [esp + 0xcc]          ; 同盟那份（原始）
+ * 00419d95  sub  edx, edi                   ; 调整后总额 − 同盟原始份
+ * 00419da1  idiv ecx(=100)                  ; 有符号、向零
+ * 00419db1  call 0x40df69(当前玩家, 地主, 商)
+ * 00419dc5  idiv ecx(=100)                  ; 同盟原始份 / 100
+ * 00419df3  call 0x40df69(当前玩家, 同盟 − 1, 商)
+ * ; 无同盟：
+ * 00419de2  idiv ecx(=100)                  ; 调整后总额 / 100
+ * 00419df3  call 0x40df69(当前玩家, 地主, 商)
+ * ```
+ * 敌意的主语永远是**当前玩家**（`[0x49910c]`）—— 之后嫁禍 / 死神换了付款人也不改。
+ * 小財神把总额减半后「总额 − 同盟份」可能为负 ⇒ 对地主的敌意**下降**，照抄。
+ */
+export function rentHostility(
+  players: readonly Player[],
+  payer: number,
+  ownerIdx: number,
+  allyId: number,
+  total: number,
+  allyToll: number,
+): Player[] {
+  if (allyId === 0) return updateHostility(players, payer, ownerIdx, Math.trunc(total / 100)).players;
+  const next = updateHostility(players, payer, ownerIdx, Math.trunc((total - allyToll) / 100)).players;
+  return updateHostility(next, payer, allyId - 1, Math.trunc(allyToll / 100)).players;
 }
 
 /**

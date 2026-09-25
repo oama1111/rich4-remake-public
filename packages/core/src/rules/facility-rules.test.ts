@@ -33,7 +33,7 @@ import { reduce, type MapTopology } from '../state/reduce.ts';
 import { FACILITY_TYPE_MIN } from './land.ts';
 import { RELEASE_PENDING } from './blocking.ts';
 import { toolCount } from './tools.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
 import { evaluateTurnStart } from './turn-start.ts';
 import { NPC } from './npc-actions.ts';
 import { runNpc, spyTollAt } from './npc-walk.ts';
@@ -231,6 +231,25 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(built.players[0]?.cash).toBe(97_000);
   });
 
+  it('★ 审计补：首建被小衰神挡下 ⇒ 钱与等级不动，但**种类已经写上**（0x0041a239 在 0x0041a261 衰神闸之前）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const s0 = standing({ facilityOwner: owner });
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)) };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buildFacility');
+    const blocked = reduce(asked, { type: 'buildFacility', facilityType: FACILITY_TYPE.mall }, topo);
+    expect(blocked.notices.map((n) => n.key)).toEqual(['god.blockPurchase']);
+    expect(blocked.players[0]?.cash).toBe(100_000);
+    expect(blocked.facilityLevel[FAC_ID]).toBe(0);
+    expect(blocked.facilityType[FAC_ID]).toBe(FACILITY_TYPE.mall);
+    // 电脑那一支（0x0041a257）同样先写种类
+    const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_COMPUTER } : p)) };
+    const aiBlocked = reduce(ai, { type: 'settle' }, topo);
+    expect(aiBlocked.facilityLevel[FAC_ID]).toBe(0);
+    expect([1, 2, 3, 4]).toContain(aiBlocked.facilityType[FAC_ID]);
+  });
+
   it('★★ 选种类窗开着时被托管（座位变成 1|4）：AI 代答 `facilityType: null` ⇒ reducer 走电脑支 rand()%4+1（0x0041a23e）', () => {
     const owner = [...standing().facilityOwner];
     owner[FAC_ID] = 1;
@@ -366,8 +385,26 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     // days − 1，为 0 时挂 0x80
     expect(b.inHotel).toBe(days === 1 ? RELEASE_PENDING : days - 1);
     expect(r.players[0]!.totalWinterSleepDays).toBe(days);
-    // 本月支出 = 住宿費（pay_money 已累计）+ 那笔 2000×天×物價 的損失记账
-    expect(r.players[0]!.monthlyPaid).toBe(paid + hotelStayLoss(days, 1));
+    // ★ 审计订正：本月支出**只有**住宿費（pay_money 累计的那一笔）。原版写 `+0x5c` 的只有 pay_money
+    //   （`xref 0x496bc4`），`0x44ba63` 保險理賠也不碰它 —— 先前多记的「2000×天×物價」是自拟的
+    expect(r.players[0]!.monthlyPaid).toBe(paid);
+    // 敌意：旅館**只有**落点这一句 `0x0041a7bc` 的 20×天×物價（主语 = 当前玩家，对象 = 主人）
+    //   —— 收費那句 `0x0041a5c0`（費/100）被 `0x0041a5d5 cmp byte [設施+0x18], 1 / je 0x41a63d` 跳过
+    expect(r.players[0]!.hostility[1]).toBe(20 * days);
+  });
+
+  it('★ 审计订正：死神顯靈换成**主人自己**付 ⇒ 不付钱、不记這一筆，但旅館照住（0x0041a709 je 0x41a761）', () => {
+    const s0 = othersFacility(FACILITY_TYPE.hotel, 1);
+    // 主人 1 号身上是死神（god_info 0xe：不在 0x41d559 的免收里，但 0x40fbb8 会点到他）
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 1 ? { ...p, godInfo: 0xe } : p)) };
+    const lastBefore = s.facilityLastToll[FAC_ID];
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.players[0]!.cash).toBe(100_000);
+    expect(r.players[1]!.monthlyPaid).toBe(0);
+    expect(r.players[1]!.monthlyReceived).toBe(0);
+    expect(r.players[1]!.moneyInBank).toBe(s.players[1]!.moneyInBank);
+    expect(r.facilityLastToll[FAC_ID]).toBe(lastBefore);
+    expect(r.players[1]!.blocking.inHotel).not.toBe(0); // 主人自己住进去
   });
 
   it('★★ 住店时**贴图位置**挪到旅館設施坐标上（第 88 条）', () => {

@@ -371,7 +371,10 @@ export function companyDividends(
     //   0x0042bc90 `fild 盈餘` / 0x0042bc93 `fmul ratio` / 0x0042bc9a
     //   `call 0x457dbc`（`__round_toward_zero`：**向零截断**，不是就近/四舍五入）
     const ratio = Math.fround(held / total);
-    const amount = truncTowardZero(Math.fround(funds * ratio));
+    // ★ 2026-09-24 审计订正：乘积**不**压回 float32 —— `fmul dword` 之后紧接 `call 0x457dbc` / `fistp`，
+    //   没有 `fstp dword`。例：盈餘 6、持股 5:1 ⇒ 比例 fround(5/6)=0.83333331，6×它 = 4.99999988 → 原版 4
+    //   （旧式先 fround 成 5.0 再截断 → 5）。int32 × float32 在 double 里精确。
+    const amount = truncTowardZero(funds * ratio);
     if (amount !== 0) rows.push({ player: p, amount });
   }
   return { rows, cleared: true };
