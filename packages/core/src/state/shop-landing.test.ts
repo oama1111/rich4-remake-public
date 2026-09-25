@@ -194,16 +194,102 @@ describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
   });
 });
 
-describe('★ 电脑买过的那一行不再提（货架记 sold 之后）', () => {
-  it('买完汽車 ⇒ 下一步不再提汽車（否则 reducer 必拒、原样重提，卡死在 turnEnd/shop）', () => {
+describe('★★ 第二十六份：电脑不再收到商店交互，托管的真人也不替他花點券', () => {
+  it('电脑落在百貨 ⇒ 当场买卖（`places/ai-shop.ts`）、不挂 pending、不抽货架', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: 2 }),
+      ),
+    });
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 货架那一段 `rand()%10+6` 只在真人那一支 ⇒ 电脑进店（非董事長）一个随机数都不耗
+    expect(r.rngState).toBe(s.rngState);
+    expect(toolCount(r.tools, 0, 5)).toBe(1);
+    expect(toolCount(r.tools, 0, 6)).toBe(1);
+  });
+
+  it('托管位（who_plays = 1|4）也走电脑那一支（`cmp byte [+0x15], 1` 是精确比较）', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: i === 0 ? 5 : 2 }),
+      ),
+    });
+    expect(reduce(s, { type: 'settle' }, topo).pending).toBeNull();
+  });
+
+  it('开着商店窗被托管的真人 ⇒ AI 只关窗（null），不自拟买车', () => {
+    const s = landed(500);
+    expect(s.pending?.kind).toBe('shop');
+    expect(decidePending(s)).toBeNull();
+  });
+});
+
+describe('★★ 第二十六份（pt26-car）：真人买卖动到牌堆 / 道具库存，与原版一致', () => {
+  it('买卡从牌堆扣一张（`0x0042d242 call 0x4412e4` → `0x0044133b dec`），卖卡放回一张（`0x0042d152 call 0x441343` → `0x004413a2 inc`）', () => {
     let s = landed(500);
-    const first = decidePending(s);
-    expect(first).toEqual({ type: 'shop', op: 'buyTool', id: 6 });
-    s = reduce(s, first!, topo);
-    expect(toolCount(s.tools, 0, 6)).toBe(1);
-    // 汽車那一行已卖掉 ⇒ 不再提汽車；提出来的（機車或 null）必须是 reducer 收得下的
-    const next = decidePending(s);
-    expect(next).not.toEqual({ type: 'shop', op: 'buyTool', id: 6 });
-    if (next !== null) expect(reduce(s, next, topo)).not.toBe(s);
+    if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+    const id = s.pending.cards[0]!.id;
+    const pool0 = s.cardAmount[id - 1]!;
+    s = reduce(s, { type: 'shop', op: 'buyCard', id, row: 0 }, topo);
+    expect(s.players[0]!.cards).toContain(id);
+    expect(s.cardAmount[id - 1]).toBe(pool0 - 1);
+    // 其余各种一张不动
+    const others = s.cardAmount.filter((_, i) => i !== id - 1);
+    expect(others).toEqual(initialCardAmounts().filter((_, i) => i !== id - 1));
+    s = reduce(s, { type: 'shop', op: 'sellCard', id }, topo);
+    expect(s.players[0]!.cards).not.toContain(id);
+    expect(s.cardAmount[id - 1]).toBe(pool0);
+  });
+
+  it('卖开局就在手里的卡 ⇒ 牌堆比开局多一张（原版不管这张从哪来，一律 `inc`）', () => {
+    const s0 = landed(500);
+    const id = CARDS[0]!.id;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, cards: [id] } : p)) };
+    const after = reduce(s, { type: 'shop', op: 'sellCard', id }, topo);
+    expect(after.cardAmount[id - 1]).toBe(s.cardAmount[id - 1]! + 1);
+  });
+
+  it('买汽車库存 10 → 9（`receive_tool` 0x00445a81 `dec`），卖回 9 → 10（`sell_tool` 0x0042d229 `add`）', () => {
+    let s = landed(500);
+    expect(s.toolStock[6]).toBe(10);
+    s = reduce(s, { type: 'shop', op: 'buyTool', id: 6 }, topo);
+    expect(s.toolStock[6]).toBe(9);
+    s = reduce(s, { type: 'shop', op: 'sellTool', id: 6, count: 1 }, topo);
+    expect(s.toolStock[6]).toBe(10);
+    expect(toolCount(s.tools, 0, 6)).toBe(0);
+  });
+
+  it('货架从牌堆抽、不放回：每种上架张数 ≤ 牌堆剩余；只剩一种有货时货架上只有它', () => {
+    {
+      const s = landed(500);
+      if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+      const count = new Map<number, number>();
+      for (const c of s.pending.cards) count.set(c.id, (count.get(c.id) ?? 0) + 1);
+      for (const [id, n] of count) expect(n).toBeLessThanOrEqual(s.cardAmount[id - 1]!);
+    }
+    const only = new Array<number>(30).fill(0);
+    only[4] = 2;
+    const s = reduce(
+      makeGameState({
+        phase: 'settling',
+        cardAmount: only,
+        toolStock: initialToolStock(),
+        players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1, points: 500 })),
+      }),
+      { type: 'settle' },
+      topo,
+    );
+    if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+    expect(s.pending.cards.map((c) => c.id)).toEqual([5, 5]);
+    // 开门抽货架用的是局部副本（`0x0042eaf4` memcpy）⇒ 牌堆本身不动
+    expect(s.cardAmount).toEqual(only);
   });
 });

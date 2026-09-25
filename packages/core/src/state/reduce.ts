@@ -153,6 +153,7 @@ import {
   shareWindowLimit,
 } from '../places/company.ts';
 import { tickInsuranceDays } from '../rules/blocking.ts';
+import { aiShopVisit } from '../places/ai-shop.ts';
 import {
   buyCard,
   buyTool,
@@ -7150,6 +7151,35 @@ function enterShop(state: GameState, topo: MapTopology): GameState {
     }
   }
 
+  // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：**恰好** who_plays == 1 的真人才开窗、抽货架；
+  //   电脑 / 托管当场按原版那一支买卖完就走（`places/ai-shop.ts`）—— 不抽货架（不耗随机数）、
+  //   不挂 `pending`、没有框 / 台词 / 音效。
+  //   @source `0x0042ea2b imul eax, [0x49910c], 0x68 / cmp byte [eax+0x496b7d], 1 / jne 0x42ed8d`
+  //   先前电脑也挂 `pending{shop}`，由 `ai/policy.ts` 自拟的「车优先、點券全花」来答 ——
+  //   150 點就能买汽車，而原版只拿一半點券逛道具、先買機車（见 `ai-shop.ts` 文件头）。
+  if (((next.players[me]?.whoPlays ?? 0) & 0xff) !== WHO_PLAYS_HUMAN) {
+    const visit = aiShopVisit({
+      player: next.players[me]!,
+      tools: next.tools,
+      toolStock: next.toolStock,
+      cardAmount: next.cardAmount,
+    });
+    return {
+      ...next,
+      players: next.players.map((p, i) => (i === me ? visit.player : p)),
+      tools: visit.tools,
+      toolStock: visit.toolStock,
+      cardAmount: visit.cardAmount,
+      rngState: rng.getState(),
+      ...(gift === null
+        ? {}
+        : {
+            notices: [{ key: 'shop.chairmanGift' as const, args: [gift.name] }],
+            lastShopGift: { kind: gift.kind, id: gift.id, points: gift.points },
+          }),
+    };
+  }
+
   // ② ③ 货架
   const shelf = drawCardShelf(next.cardAmount, rng);
   const tools = toolShelf(next.toolStock);
@@ -7212,6 +7242,13 @@ function shelfRowFor(
   return it.id === id && it.sold !== true ? row : -1;
 }
 
+/** 牌堆某一种加减一张（下标 = 卡号 − 1；原版是 `byte`，这里不会越界：买的来自货架、卖的来自手牌）*/
+function poolDelta(cardAmount: readonly number[], cardId: number, delta: number): number[] {
+  const out = [...cardAmount];
+  out[cardId - 1] = Math.max(0, (out[cardId - 1] ?? 0) + delta);
+  return out;
+}
+
 function shopAction(state: GameState, action: Action & { type: 'shop' }): GameState {
   const pending = state.pending;
   if (pending === null || pending.kind !== 'shop') return state;
@@ -7234,18 +7271,29 @@ function shopAction(state: GameState, action: Action & { type: 'shop' }): GameSt
   switch (action.op) {
     case 'buyCard': {
       // ★ 只认货架上**还没卖掉**的那一行；买完那一行留在原位、记 `sold`（原版变灰 + 清 0，
-      //   本次进店不能再买）。货架是从牌堆抽的，牌堆本身由 buyCard 扣。
+      //   本次进店不能再买）。货架是开门时从牌堆的**局部副本**抽的（`0x0042eaf4` memcpy，不动牌堆本身）。
       const at = shelfRowFor(pending.cards, action.id, action.row);
       if (at === -1) return state;
       const r = buyCard(me, action.id);
       if (!r.ok) return state;
-      const bought = commit(r.player);
+      // ★★ 第二十六份（pt26-car）：买进的那张**从牌堆扣**。
+      //   @source 真人买卡 `0x0042e20c call 0x42d237` → `0x0042d242 call 0x4412e4`（receive_card）
+      //   → `0x0044133b dec byte [卡号 + 0x499197]`。先前这里不扣 ⇒ 牌堆（抽卡格 / 货架 / 董事長贈卡的来源）
+      //   永远不因真人买卡而变少，与电脑那一支（`places/ai-shop.ts`）也对不上。
+      //   手牌满 15 在 `buyCard` 里已拦（原版 `0x0042e1ec call 0x441262 / cmp eax,0xf / jge`），
+      //   receive_card 的「满手先丢最便宜」那一支真人这里走不到。
+      const cardAmount = poolDelta(state.cardAmount, action.id, -1);
+      const bought = { ...commit(r.player), cardAmount };
       const cards = pending.cards.map((c, i) => (i === at ? { ...c, sold: true as const } : c));
       return { ...bought, pending: { ...pending, points: r.player.points, cards } };
     }
     case 'sellCard': {
       const r = sellCard(me, action.id);
-      return r.ok ? commit(r.player) : state;
+      if (!r.ok) return state;
+      // ★★ 第二十六份（pt26-car）：卖掉的那张**回牌堆**。
+      //   @source 真人卖卡 `0x0042e0bd call 0x42d145` → `0x0042d152 call 0x441343`（consume_card，删第一张同号）
+      //   → `0x004413a2 inc byte [卡号 + 0x499197]`。
+      return { ...commit(r.player), cardAmount: poolDelta(state.cardAmount, action.id, 1) };
     }
     case 'buyTool': {
       // ★ 与 buyCard 同构：买过的那一行记 `sold`、本次进店不能再买 —— 原版两页都这么干

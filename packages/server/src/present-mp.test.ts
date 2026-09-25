@@ -109,8 +109,8 @@ function table(now: { t: number }) {
 }
 
 describe('★ gap-audit #7：`present`（协议 v8）', () => {
-  it('协议版本 +1（7 → 8）', () => {
-    expect(PROTOCOL_VERSION).toBe(8);
+  it('协议版本 +1（7 → 8；之后第二十六份 pt26-car 又 +1 ⇒ 至少 8）', () => {
+    expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(8);
   });
 
   run('轮到的那一座亮牌 ⇒ 转给同桌其余各端（带 `after` = 此刻日志末号）；不发回本人；不进日志、不动指纹', () => {

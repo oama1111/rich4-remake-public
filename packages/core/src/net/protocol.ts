@@ -79,7 +79,14 @@ import type { Action } from '../state/actions.ts';
  * 版本號一變，沒刷新的舊分頁進門就拿到一句清楚的「協議版本不符」。
  * ⚠️ `present` **不進** action 日誌、不進 `replay`、不進 `stateFingerprint` —— 它不改局面。
  */
-export const PROTOCOL_VERSION = 8;
+/**
+ * ★ 2026-09-24（第二十六份試玩回報「约翰乔的汽车哪里来的」，pt26-car）→ **9**。
+ *
+ * 為什麼 +1：**核心規則**改了 —— 電腦（與託管）進百貨公司不再掛 `pending{shop}` 等 AI 答，而是按原版那一支
+ * （`0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`）在 `settle` 裡當場買賣完就走（`places/ai-shop.ts`），
+ * 而且**不抽貨架**（少耗隨機數）。老客戶端對同一條 `settle` 會算出「店還開著」的局面，下一條 `endTurn` 起就失步。
+ */
+export const PROTOCOL_VERSION = 9;
 // ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
 //   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 

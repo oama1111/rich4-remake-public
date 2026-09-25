@@ -20,14 +20,11 @@ import type { GameState } from '../state/types.ts';
 import type { LandInfo, Rich4Map } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
-import { buyTool } from '../places/shop.ts';
 import { isAiControlled } from '../state/types.ts';
 import { canUseCard } from '../state/preview.ts';
 import type { CardTarget } from '../cards/target.ts';
 import {
   PLACEMENT_TOOLS,
-  TRAFFIC_CAR,
-  TRAFFIC_MOTORCYCLE,
   VEHICLE_TOOLS,
   buildOneLevel,
   placeObject,
@@ -514,35 +511,12 @@ export function decidePending(state: GameState): Action | null {
   //   被托管了 —— 与路过那台同样替他关窗（模态窗返回 0 = 不办），core 随即换成貸款屏再由下面那支答。
   //   不答的话调用方会发 `endTurn`，把 ATM 连同后面的貸款屏一起跳掉。
   if (p.kind === 'atm') return { type: 'declineDecision' };
-  if (p.kind === 'shop') {
-    // ★ 优先把交通工具买到手：骰子从 1 变 3，是全局最划算的一笔。
-    //   其次补放置类道具。都买不起就关门（由调用方发 declineDecision）。
-    const me = state.players[state.currentPlayer];
-    if (me === undefined) return null;
-    // ★ 不能只看「买得起 + 有货」——`buyTool` 还会因**每人每种上限 9**
-    //   而拒绝（`give_tool` 的 `toolLimit`）。AI 是纯函数，提一个 reducer
-    //   必拒的 action 就会被原样重提，卡死在 turnEnd/shop。
-    //   与卡片、买地两次事故同一类，处理办法也一样：**先预演一遍**。
-    // ★ **货架也在这条预演里**：reducer 要求「还在 `pending.tools` 上」才卖
-    //   （买过的那一行记 `sold`、不能再买，@source rich4_shop.asm 0x42e466 尾
-    //   `mov byte [ebx + 0x48c2f8], 0`）。漏了它，AI 买走车之后再提一次
-    //   同一件，reducer 必拒 → 同样卡死在 turnEnd/shop。
-    const onShelf = (id: number): boolean => p.tools.some((t) => t.id === id && t.sold !== true);
-    const canBuy = (id: number): boolean =>
-      onShelf(id) && buyTool(me, state.tools, state.toolStock, id).ok;
-    // 已有更好的车就别买了
-    if (me.trafficMethod !== TRAFFIC_CAR && canBuy(6)) {
-      return { type: 'shop', op: 'buyTool', id: 6 };
-    }
-    if (
-      me.trafficMethod !== TRAFFIC_CAR &&
-      me.trafficMethod !== TRAFFIC_MOTORCYCLE &&
-      canBuy(5)
-    ) {
-      return { type: 'shop', op: 'buyTool', id: 5 };
-    }
-    return null;
-  }
+  // ★★ 第二十六份：电脑 / 托管**不会**再收到 `pending{shop}` —— 原版那一支当场买卖完就走
+  //   （`0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`，见 `places/ai-shop.ts`，reducer 的 `enterShop` 直接跑）。
+  //   走到这里的只会是**开着商店窗被托管的真人**：原版的窗口是模态的、托管位在窗里不会冒出来 ⇒
+  //   按「关窗」处理（返回 null，调用方发 `declineDecision`），不替他花點券。
+  //   （先前这里是自拟的「车优先、點券全花」—— 150 點就买汽車，原版要 ≥ 461 點才轮得到，已删。）
+  if (p.kind === 'shop') return null;
   // ★ 拍賣（Q-AUC-1）：竞价循环归 core —— 这一支按原版拍賣窗口的刷新循环
   //   （`loc_0043c4f5` 一带）决定**这一口**加价多少 / PASS。
   //   座位状态、心理价位、现价、轮到谁都在 `pending` 里（reduce 开拍时建好）。

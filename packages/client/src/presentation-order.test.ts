@@ -42,7 +42,7 @@ import type { SpeechOrder } from './stage-gate.ts';
 import { wheelCue } from './wheel-screen.ts';
 import { godSlotCue } from './god-slot.ts';
 import { godLineTrigger } from './god-line.ts';
-import { cardGained } from './event-box-screen.ts';
+import { cardGained, shopVisitAction } from './event-box-screen.ts';
 import { dividendDayCrossed } from './shares-screen.ts';
 import { lotteryDrawCue } from './lottery-draw-screen.ts';
 import { freshMagicBeats } from './magic-fx.ts';
@@ -149,13 +149,13 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
   },
   {
     line: 'cardLine@afterStage',
-    boxes: [...RENT_PAY, 'card.use', 'card.scapegoatOn', 'card.scapegoatTo', 'wheel', 'facility.hotel', 'facility.mall', 'facility.gasStation'],
+    boxes: [...RENT_PAY, ...GOD_TOLL, 'card.use', 'card.scapegoatOn', 'card.scapegoatTo', 'wheel', 'facility.hotel', 'facility.mall', 'facility.gasStation'],
     exe: 'boxFirst',
-    va: '收費那一段的被动卡：過路費框 `0x00419d5a` → 免費卡亮牌 `0x00444b25` → `0x00444b5e`；嫁禍 亮牌 `0x00444999` → 框 `0x004449df` → `0x00444a1d`；設施 框 `0x0041a579` → 免費卡 `0x0041a62e call 0x444a60` / 嫁禍 `0x0041a683 call 0x44476a`',
+    va: '收費那一段的被动卡（★ 第二十六份补 GOD_TOLL：神明调整框 `0x41d709` 在 `0x00419d70`/`0x0041a58a`/`0x0041aec5`，都在免費卡 `0x00419e58`/`0x0041a62e`/`0x0041af20` 与嫁禍 `0x00419eb8`/`0x0041a683`/`0x0041af75` 之前）：過路費框 `0x00419d5a` → 免費卡亮牌 `0x00444b25` → `0x00444b5e`；嫁禍 亮牌 `0x00444999` → 框 `0x004449df` → `0x00444a1d`；設施 框 `0x0041a579` → 免費卡 `0x0041a62e call 0x444a60` / 嫁禍 `0x0041a683 call 0x44476a`',
   },
   {
     line: 'cardAnswer',
-    boxes: [...RENT_PAY, 'card.use', 'card.scapegoatOn', 'card.scapegoatTo', 'wheel', 'facility.hotel', 'facility.mall', 'facility.gasStation'],
+    boxes: [...RENT_PAY, ...GOD_TOLL, 'card.use', 'card.scapegoatOn', 'card.scapegoatTo', 'wheel', 'facility.hotel', 'facility.mall', 'facility.gasStation'],
     exe: 'boxFirst',
     va: '回应台词紧跟出牌台词：`0x00444b98` / `0x00444a4b`',
   },
@@ -185,6 +185,14 @@ export const EXE_ORDER_TABLE: readonly OrderRow[] = [
     boxes: [...RENT_PAY, ...GOD_TOLL, 'facility.hotel', 'facility.mall', 'facility.gasStation', 'wheel', 'card.scapegoatOn', 'card.scapegoatTo'],
     exe: 'boxFirst',
     va: '地主進帳 `0x00419fa1` / `0x0041a735`，都在收費框之后（也在嫁禍那两扇 `0x004449df` / `0x00444a1d` 之后）',
+  },
+  {
+    // ★ 第二十六份长局撞到：踩購物中心付不起 ⇒ 破產。轉盤 `0x0041a458` → 框 `0x0041a579` → 付款
+    //   `0x0041a74f call 0x41d2c6` → `0x0041d376 call 0x40cd87`（`_rich4_player_bankrupt`）→ 台词 `0x0040d237`
+    line: 'bankrupt',
+    boxes: [...RENT_PAY, ...GOD_TOLL, 'rent.reaperPays', 'facility.hotel', 'facility.mall', 'facility.gasStation', 'wheel'],
+    exe: 'boxFirst',
+    va: '收費框（住宅 `0x00419d5a` / 設施 `0x0041a579` / 企業 `0x0041aeb4`）→ 付款 `0x41d2c6`（設施 `0x0041a74f`）→ `0x0041d376 call 0x40cd87` → 破產台词 `0x0040d237`',
   },
   {
     line: 'hotelStay',
@@ -482,7 +490,7 @@ function boxesOf(before: GameState, after: GameState, topo: MapTopology): SimBox
     // 福神得卡没有卡面
   } else if (after.lastCardPlay !== null && after.lastCardPlay !== before.lastCardPlay) {
     if (after.lastCardPlay.popup !== false) screen('eventBox:cardUse', SCREEN_BOX_TIER.eventBox, 1500);
-  } else if (before.pending?.kind !== 'shop' && after.pending?.kind !== 'shop' && !(ev !== before.lastEvent && ev?.kind === 'magicHouse')) {
+  } else if (!shopVisitAction(before, after, topo) && !(ev !== before.lastEvent && ev?.kind === 'magicHouse')) {
     if (cardGained(before, after) !== null) screen('eventBox:cardDraw', SCREEN_BOX_TIER.eventBox, 2000);
   }
   if (wheelCue(before, after, topo) !== null) screen('wheel', SCREEN_BOX_TIER.wheel, 3000);

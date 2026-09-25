@@ -175,12 +175,27 @@ describe('★ 未实现的场所会明确报出来', () => {
     }
   });
 
-  run('★ 百貨公司已实现 —— 给出的是商店交互', () => {
+  run('★ 百貨公司已实现 —— 真人（恰好 who_plays == 1）给出的是商店交互', () => {
     const { map, topo: t } = topo();
-    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
-    if (s === null) return;
+    const s0 = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
+    if (s0 === null) return;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, whoPlays: 1 } : p)) };
     const r = reduce(s, { type: 'settle' }, t);
     expect(r.pending?.kind).toBe('shop');
+  });
+
+  run('★★ 第二十六份：电脑进百貨当场买卖完就走 —— 不留交互（`0x0042ea2b … jne 0x42ed8d`）', () => {
+    const { map, topo: t } = topo();
+    const s0 = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
+    if (s0 === null) return;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, whoPlays: 2, points: 500 } : p)) };
+    const r = reduce(s, { type: 'settle' }, t);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 500 點 ⇒ 道具预算 250：先買機車（80 < 250），剩 170 买得起汽車（150 < 170）
+    expect(r.tools[s.currentPlayer * 15 + 5]).toBe(1);
+    expect(r.tools[s.currentPlayer * 15 + 6]).toBe(1);
+    expect(r.players[s.currentPlayer]!.points).toBeLessThan(500);
   });
 });
 
