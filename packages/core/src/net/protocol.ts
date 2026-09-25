@@ -94,7 +94,41 @@ import type { Action } from '../state/actions.ts';
  * 現在拒收**超過 `pending.max`** 的股數（先前只比餘量）。老客戶端照舊收 `buyShares 3000` 的局面、
  * 新的拒收 ⇒ 同一串 action 算出不同局面；版本號一變，沒刷新的舊分頁進門就拿到「協議版本不符」。
  */
-export const PROTOCOL_VERSION = 10;
+/**
+ * ★ 2026-09-25（**六区出处审计**：ai-move / ai-econ / cards / econ / events / loop，协调方一次性 +1）→ **11**。
+ *
+ * 為什麼 +1：這次審計把六個區的規則逐條重讀 `rich4.exe` 後按原版改，**幾乎每一項修復都改變對局狀態
+ * 或全局隨機數的消耗次序** —— 新老客戶端對同一串 action 會算出不同局面（`rngState` 進指紋，故一旦
+ * 某一步少擲 / 多擲一次 `rand()`，之後每一步都不同）。老頁面照舊連進來，會在第一次分歧的 action 上失步；
+ * 版本號一變，它進門就拿到清楚的「協議版本不符」。六大類：
+ *
+ * 1. **隨機流次序（最大的一類）**：台詞階梯那 13 處 `rand()` 從「客戶端按狀態哈希擲硬幣、不推進 RNG」
+ *    改成 **core 在 exe 擲的那一刻擲**（`rules/speech-rand.ts` 的 `SPEECH_SITE` / `NEWS_OWNER_SITE`，
+ *    原值記進純表現瞬態 `lastSpeechRolls`）；神明老虎機自動轉 4 輪、新聞開拍接著同一條流、稅類 / 神明 /
+ *    施捨破產的拍賣、首次關押台詞、小偷禮物台詞、惡犬咬惡人後搭檔登場、新聞 4 物件放回（events）；
+ *    電腦買股 / 賣股挪進 reducer 按原版擲全局 `rand()`、買卡候選與選股排名照 Watcom `qsort` 的真實次序
+ *    （ai-econ）；嫁禍卡無人可嫁時照樣擲門檻數、漲價卡 / 拆除卡的清單次序（ai-move）；天使卡打 0 級設施
+ *    的電腦支新增一次 `rand()`（cards）。
+ * 2. **局面形狀多了字段**：`pending{auction}.resumePhase`（拍賣卡在掷骰前打出 ⇒ 落槌後回原相位，不再
+ *    一律 `turnEnd`；econ）、`pending{auction}.keepOwnerOnPass`（魔法屋流拍不清地主，events）、
+ *    `pending.birthdayCard` 的 `receiver` / `magicResume`（魔法屋抽命運三張遇真人壽星續演，events）、
+ *    `SpecialActor.home`（老家 +11，存檔讀寫，events）。
+ * 3. **校驗和口徑變了**：`stateFingerprint` 納入 `toolStock` / `cardAmount`（`5290899`，cards）——
+ *    同一個局面在舊版算出的校驗和與新版不同，這一條本身就必須全端同版。
+ * 4. **新增 action / 消息**：`stockScreen`（真人關股市屏 ⇒ 強制收回特別融資，econ）、`noticeBoard` 的
+ *    `open` / `close`（開窗先撤失效掛牌、關窗後收回特別融資，ai-econ）。
+ * 5. **工具 / 道具的請求語義變了**：傳送機改成原版兩段拾取（先選來源：地塊 / 設施 / 玩家 / 惡人 / 物件，
+ *    再選目標），`useTool` 帶的節點 / 值改成原版的精靈碼；新增道具第 14 項「下車」（`traffic → 0`、
+ *    骰子 → 1）（cards）。同一條 action 新老客戶端會解釋成不同的搬遷。
+ * 6. **純規則修正（單機 / 聯機同一個 reducer）**：過路費記敵意、設施收費與旅館、被嫁禍 / 死神點到的人
+ *    出獄住店、破產按在場**真人**數判終局、破產清別人對他的敵意、分紅、拍賣首拍席位與加價檔位、
+ *    建設公司真人選地窗、樂透投注屏、龜行只走一步、保險 / 研究所倒數挪回 `0x41c84f`、時光機快照時機、
+ *    真人開局資金按角色減半、跨月重擺禮物 / 寶箱、工程車到期、`startTurn` 相位閘、伺服器拒收客戶端
+ *    自帶點數的 `rollDice`。逐條出處見 `docs/audit/provenance-*.md` 六份台賬（每行都附 exe VA 與提交號）。
+ *
+ * ⚠️ 這次 +1 是協調方對**整批審計**一次性升的；六個區的分支各自都沒有動版本號。
+ */
+export const PROTOCOL_VERSION = 11;
 // ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
 //   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 

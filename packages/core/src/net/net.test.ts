@@ -295,8 +295,15 @@ describe('协议', () => {
     //      同一條 `settle` 新老客戶端算出不同局面。
     //    · pt27-stock（2026-09-25）：電腦認購上市企業股數照原版 `0x41d839`（上限 1000 + 30% 安全墊），
     //      reducer 拒收超過 `pending.max` 的 `buyShares` —— 同一串 action 新老客戶端算出不同局面。
-    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
-    expect(PROTOCOL_VERSION).toBe(10);
+    //    · **六区出处审计（2026-09-25，協調方一次性 +1）**：ai-move / ai-econ / cards / econ / events / loop
+    //      六個區逐條重讀 exe 後按原版改，幾乎每一項都改狀態或改全局隨機數的消耗次序 ——
+    //      `rngState` 進指紋 ⇒ 少擲 / 多擲一次 `rand()` 之後每一步都不同；另有 `stateFingerprint` 納入
+    //      `toolStock` / `cardAmount`（校驗和口徑本身變了）、新 action `stockScreen` / `noticeBoard`、
+    //      `pending{auction}` 的 `resumePhase` / `keepOwnerOnPass`、`pending.birthdayCard` 的
+    //      `receiver` / `magicResume`、`SpecialActor.home`、傳送機兩段拾取與道具「下車」。
+    //      逐條出處見 `docs/audit/provenance-*.md` 六份台賬。
+    //    ⇒ 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11
+    expect(PROTOCOL_VERSION).toBe(11);
   });
 });
 
