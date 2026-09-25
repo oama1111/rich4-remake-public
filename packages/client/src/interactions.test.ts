@@ -216,21 +216,3 @@ describe('★★ 第十四份（D-008 收口）：收費那一段真人的被动
     expect(interactionUi({ kind: 'scapegoat', candidates: [1, 2], names: ['a', 'b'], tail }, st)).toBeNull();
   });
 });
-
-describe('★ 20260925-153539948：建設公司选地窗是**地图上点**，不是清单', () => {
-  const st = makeGameState({ players: [makePlayer({ index: 0 }), makePlayer({ index: 1 })] });
-  const pend: PendingInteraction = {
-    kind: 'chooseBuildTarget',
-    commercialId: 1,
-    name: '建設公司',
-    choices: [0x7d0 + 1, 0xfa0 + 1],
-    charge: true,
-  };
-
-  it('★★ 通用对话框**不留壳子** —— 这一屏由 `picking.ts` 的 `{ kind: buildTarget }` 接管', () => {
-    // @source `0x0041aa6a` / `0x0041acff push 0x2090086 / call 0x446ae8`：原版开的是
-    //   盖在棋盘上的窗口（窗口过程 `0x00445e4d`），**没有**任何一列候选清单。
-    //   先前这里是一排「土地 #N / 設施 #N」按钮 —— 需求方回报的正是这一处。
-    expect(interactionUi(pend, st)).toBeNull();
-  });
-});

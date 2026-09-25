@@ -739,9 +739,8 @@ import {
   pickScrollCamera,
   pickScrollNextStep,
   startPick,
+  COMPANY_BUILD_PARAM,
   teleportTargetParam,
-  BUILD_PICK_PARAM,
-  buildPickMayOpen,
   type PickEdge,
   type PickSession,
 } from './picking.ts';
@@ -1220,9 +1219,6 @@ function dropLocalModal(k: LocalModal): void {
       return;
     case 'pick':
       endPick();
-      // ★ 回合不在本機而收掉的選地窗：把「为哪一问开过」也清掉 —— 否则席位再回到本机时
-      //   `tickBuildPick` 会以为已经开过，屏上什么都没有（同 `bailOpenedFor` 的复位口径）
-      buildPickOpenedFor = null;
       return;
     case 'dicePick':
       dicePick = null;
@@ -2457,10 +2453,9 @@ function applyCancelLayer(layer: CancelLayer): boolean {
         if (source.kind === 'card') cardUseFailed();
         // ★ v8：道具那一类取消只有这一声音效 4（`0x4466b8`）—— 联机时同桌也听得到
         else if (source.kind === 'tool') presentToTable({ kind: 'toolCancel', toolId: source.toolId });
-        // ★ 建設公司选地窗右键 ⇒ 窗交回 0（`0x004466c6` 掩码没有 bit3）：
-        //   自家 `0x0041aa95 je 0x41b062` 直接到出口；别人家 `0x0041ad28 je 0x41adff`
-        //   ⇒ 照收 1000 × 物價。两条都由 core 的 `declineDecision` 认这个 pending 时走。
-        else if (source.kind === 'buildTarget') dispatch({ type: 'declineDecision' });
+        // ★ 建設公司选地窗右键 ⇒ 窗交回 0（`0x004466c6`）⇒ core 的 `declineDecision` 那一支
+        //   （别人家照收 1000 × 物價 / 自家直接到出口）
+        else if (source.kind === 'build') dispatch({ type: 'declineDecision' });
       }
       return true;
     case 'dicePick':
@@ -3105,6 +3100,9 @@ function currentDialog(): InteractionUi | null {
   ) {
     return null;
   }
+  // ★ 20260925-153539948（「建设公司加盖房子不是展现列表，是我可以自己在地图上任意选择」）：
+  //   建設公司选地原版是**点地图**（`0x446ae8`，参数 `0x2090086`），走拾取模式（`tickBuildPick`），不摆后备壳
+  if (state.pending?.kind === 'chooseBuildTarget') return null;
   const passive = cardPassiveDialogOpen();
   if (passive !== null) return passive && state.pending !== null ? interactionUi(state.pending, state) : null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
@@ -6593,6 +6591,34 @@ function tickPendingToolPicker(): void {
 }
 
 /**
+ * 建設公司选地 —— 原版是**点地图**的拾取窗（`0x446ae8`，参数 `COMPANY_BUILD_PARAM` = `0x2090086`），不是列表。
+ *
+ * @source 自家 `0x0041aa46 push 0x463a4a` → `0x0041aa62 call 0x440cac`（「%s\n\n請選擇欲加蓋地點」1500 ms，模态）
+ *   → `0x0041aa6a push 0x2090086 / call 0x446ae8`；别人家 `0x0041acdb` → `0x0041acf7` → `0x0041acff` 同构。
+ *   ⇒ 框收掉才进拾取；只有该答的那一端（本机座位、真人回合）进，与 `currentDialog` 同一组判据。
+ */
+function tickBuildPick(): void {
+  const pend = state.pending;
+  if (pend?.kind !== 'chooseBuildTarget') {
+    // 局面变了（联机重建 / 换局）⇒ 残留的选地会话作废
+    if (pick?.source.kind === 'build') endPick();
+    return;
+  }
+  if (pick !== null) return;
+  if (!localSeatActive() || isAiTurn(state)) return;
+  // 框 / 台词还在台上（或排着）就先别进 —— 与商店窗开窗同一道闸
+  if (!shopOpenGate()) {
+    requestRender();
+    return;
+  }
+  stopPickEdgeScroll();
+  pick = startPick(state, topo, { kind: 'build', choices: pend.choices }, 'none', COMPANY_BUILD_PARAM);
+  pickHover = null;
+  refreshPickCursor();
+  requestRender();
+}
+
+/**
  * 开遙控骰子的点数盘（道具 8）—— Q-PICK-2。
  *
  * @source `rich4_tool_yaokongtouzi.asm` **VA 0x004470f8** 起：真人那一支读
@@ -6856,62 +6882,6 @@ function startToolPick(toolId: number, param: number): void {
   }
   refreshPickCursor();
   requestRender();
-}
-
-/**
- * 建設公司「請選擇欲加蓋地點」的选地模式 —— **在地图上点**，不是从清单里挑。
- *
- * @source 自家 `0x0041aa6a` / 别人家 `0x0041acff`：`push 0x2090086 / call 0x446ae8`
- *   把窗口过程 `0x00445e4d` 交给模态消息循环 —— 那一支里**没有任何清单**：
- *   光标底下能选就换成图 9 那组准星（`0x004465dd`）、不能选红叉（`0x00446602`）、
- *   贴边推镜头（`0x0044609b`），左键抬手 `0x00446691` 交回光标底下的实例编码，
- *   右键 `0x004466c6` 交回 0。候选 = `pending.choices`（全图每块地 / 每处設施）。
- */
-function startBuildPick(): void {
-  stopPickEdgeScroll();
-  pick = startPick(state, topo, { kind: 'buildTarget' }, 'none', BUILD_PICK_PARAM);
-  pickHover = null;
-  if (pick.candidates.length === 0) log('建設公司：这一局没有任何能选的地点');
-  refreshPickCursor();
-  requestRender();
-}
-
-/**
- * 为哪一次 `chooseBuildTarget` 开过选地窗（同一次只开一次）。
- * ★ 与 `bailOpenedFor` 同一套：判据是 `pending` 的**对象身份**，换人 / 重连 / 换局都会换一份。
- */
-let buildPickOpenedFor: unknown = null;
-
-/**
- * 建設公司选地窗每一帧：訊息框（`company.pickBuildSite`，1500 ms 模态）收了才开。
- *
- * @source `0x0041aa45` / `0x0041acda` 的 `push 0x463a4a`（「%s\n\n請選擇欲加蓋地點」）
- *   → `0x0041aa62` / `0x0041acf7 call 0x440cac`（**阻塞**訊息框）→ 之后才 `0x446ae8`。
- *   本引擎的訊息框是 `BLOCKING_PRESENTATIONS` 里的 `notice` 屏，所以这里等它收摊。
- *   `currentDialog()` 那一道闸与商店窗同源：屏上还有能作答的壳时不许再摆一个选择窗。
- */
-function tickBuildPick(): void {
-  const pending = state.pending;
-  // 这一问已经答掉（本机 / 对端 / 驱动）或换了局 ⇒ 还开着的选地窗收掉
-  if (pending === null || pending.kind !== 'chooseBuildTarget') {
-    buildPickOpenedFor = null;
-    if (pick !== null && pick.source.kind === 'buildTarget') endPick();
-    return;
-  }
-  // 判据本体是纯函数（`picking.ts` 的 `buildPickMayOpen`，有单测）—— 这里只把宿主的值取出来
-  const may = buildPickMayOpen({
-    pendingKind: pending.kind,
-    pickOpen: pick !== null,
-    openedForThisPending: buildPickOpenedFor === pending,
-    localSeat: localSeatActive(),
-    aiTurn: isAiTurn(state),
-    dialogOpen: currentDialog() !== null,
-    blocking: blockingPresentation(),
-    noticeShowing: noticeBoxScreenActive(),
-  });
-  if (!may) return;
-  buildPickOpenedFor = pending;
-  startBuildPick();
 }
 
 /**
@@ -8907,11 +8877,10 @@ function requestRender(): void {
     if (screen === 'game') tickPendingCardRoute();
     // ★ 第十四份 #4：道具台词说完才开选择界面
     if (screen === 'game') tickPendingToolPicker();
+    // ★ 20260925-153539948：建設公司「請選擇欲加蓋地點」框收掉才进点地图选地
+    if (screen === 'game') tickBuildPick();
     // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
     if (screen === 'game') tickPendingDisappearFx();
-    // ★ 20260925-153539948：建設公司「請選擇欲加蓋地點」—— 訊息框收了才进**地图选地**
-    //   （原版 `0x0041aa62 call 0x440cac` 是阻塞框，之后才 `0x446ae8`）
-    if (screen === 'game') tickBuildPick();
     // ★ 审计 #17：住进旅館 —— 落点例程的框 / 台词都收了才走进去
     if (screen === 'game') tickPendingRelocateWalk();
     if (screen === 'game') tickObjectFlight(performance.now());
@@ -11892,10 +11861,8 @@ function bindInput(): void {
       sound.play('Effect.mkf', SOUND_TARGET_PICKED);
       const source = pick.source;
       endPick();
-      // ★ 建設公司选地窗：抬手交回光标底下那个实例编码（`0x00446691 push [0x48c584] / call 0x401966`）
-      //   ⇒ 派 core 的 `buildTarget`（`entityId` = `0x7d0 + 地块` / `0xfa0 + 設施`）。
-      //   蓋得成蓋不成、收多少工程費都在 core（`0x0041ad7e call 0x40b110` 那一支）。
-      if (source.kind === 'buildTarget') {
+      if (source.kind === 'build') {
+        // 建設公司：选中的实例编码交回（`0x00446691 push [0x48c584]`）；0 级設施的选种类窗由 core 挂 `buildFacility`
         if (hit.code !== undefined) dispatch({ type: 'buildTarget', entityId: hit.code });
         return;
       }
@@ -13315,6 +13282,20 @@ async function boot(): Promise<void> {
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
         get pickSession() { return pick; },
+        /** 拾取模式下光标底下是第几个候选（`null` = 红叉 / 没在拾取）*/
+        get pickHover() { return pickHover; },
+        /** 拾取候选此刻在**页面 CSS 像素**上的落点（不在视野内的不列）—— 给无头验收把鼠标真的移过去点 */
+        pickTargetsOnPage: () => {
+          if (pick === null) return [];
+          const out: { i: number; code: number | null; nodeId: number; x: number; y: number }[] = [];
+          for (const [i, c] of pick.candidates.entries()) {
+            const q = worldToScreen(c.wx, c.wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h });
+            if (q === null || q.x < 0 || q.y < 0 || q.x >= LAYOUT.board.w || q.y >= LAYOUT.board.h) continue;
+            const pt = stageToClient(q.x + LAYOUT.board.x, q.y + LAYOUT.board.y);
+            out.push({ i, code: c.code ?? null, nodeId: c.nodeId, x: pt.x, y: pt.y });
+          }
+          return out;
+        },
         /** 软件指针（`soft-cursor.ts`）：此刻要哪一支 + 画着的图号 / 舞台落点（没画 = `null`）+ 画布上的系统指针 */
         cursor: () => ({
           frame: cursorFrame(),
@@ -13657,6 +13638,8 @@ async function boot(): Promise<void> {
             };
           }
           if (bailScreenOn()) return { gesture: 'rightClick', ...mid, why: 'bail' };
+          // 建設公司选地（点地图）：真实出口 = 右键（窗交回 0，`0x004466c6`）
+          if (pick?.source.kind === 'build') return { gesture: 'rightClick', ...mid, why: 'build-pick' };
           // 通用填数页：右键只是退回上一扇 YES/NO（脚本再点 YES 就成了死循环）⇒ 真人的做法是
           //   **敲数字 + Enter**（那扇窗自己认主键盘 0-9 / Enter，@source `loc_00452e4b`）。
           if (amountPage !== null) {
