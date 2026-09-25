@@ -529,10 +529,13 @@ export function useCard(
         // REQ-05.1：轉向卡对特殊棋子 —— 0x40c78c 的 actor ≥ 4 分支
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        // 不在棋盘上（監獄/醫院/未出场）不生效。★ **卡照扣、原版算成功**：
-        //   @source `0x00442f8a call 0x441343`（remove_card）在选完掩码之后、
-        //   `0x00443025 call 0x40c78c`（真正掉头）之前；收尾 `0x00443069 mov eax, ebx`
-        //   （`ebx` = 掩码，恒非 0）。故走 `noEffect()` 而不是 `fail`。
+        // 不在棋盘上（監獄/醫院/未出场）的惡人**点不中**：拾取精灵表 `0x00408b82..0x00408b8e`
+        //   `cmp byte [惡人+0x0a],0 / jne 跳过` 把它们整批滤掉，原版根本走不到「选了它」这一步。
+        //   故这里 `fail('actorOffBoard')` 是纵深防御，**卡不扣**。
+        //   ⚠️ 本注释旧版写「卡照扣、原版算成功…故走 `noEffect()`」是**读反了** ——
+        //   `0x00442f8a call 0x441343`（remove_card）虽然排在掩码之后，但那时 `ebx`（掩码）
+        //   不可能代表一个不在盘的惡人；收尾 `0x00443069 mov eax, ebx` 的「恒非 0」也只在
+        //   候选表非空时成立（cards 审计 2026-09-25 订正，旧测试已按此改写）。
         if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) =>
           i === slot ? applyTurnCardToActor(x, ctx.nodes, draw) : x,
@@ -549,9 +552,10 @@ export function useCard(
         // REQ-05.1：停留卡对特殊棋子 —— VA 0x004440d9 写 +14 halted = 1
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
-        //   @source `0x00443fca call 0x441343`（remove_card）在 `0x00443fb5 call 0x40d293`
-        //   （掩码取位号）之后；之后只剩「目标≠自己就说一句」的台词分支。
+        // 不在棋盘上（監獄/醫院/未出场）的惡人**点不中**（拾取精灵表 `0x00408b82..0x00408b8e`
+        //   `cmp byte [惡人+0x0a],0 / jne 跳过`）⇒ 这里 `fail('actorOffBoard')` 是纵深防御、**卡不扣**。
+        //   ⚠️ 旧注释写「卡照扣、原版算成功」是读反了（`0x00443fca call 0x441343`（remove_card）
+        //   在 `0x00443fb5 call 0x40d293`（掩码取位号）之后，但那一步的前提是目标已在候选表里）。
         if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyStayCardToActor(x) : x));
         break;
@@ -732,9 +736,11 @@ export function useCard(
         // REQ-05.1：烏龜卡对特殊棋子 —— VA 0x00445a3e 写 +15 single_step = 3
         const slot = specialSlotOf(target.actor);
         const a = slot >= 0 ? actors[slot] : undefined;
-        // 不在棋盘上不生效。★ **卡照扣、原版算成功** ——
-        //   @source `0x00445929 call 0x441343`（remove_card）在 `0x00445914 call 0x40d293`
-        //   之后；收尾 `0x004458d8 mov eax, esi`（`esi` = 选中目标，恒非 0）。
+        // 不在棋盘上（監獄/醫院/未出场）的惡人**点不中**（拾取精灵表 `0x00408b82..0x00408b8e`
+        //   `cmp byte [惡人+0x0a],0 / jne 跳过`）⇒ 这里 `fail('actorOffBoard')` 是纵深防御、**卡不扣**。
+        //   ⚠️ 旧注释写「卡照扣、原版算成功」是读反了（`0x00445929 call 0x441343`（remove_card）
+        //   在 `0x00445914 call 0x40d293` 之后，但收尾 `0x004458d8 mov eax, esi` 的 `esi`
+        //   只在候选表非空时才是一个有效目标）。
         if (!actorActive(a)) return fail('actorOffBoard');
         actors = actors.map((x, i) => (i === slot ? applyTortoiseCardToActor(x) : x));
         break;

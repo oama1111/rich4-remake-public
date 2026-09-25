@@ -5038,7 +5038,7 @@ alpha 0.55）。那张「按格子类型给中性色」的表是**重制版自�
 ### `docs/deviations/T-052.md`
 
 - 已接线（22 槽）
-- ✅ Q-SPEECH-3　中间档的 `rand() & 1`（原「一律取前一句」）—— **2026-09-24 WP-3 改判**：客户端对进指纹的共享状态做哈希掷硬币（`speech-coin.ts`），各端同一句、分布同原版、不碰 core RNG
+- ✅ Q-SPEECH-3　中间档的 `rand() & 1`（原「一律取前一句」）—— **2026-09-24 WP-3 改判、2026-09-25 六区审计再改判**：现在由 **core 在 exe 掷的那一刻掷**（`rules/speech-rand.ts` 的 `SPEECH_SITE`），原值记进纯表现瞬态 `lastSpeechRolls`，客户端 `speech-roll.ts` 按站点 + 说话人查它 —— 与原版**同一条全局流、同一序**（WP-3 选项 b 的「客户端哈希当硬币、不推进 RNG」已作废，见 `docs/deviations/T-052.md`）
 - Q-SPEECH-4　「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的
 - Q-SPEECH-5　没解的 5 个槽位
 - ✅ Q-SPEECH-7（**2026-09-16 汇总人订正**）事件 15 的判据是**地块的 `+0x1a`（等级）**升到 5，不是玩家结构 —— `packages/data/src/speech.ts:162` 的 gloss 原是错的，已改

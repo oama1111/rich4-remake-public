@@ -50,6 +50,9 @@
 `rules/time-machine.test.ts`（快照时机）、`places/insurance.test.ts` / `places/company.test.ts`（保險到期）、
 `rules/facility-rules.test.ts`（研究所在交接时走）、`state/object-integration.test.ts`（禮物/寶箱会回来，只数唯一物件）、
 `client/src/speech-coin.test.ts`（统计型断言：随机流变了，第二句占比 0.2→0.15、最长连 12→16 的界，意图不变）。
+> ⚠️ 2026-09-25 订正：该文件与其模块 `speech-coin.ts` 已随 events 区审计第二轮**退役** ——
+> 台词随机改由 core 在 exe 掷的那一刻掷（`rules/speech-rand.ts` 的 `SPEECH_SITE`），客户端改查
+> `after.lastSpeechRolls`（`client/src/speech-roll.ts` + `speech-roll.test.ts`）。见 `docs/deviations/T-052.md`。
 
 ## 随机数清单（回合循环里每一次 `rand()`，按发生次序）
 
