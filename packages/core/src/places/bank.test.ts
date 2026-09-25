@@ -317,6 +317,27 @@ describe('★ 接线：非真人落銀行格时重分，真人不重分', () => 
     expect(reduce(r, { type: 'declineDecision' }, topo).pending?.kind).toBe('bank');
   });
 
+  it('★★ 电脑重分之后紧跟一次準備金对账（`0x00437c12 push 1 / call 0x436b0a`）：别家存款不够董事長的特別融資 ⇒ 董事長垫差额', () => {
+    const CID = 1;
+    const withBank: MapTopology = {
+      ...topo,
+      commercials: [{
+        id: CID, x: 0, y: 0, name: '測試銀行', stockIndex: 0, landPrice: 500, type: 7,
+        spriteIndex: 0, assetValue: 1_000_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 1000,
+      }],
+    };
+    const s0 = onBank(WHO_PLAYS_COMPUTER);
+    // 1 号是銀行董事長、欠特別融資 800；0 号（电脑）存款 1000 重分后只剩 500 ⇒ 缺 300
+    const players = s0.players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 2000, specialFinance: 800 } : p));
+    const commercialOwners = [...s0.commercialOwners];
+    while (commercialOwners.length <= CID) commercialOwners.push({ owner: 0, ranking: [0, 0, 0, 0] });
+    commercialOwners[CID] = { owner: 2, ranking: [2, 0, 0, 0] };
+    const r = reduce({ ...s0, players, commercialOwners }, { type: 'settle' }, withBank);
+    expect(r.players[0]?.moneyInBank).toBe(500);
+    expect(r.players[1]).toMatchObject({ moneyInBank: 1700, specialFinance: 500 });
+    expect(r.notices).toContainEqual({ key: 'bank.reserveShortfall', args: [300, '約翰喬'], holdMs: 2500 });
+  });
+
   it('被銀行拒绝往来期内（+0x3b ≠ 0）：连柜台都不开，也不重分', () => {
     const s = onBank(WHO_PLAYS_COMPUTER);
     const rejected = {

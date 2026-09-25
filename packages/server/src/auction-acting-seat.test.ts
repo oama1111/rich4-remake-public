@@ -56,8 +56,12 @@ const run = existsSync(MAP) ? it : it.skip;
 // ★ 2026-09-24 換種子（第 24 份：魔法屋「向後轉」重挑來路要 `rand()`、機器娃娃不掃附身物件並走 `0x40e14d`、
 //   電腦用娃娃的判據不再把別人身上的神明當路上的 —— 對局走向又變了）：重掃 1..40：
 //   14 = 電腦回合真人舉牌 8 次，21 = 真人回合電腦舉牌 8 次（原 12 / 18 都掉到 0）。
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 14;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 21;
+// ★ 2026-09-25 換種子（审计 provenance-ai-econ：电脑买股 / 卖股挪进 reducer 按原版掷全局 `rand()`、公佈欄 / 銀行对账补齐 ——
+//   对局走向又变了）：重掃 1..40：12 = 電腦回合真人舉牌 8 次（原 14 掉到 0），21 = 真人回合電腦舉牌 5 次（不用換）。
+// ★ 2026-09-25 換種子（审计 provenance-econ：拍賣开场席位 = 末位座位、收費记敌意、分紅按人加总……）：重掃 1..40：
+//   12 = 電腦回合真人舉牌 2 次（不用換），18 = 真人回合電腦舉牌 5 次（原 21 掉到 0）。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 18;
 const TURNS = 200;
 const HUMANS = 2;
 
@@ -113,6 +117,8 @@ function humanAction(state: GameState, map: ReturnType<typeof parseMap>, seat: n
   if (a === null) throw new Error(`座位 ${seat} 无决策：${state.phase} / ${state.pending?.kind ?? '-'}`);
   // ★ 貸款屏上 AI 给的是「托管 ⇒ 按电脑那一支办」（`bank/auto`），恰好真人不认这一手 ⇒ 真人这一端按 EXIT 离开
   if (a.type === 'bank' && a.op === 'auto') return { type: 'declineDecision' };
+  // ★ 选種類窗上 AI 给的是 `facilityType: null`（托管 ⇒ 电脑那一支掷），恰好真人不认 ⇒ 真人这一端点一格（旅館）
+  if (a.type === 'buildFacility' && a.facilityType === null) return { type: 'buildFacility', facilityType: 1 };
   return a;
 }
 

@@ -60,12 +60,22 @@ export function takeSnapshot(state: GameState): string {
 }
 
 /**
- * 回合开始时给真人存快照。
+ * 给当前玩家存一张時光機快照（`fcn_0044808a`）。
  *
  * @source 0x004480a0 `test byte [player + 0x15], 1` / `0x004480a7 je` —— 只看 **bit0**：
  *   电脑（2）不存；託管中的真人（1|4 = 5）bit0 仍是 1 ⇒ **照存**。
+ *
+ * ★★ **什么时候拍**（审计 2026-09-24 订正 —— 先前在 `startTurn` 可行动支拍，即「回合开头」）：
+ *   `call 0x44808a` 全 exe 只有三处 ——
+ *   ```asm
+ *   0040dd53  call 0x44808a   ; 起步 `fcn_0040dd1f`：按 GO / 夢遊自动起步（不带 0x30 的人）⇒ `rollDice`
+ *   0040c97c  call 0x44808a   ; 回合开头被挡（住宿/消失/坐牢/住院/冬眠，不带 0x30）⇒ `startTurn` 的 skip 支
+ *   004477c3  call 0x44808a   ; 傳送機把**自己**传走（工具那一支，归道具区）
+ *   ```
+ *   ⇒ 用時光機（在自己回合按 GO 之前）退回的是**上一次起步那一刻**（上一回合掷骰之前，含那回合出过的牌），
+ *   不是「这一回合开头」—— 后者等于只能撤销这回合按 GO 之前的操作，退不回上一掷。
  */
-export function snapshotOnTurnStart(state: GameState): GameState {
+export function snapshotForTimeMachine(state: GameState): GameState {
   const me = state.players[state.currentPlayer];
   // ★ 2026-09-23 订正：`test byte, 1` 看的是 **bit0** —— 託管的真人（1|4）也存；先前写成整字节 `== 1`
   if (me === undefined || (me.whoPlays & WHO_PLAYS_HUMAN) === 0) return state;
@@ -73,6 +83,9 @@ export function snapshotOnTurnStart(state: GameState): GameState {
   snapshots[state.currentPlayer] = takeSnapshot(state);
   return { ...state, snapshots };
 }
+
+/** @deprecated 旧名（时机已改到起步 / 被挡的回合开头，见 `snapshotForTimeMachine`） */
+export const snapshotOnTurnStart = snapshotForTimeMachine;
 
 /**
  * 还原当前玩家的快照。

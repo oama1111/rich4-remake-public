@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { decideAction } from '../ai/policy.ts';
 import {
   FACILITY_MAX_LEVEL,
   FACILITY_NAMES,
@@ -226,6 +227,24 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(asked.pending.choices).toEqual([0, 1, 2, 3, 4]);
     const built = reduce(asked, { type: 'buildFacility', facilityType: FACILITY_TYPE.hotel }, topo);
     expect(built.facilityType[FAC_ID]).toBe(FACILITY_TYPE.hotel);
+    expect(built.facilityLevel[FAC_ID]).toBe(1);
+    expect(built.players[0]?.cash).toBe(97_000);
+  });
+
+  it('★★ 选种类窗开着时被托管（座位变成 1|4）：AI 代答 `facilityType: null` ⇒ reducer 走电脑支 rand()%4+1（0x0041a23e）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const asked = reduce(standing({ facilityOwner: owner }), { type: 'settle' }, topo);
+    // 真人座位不收 null
+    expect(reduce(asked, { type: 'buildFacility', facilityType: null }, topo)).toBe(asked);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const a = decideAction({ state: piloted, map: { nodes: [], lands: [], facilities: [], commercials: [], landscapes: [], dataSize: 0 } as never });
+    expect(a).toEqual({ type: 'buildFacility', facilityType: null });
+    const built = reduce(piloted, a!, topo);
+    const rng = new WatcomRng();
+    rng.setState(piloted.rngState);
+    expect(built.facilityType[FAC_ID]).toBe((rng.next() % 4) + 1);
+    expect(built.rngState).toBe(rng.getState());
     expect(built.facilityLevel[FAC_ID]).toBe(1);
     expect(built.players[0]?.cash).toBe(97_000);
   });
@@ -607,29 +626,47 @@ describe('★ 研究所：选項目 → 5 天 → 道具到手', () => {
     expect(reduce(other, { type: 'research', facilityId: LAB, project: 1 }, labTopo)).toBe(other);
   });
 
-  it('★ 只在業主自己的回合倒数；第 5 个回合开始时道具到手（項目 + 8）', () => {
+  /**
+   * 回合交接给 `who`（`0x00419039 call 0x41c84f(who)`）—— 审计 2026-09-24：研究所倒数在这里走，
+   * 不在 `startTurn`（被挡的業主也走，见 `state/reduce.ts` 的 `tickActorDay`）。
+   */
+  const handTo = (s: GameState, who: number): GameState => {
+    const n = s.players.length;
+    return reduce({ ...s, currentPlayer: (who + n - 1) % n, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, labTopo);
+  };
+
+  it('★ 只在業主自己的回合倒数（`0x41cdc6 owner == 游标 + 1`）；第 5 次交接给業主时道具到手（項目 + 8）', () => {
     let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
     const owner = 0;
     for (let turn = 1; turn <= 4; turn++) {
-      s = reduce({ ...s, currentPlayer: 1, phase: 'turnStart' }, { type: 'startTurn' }, labTopo); // 对手回合：不动
+      s = handTo(s, 1); // 对手回合：不动
       expect(s.facilityResearchDays[LAB]).toBe(5 - (turn - 1));
-      s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+      s = handTo(s, owner);
       expect(s.facilityResearchDays[LAB]).toBe(5 - turn);
     }
     expect(toolCount(s.tools, owner, 11)).toBe(0);
-    s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+    s = handTo(s, owner);
     expect(s.facilityResearchDays[LAB]).toBe(0);
     expect(toolCount(s.tools, owner, 11)).toBe(1); // 傳送機
     // ★ 2026-09-23：到手那一拍先弹「%s開發完成！」（`0x0041ce0e`，道具名 `[項目*8+0x47ff1a]`）
     expect(s.notices).toContainEqual({ key: 'research.done', args: ['傳送機'] });
   });
 
+  it('★ 审计 2026-09-24：業主被挡（坐牢）也照样倒数 —— `0x41c84f` 那一段不看阻碍计数', () => {
+    let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
+    s = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, blocking: { ...p.blocking, inPrison: 5 } } : p)) };
+    s = handTo(s, 0);
+    expect(s.facilityResearchDays[LAB]).toBe(4);
+    // 这一回合他被挡：startTurn 不再走第二次
+    s = reduce(s, { type: 'startTurn' }, labTopo);
+    expect(s.facilityResearchDays[LAB]).toBe(4);
+  });
+
   it('★ 拆到等级不够，研發作废（不是暂停）', () => {
     let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
     const facilityLevel = [...s.facilityLevel];
     facilityLevel[LAB] = 2;
-    s = { ...s, facilityLevel, phase: 'turnStart' };
-    s = reduce(s, { type: 'startTurn' }, labTopo);
+    s = handTo({ ...s, facilityLevel }, 0);
     expect(s.facilityResearchDays[LAB]).toBe(0);
     expect(toolCount(s.tools, 0, 11)).toBe(0);
   });

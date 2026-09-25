@@ -1429,3 +1429,28 @@ describe('★ 2026-09-24 审计：拍賣卡流拍 ⇒ 无主 + 到期日清零�
     expect(settled.landTenure[1]).toBe(0);
   });
 });
+
+describe('★★ 审计：心理价位里的系数与缺地系数都存成 f32（0x00439f3b / 0x00439fc7 / 0x0043a011 的 `fstp dword`）', () => {
+  // 在 Unicorn 里执行原版 `0x439f0d` 得到的值（40 块地；地價×物價、起拍价、无主数、同名数、两个 rand）。
+  // 这 6 组都是「按 f64 算会差 1」的边界 —— 旧实现逐组差 1，现在逐组相同。
+  // [等级, 地價, 物價, 起拍价, 无主数, 同名数, rand#1, rand#2, 原版结果]
+  const ORACLE: readonly (readonly number[])[] = [
+    [5, 2181, 1, 334, 13, 3, 18735, 32035, 6324],
+    [3, 6589, 3, 2943, 22, 1, 11152, 28628, 60601],
+    [4, 7432, 2, 669, 15, 5, 7365, 29667, 27332],
+    [2, 6898, 3, 713, 12, 10, 7005, 27414, 69505],
+    [2, 2338, 1, 322, 14, 3, 23405, 5468, 5290],
+    [2, 3896, 2, 571, 18, 4, 16915, 27188, 18845],
+  ];
+  it('与原版机器码逐组相同', () => {
+    for (const [level, landPrice, priceIndex, basePrice, unowned, same, r1, r2, want] of ORACLE) {
+      const seq = [r1! / 32768, r2! / 32768];
+      let k = 0;
+      const got = auctionAiLimit(
+        { level: level!, landPrice: landPrice!, priceIndex: priceIndex!, basePrice: basePrice!, total: 40, unowned: unowned!, sameNameOwned: same!, cash: 1e9 },
+        () => seq[k++]!,
+      );
+      expect(got).toBe(want);
+    }
+  });
+});

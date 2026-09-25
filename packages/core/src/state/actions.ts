@@ -63,9 +63,11 @@ export type Action =
   | { type: 'buyFacility' }
   /**
    * 在自己的空地設施上选一种建筑蓋第一级。
-   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所
+   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所；
+   *   `null` = 按**电脑那一支**定种类（付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5` 都是 `rand()%4+1`，
+   *   随机数只能在 reducer 里掷）—— 只收电脑 / 託管座位的（开着窗被托管的真人由 AI 代答）
    */
-  | { type: 'buildFacility'; facilityType: number }
+  | { type: 'buildFacility'; facilityType: number | null }
   /** 给自己的設施加蓋一级 @source 0x0041a2b3 */
   | { type: 'upgradeFacility' }
   /**

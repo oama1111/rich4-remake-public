@@ -100,27 +100,24 @@ export function tickBlockingCounter(raw: number, mask = 0xff): TickOutcome {
 }
 
 /**
- * 推進**保險期** `player +0x3e` 一天 —— ★ 与阻碍计数器**不是同一支**。
+ * 推進**保險期** `player +0x3e` 一天 —— 与阻碍计数器**同一套两段式**（`0x80` 次日清零）。
  *
- * @source `0x0041cc4b`..`0x0041cc66`（紧跟四个阻碍计数器之后的那一小段）：
- *   整字节递减、**没有** `test 0x80 / 释放` 那一支；减到 0 时挂 `0x80`
- *   （与阻碍计数一样），于是 `0x80` 只被当成普通的 `dec`：
- *
- * ```text
- * 1 → dec 0 → 挂 0x80
- * 0x80 → dec 0x7f → … → 1 → 挂 0x80 → …
+ * @source `0x41c84f` 里**两处**碰它（审计 2026-09-24 订正）：
+ * ```asm
+ * 0041cae3  test byte [eax + 0x496ba6], 0x80 / je 0x41caf4   ; ① 带 0x80 ⇒
+ * 0041caee  mov  byte [eax + 0x496ba6], dh(=0)               ;    整字节清零（不在阻碍闸 0x41c965 之内）
+ * 0041cc4b  mov  dl, byte [eax + 0x496ba6] / test dl,dl / je  ; ② 非 0 才递减
+ * 0041cc57  dec  dh / mov [..], dh / jne 0x41cc6c
+ * 0041cc66  mov  [..], dh|0x80                               ;    减到 0 ⇒ 挂 0x80
  * ```
+ * ① 在 ② 之前（同一次调用），于是 `0x80 → 0`（② 看到 0 就不动）、`N → N−1`、`1 → 0x80`
+ * —— 与 `tickBlockingCounter` 的取值完全相同：`0x80` 那一天仍非 0（照赔），次日归零**停赔**。
  *
- * ⇒ **保险期永远不归零**，闸门 `+0x3e != 0` 实际等于「买过一次保險就永久理赔」。
- * 阻碍计数器那条 `test 0x80 → 清零 + 释放` 的语义**不适用于这里**。
- *
- * 通道 2 证据：`rich4-spec/tests/test_insurance_richest.py`（135/135，
- * 用 `eval_block` 真跑 `0x41cc48..0x41cc6c` 得到 `1→0x80`、`0x80→0x7f`、`0→0`）。
+ * ⚠️ 先前的实现只照 ② 那一小段（通道 2 `test_insurance_richest.py` 用 `eval_block` 单跑
+ * `0x41cc48..0x41cc6c`，漏了 ① 那一句）得出「`0x80 → 0x7f`、保险永不到期」—— 那是读窄了。
  */
 export function tickInsuranceDays(raw: number): number {
-  if (raw === 0) return 0;
-  const next = (raw - 1) & 0xff;
-  return next === 0 ? RELEASE_PENDING : next;
+  return tickBlockingCounter(raw).value;
 }
 
 /**
@@ -231,12 +228,12 @@ export function displayRemainingDays(raw: number, mask = 0x7f): number {
  * 0041caf7  cmp dword [p+0x32], 0 / jne 跳过冬眠与梦游   ; ★ 住宿/消失/监狱/医院期间这两项不走
  * 0041cb04  +0x36 冬眠：dec；到 0 → |0x80
  * 0041cb28  +0x37 梦游：同上
- * 0041cb4c  +0x39 龜行：同上（不受上面那条 cmp 限制）
+ * 0041cb4c  +0x39 龜行：同上（★ 也在上面那条 cmp 的跳过范围内：`0x41cafe jne 0x41cb6d`）
  * 0041cb70  +0x38 停留：同上
  * 0041cb94  +0x3b 銀行拒貸：同上
  * 0041cbb8  +0x3c 銀行暫停放款（新聞 #171，Q-TURN-1 已解）：同上
  * 0041cbdc  +0x3d 同盟：先 update_hostility(我, 盟友, −20×物價) 与 (盟友, 我, −20×物價)，再 dec；到 0 → 0x80
- * 0041cc4b  +0x3e 保險：同上（本引擎在 startTurn 走，早一拍，见 reduce.ts）
+ * 0041cc4b  +0x3e 保險：同上（`0x41cae3` 先清 0x80；本引擎在 `reduce.ts` 的 `tickDailyCounters` 走）
  * ```
  * 释放（前半段 0x0041c9a7..0x0041caf4）：带 0x80 的清零；梦游醒来还要**把交通工具拿回来**
  * （0x0041c9bc：按 +0x66 存的方式，道具栏里还有那辆才还，没有就步行、骰子 1）；
@@ -253,12 +250,18 @@ export interface TurnCounterTick {
 }
 
 /** 后半段各项走一天（不含 +0x3c 未名字段与保險）。纯函数，只动这名玩家自己的字段 */
-export function tickTurnCounters(player: Player): TurnCounterTick {
+export function tickTurnCounters(player: Player, confinedOverride?: boolean): TurnCounterTick {
   const b = player.blocking;
-  const confined = (b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0;
+  // @source 0x0041c95e / 0x0041caf7 `cmp dword [p+0x32], 0 / jne` —— 读的是**前半段走完之后**的四个字节。
+  //   ★ 住宿 / 监狱 / 医院的释放函数（`0x40d6be`）**不写**计数（仍是 0x80），只有消失（`0x40d4e5`）清 0
+  //   ⇒ 释放那一天这道闸仍是「关着」。本引擎的 `tickBlocking` 把释放的计数直接给 0，
+  //   故由调用方（`reduce.ts` 的 `tickDailyCounters`）按原版口径传 `confinedOverride`。
+  const confined = confinedOverride ?? (b.inHotel | b.disappearing | b.inPrison | b.inHospital) !== 0;
   const sleeping = confined ? { value: b.sleeping, release: false } : tickBlockingCounter(b.sleeping);
   const sleepWalking = confined ? { value: b.sleepWalking, release: false } : tickBlockingCounter(b.sleepWalking);
-  const tortoise = tickBlockingCounter(b.tortoiseWalking);
+  // ★ 审计 2026-09-24：龜行 **也在这道闸里** —— 清 0x80 那句 `0x0041ca7b` 在 `0x41c965 jne 0x41ca8f` 跳过的范围内，
+  //   递减那句 `0x0041cb49..0x0041cb6d` 在 `0x0041cafe jne 0x41cb6d` 跳过的范围内（先前注释写「不受限制」是读错了跳转目标）。
+  const tortoise = confined ? { value: b.tortoiseWalking, release: false } : tickBlockingCounter(b.tortoiseWalking);
   const stopping = tickBlockingCounter(b.stopping);
   const rejected = tickBlockingCounter(player.daysRejectedByBank);
   // @source 0x0041cbb8 +0x3c 銀行暫停放款
