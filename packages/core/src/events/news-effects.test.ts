@@ -548,7 +548,7 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
     const facilities = [fac(1, '銀行', 0), fac(2, '醫院', 3)];
     const r = applyNewsEffect(5, ctx({ lands, facilities, rng: { below: () => 1 } }));
     // 候选 = [地2, 設2] ⇒ below(2)=1 → 設施 2 号
-    expect(r.facilityMutations).toEqual([{ id: 2, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 2, level: 0, type: 0, owner: 0, tenure: 0 }]);
   });
 
   it('★★ news[19] 土地流失：候选=全部、模式 1（清归属）', () => {
@@ -557,7 +557,7 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
       ctx({ lands: [land(1, 'A', 0)], facilities: [], rng: rng0 }),
     );
     // 空地块也能被「流失」（清归属不要求有等级）
-    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
   });
 
   it('★★ news[20] 颱風：以挑中那一处为心、半径 100 内的住宅与設施各拆一级（不打人、无敌意）', () => {
@@ -681,8 +681,8 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     expect(r.unimplemented).toBe(false);
     // 窗内两块**重击**：owner/level/type 全清（連鎖店身份也被抹掉）
     expect(r.landMutations).toEqual([
-      { id: 1, level: 0, type: 0, owner: 0 },
-      { id: 2, level: 0, type: 0, owner: 0 },
+      { id: 1, level: 0, type: 0, owner: 0, tenure: 0 },
+      { id: 2, level: 0, type: 0, owner: 0, tenure: 0 },
     ]);
     // 窗外那两块一个字节都不许动
     expect(r.landMutations?.some((m) => m.id === 3 || m.id === 4)).toBe(false);
@@ -693,13 +693,13 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     // 只有两块地，第二块离爆心 0x64 + 1 = 101（刚好出窗）
     const lands = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 101, 0)];
     const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
-    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     // 距离恰好 100 的还在窗内（`<=`）
     const lands2 = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 100, 100)];
     const r2 = applyNewsEffect(4, ctx({ lands: lands2, facilities: [], rng: { below: () => 0 } }));
     expect(r2.landMutations).toEqual([
-      { id: 1, level: 0, type: 0, owner: 0 },
-      { id: 2, level: 0, type: 0, owner: 0 },
+      { id: 1, level: 0, type: 0, owner: 0, tenure: 0 },
+      { id: 2, level: 0, type: 0, owner: 0, tenure: 0 },
     ]);
   });
 
@@ -714,8 +714,8 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
     // 候选 = [地3]（1 个）；空地 1/2 虽然就在 (0,0) 也不受影响
     expect(r.landMutations).toEqual([
-      { id: 3, level: 0, type: 0, owner: 0 },
-      { id: 4, level: 0, type: 0, owner: 0 },
+      { id: 3, level: 0, type: 0, owner: 0, tenure: 0 },
+      { id: 4, level: 0, type: 0, owner: 0, tenure: 0 },
     ]);
   });
 
@@ -730,7 +730,7 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     // 窗内：地 1（|Δx| = |Δy| = 200 > 100 ⇒ **不在**窗内）
     expect(r.landMutations).toEqual([]);
     // 設施 1 被重击：owner/level/type 全清（`+0x34` 地契由 mutateFacility 清，见补丁说明）
-    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     // 9 号設施远在窗外
     expect(r.facilityMutations?.some((m) => m.id === 2)).toBe(false);
   });
@@ -769,7 +769,7 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
         rng: { below: () => 0 },
       }),
     );
-    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     // 0x80 = 待释放（与 news[21] 龍捲風那条同一支）
     expect(r.players[0]!.blocking.inHotel).toBe(0x80);
     expect(r.players[2]!.blocking.inHotel).toBe(0x80);

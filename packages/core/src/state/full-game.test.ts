@@ -47,7 +47,7 @@ interface Played {
  */
 function assertPositionInvariant(
   state: GameState,
-  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean }>,
+  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean; facility: { x: number; y: number } | null }>,
   where: string,
   /**
    * 「贴图位置」的合法取值集合 —— `x/y` 是**贴图位置**，不是"所在格坐标"：
@@ -102,6 +102,11 @@ function assertPositionInvariant(
     //   路径只有关押传送，而关押传送必把 `nodeId` 设成该格；别处仍按节点坐标
     //   严格判，抓漏能力不受影响。
     if (n!.gate && spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)) continue;
+    // ★★ 第七个窗口（2026-09-24，provenance 审计换轨迹后现形）：**旅館住店中被綁架/出國**
+    //   （嫁禍的替死鬼可以是住店的人）。`0x40d375` 首次那一支 `call 0x40d761` 清掉住店计数，
+    //   **不写 x/y**（`0x0040d3d4/0x0040d3de` 只读来喂飞走动画），释放 `0x40d4e5` 也不写 ⇒
+    //   消失结束后留着**旅館設施坐标**、`nodeId` = 旅館那一格。只放行「脚下就是設施格、坐标 = 它」。
+    if (n!.facility !== null && n!.facility.x === p.xpos && n!.facility.y === p.ypos) continue;
     expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 坐标与其节点不符`)
       .toEqual([n!.x, n!.y]);
   }
@@ -148,6 +153,7 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
           n.specialKind === SPECIAL_KIND.HOSPITAL ||
           n.type === CONFINEMENT_GATE_TYPE.prison ||
           n.type === CONFINEMENT_GATE_TYPE.hospital,
+        facility: n.ref.kind === 'facility' ? (map.facilities.find((f) => f.id === (n.ref as { index: number }).index) ?? null) : null,
       },
     ]),
   );

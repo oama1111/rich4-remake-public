@@ -61,7 +61,7 @@ describe('★ applyNewsEffect：挑中的那一处（`place`）@source 新聞 21
     expect(r15.place).toEqual({ entity: 0x7d0 + 2, owner: 1 });
     // 5：有等级的地块 + 設施 ⇒ 候选 = [地块 2, 設施 1]，below=1 → 設施 1；清归属之后 owner 仍报**改之前**的
     const r5 = applyNewsEffect(5, ctx({ lands: [land(1, 0), land(2, 1, 1)], facilities: [fac(1, 2, 4)], rng: { below: () => 1 } }));
-    expect(r5.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r5.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     expect(r5.place).toEqual({ entity: 0xfa0 + 1, owner: 4 });
     // 19：全部、清归属
     const r19 = applyNewsEffect(19, ctx({ lands: [land(1, 0, 2)], facilities: [], rng: { below: () => 0 } }));

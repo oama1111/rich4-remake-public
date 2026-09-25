@@ -274,7 +274,7 @@ import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, secondaryJudgement, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
+import { ALIEN_BLAST_RADIUS, ALIEN_HOSPITAL_DAYS, applyNewsEffect, secondaryJudgement, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 // ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
 //   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
 import {
@@ -1884,8 +1884,9 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         if (node.specialKind === SPECIAL_KIND.NEWS) {
           const rng = new WatcomRng();
           rng.setState(next.rngState);
-          const applied = drawAndApplyNews(next, topo, rng);
-          return { ...applied, rngState: rng.getState() };
+          // ★★ 2026-09-24（provenance 审计）：随机流由 `drawAndApplyNews` 自己写回
+          //   （施加之后的开拍 / 破产还要接着用），这里不能再拿外层 rng 覆盖。
+          return drawAndApplyNews(next, topo, rng);
         }
         if (node.specialKind === SPECIAL_KIND.FORTUNE) return drawAndApplyFortune(next, topo);
         // 魔法屋：两个转盘一转就结算，中间没有玩家决策
@@ -6239,10 +6240,16 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
     // ★ 新聞 4：被爆风掀掉的座驾要回**全局库存**（`0x40cd07` 那一道，与命運 10/11 同一约定）
     toolStock: withDeck.toolStock,
     ...(rng === undefined ? {} : { rng }),
+    deferTaxPayments: true,
   });
 
   let applied: GameState = {
     ...withDeck,
+    // ★★ 2026-09-24（provenance 审计）：挑地 / 挑股票那一次 `rand()` 之后的状态**立刻**写回 ——
+    //   后面的开拍（新聞 7 `0x4498a1 call 0x43bde5` → 电脑座位 `0x439f1c call rand`）与
+    //   稅類破产（`0x40cd87` 里的拍卖）都要从这里接着掷。先前 `applied` 带的是**抽之前**的旧状态，
+    //   开拍重掷了挑地那一格，调用方随后又拿外层 rng 覆盖 ⇒ 开拍的几次 rand 从随机流里消失。
+    rngState: rng === undefined ? withDeck.rngState : rng.getState(),
     players: out.players,
     pool: out.pool,
     market: out.market ?? withDeck.market,
@@ -6293,6 +6300,7 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   //   行动者身上，整幅盖在棋盘上的飛碟影片看着就像射中了他本人（他其实不在爆心的窗里）。
   if (out.blastOrigin !== undefined) {
     applied = { ...applied, lastViewTarget: { x: out.blastOrigin.x, y: out.blastOrigin.y } };
+    applied = alienBlastActorsAndObjects(applied, withDeck, topo, out.blastOrigin);
   }
   // 新聞的坐牢/住院也走 send_to_*，保險期内赔 2000×天×物價
   const entry = newsEvent(draw.eventId);
@@ -6315,6 +6323,24 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
   if (entry !== undefined && !out.unimplemented && out.blastedHospital !== undefined) {
     for (const who of out.blastedHospital) {
       applied = insureConfinement(applied, topo, who, ALIEN_HOSPITAL_DAYS);
+    }
+  }
+  // ★★ 2026-09-24（provenance 审计）：稅類 11/12/13 的第二趟 —— 逐人 `pay_money(i, -1, 份额, 0)`，
+  //   付不出当场破产（`0x41d375 call 0x40cd87`），每人之前查终局码。份额是第一趟**先算好**的
+  //   （`0x449cce` 那一趟写 `[0x48c59c + i*4]`），不受前一位破产拍卖的影响。
+  //   @source 11 `0x00449d9f..0x00449ddb`、12 `0x0044a1e7..0x0044a215`、13 `0x0044a1d9` 起。
+  //   先前效果层自己收、只把「有人破产」记个旗、调用方从不读 ⇒ 付不起的人 0 现金 0 存款还留在场上。
+  //   ⚠️ 原版的拍卖在 `pay_money` 里**阻塞**跑完才轮到下一位付；本引擎的拍卖是待决交互（排队），
+  //   下一位照常先付 —— 只在「下一位也是拍卖买家」时有差别。
+  if (!out.unimplemented && NEWS_TAX_IDS.has(draw.eventId) && out.shares !== undefined) {
+    for (const sh of out.shares) {
+      if (applied.phase === 'gameOver') break;
+      if (sh.amount <= 0) continue;
+      const payer = applied.players[sh.player];
+      if (payer === undefined || !isAlive(payer)) continue;
+      const r = transferMoney(applied.players, [], applied.pool, sh.player, PARTY_POOL, sh.amount, 0);
+      applied = { ...applied, players: r.players, pool: r.pool };
+      if (r.bankrupted) applied = applyBankruptcy(applied, sh.player, topo);
     }
   }
   // 新聞 7「公開拍賣公有土地一處」：挑中的那处**当场开拍**
@@ -6344,6 +6370,55 @@ function drawAndApplyNews(state: GameState, topo: MapTopology, rng?: WatcomRng):
  * 把新聞 30..35 的企業盈余改动落到两张表上。
  *   没改动时返回空对象。
  */
+/**
+ * 新聞 4「外星人攻打地球」`damage_area(0x64, 0x26, 1, -1)` 里**人以外**的两段（flags & 0x20）：
+ *
+ * ```asm
+ * 0040aeb4..0040aede  id bits 4..7（惡人 4..7）⇒ call 0x43ec3f(惡人, 0)   ; NPC 那一支：撤下棋盘、+10 = 2、占用表置 1
+ * 0040aee0..0040aefc  id bits 8..14（没附身的物件）⇒ call 0x40e14d          ; 放回（路障/地雷/炸彈回库存；神明搭档另找地方登场，要 rand()）
+ * ```
+ * ★★ 2026-09-24（provenance 审计）：先前新聞 4 这两段都没有（飛彈 / 核彈 `fireMissile` 已有同一段）。
+ *   次序：两段都在 `damage_area` 里、**早于**新聞那一圈送醫院（`0x0044926c`）⇒ 搭档挑格时被炸的玩家
+ *   还站在原地（占着格子），惡人已经撤下。故这里用**施加之前**的玩家位置（`before.players`）
+ *   算占用、用已撤下惡人的替身表；只取回物件 / 道具 / 库存 / 随机流。
+ *   窗口口径与效果层同一条近似（Q-TOOL-1：地图坐标方窗，半径 0x64）。
+ */
+function alienBlastActorsAndObjects(
+  applied: GameState,
+  before: GameState,
+  topo: MapTopology,
+  origin: { x: number; y: number },
+): GameState {
+  const hitNodes = new Set<number>();
+  for (const n of topo.nodes) {
+    if (Math.abs(n.x - origin.x) <= ALIEN_BLAST_RADIUS && Math.abs(n.y - origin.y) <= ALIEN_BLAST_RADIUS) hitNodes.add(n.id);
+  }
+  const specialActors = applied.specialActors.map((a) => ({ ...a }));
+  const hospital = [...applied.hospitalOccupancy];
+  for (let slot = 0; slot < NPC_ACTORS.length && slot < specialActors.length; slot++) {
+    const a = specialActors[slot]!;
+    if (a.place !== ACTOR_PLACE.board || a.nodeId === 0 || !hitNodes.has(a.nodeId)) continue;
+    specialActors[slot] = npcBittenByDog(a);
+    hospital[SPECIAL_ACTOR_BASE + slot] = 1;
+  }
+  let world: GameState = { ...applied, players: before.players, specialActors, hospitalOccupancy: hospital };
+  const blastObjects = world.objects.flatMap((o, i) =>
+    o.nodeId !== 0 && o.attached === 0 && hitNodes.has(o.nodeId) ? [i + 1] : [],
+  );
+  for (const handle of blastObjects) {
+    const rel = releaseObject(world, handle);
+    world = respawnPartner(
+      { ...world, objects: rel.objects, tools: rel.tools, toolStock: rel.toolStock },
+      topo,
+      rel.partner >= 0 ? { partner: rel.partner, nearNode: rel.formerNode } : null,
+    );
+  }
+  return { ...world, players: applied.players };
+}
+
+/** 稅類三条（所得稅 / 地價稅 / 證交稅）—— 第二趟逐人收钱、当场破产 */
+const NEWS_TAX_IDS: ReadonlySet<number> = new Set([11, 12, 13]);
+
 function applyCompanyMutations(
   base: GameState,
   mutations: readonly CompanyMutation[] | undefined,
@@ -6371,27 +6446,33 @@ function applyMutations(
     const level = [...(base.landLevel ?? [])];
     const type = [...(base.landType ?? [])];
     const owner = [...(base.landOwner ?? [])];
+    const tenure = [...(base.landTenure ?? [])];
     for (const m of out.landMutations) {
       level[m.id] = m.level;
       type[m.id] = m.type;
       owner[m.id] = m.owner;
+      if (m.tenure !== undefined) tenure[m.id] = m.tenure;
     }
     patch.landLevel = level;
     patch.landType = type;
     patch.landOwner = owner;
+    patch.landTenure = tenure;
   }
   if (out.facilityMutations !== undefined && out.facilityMutations.length > 0) {
     const level = [...(base.facilityLevel ?? [])];
     const type = [...(base.facilityType ?? [])];
     const owner = [...(base.facilityOwner ?? [])];
+    const tenure = [...(base.facilityTenure ?? [])];
     for (const m of out.facilityMutations) {
       level[m.id] = m.level;
       type[m.id] = m.type;
       owner[m.id] = m.owner;
+      if (m.tenure !== undefined) tenure[m.id] = m.tenure;
     }
     patch.facilityLevel = level;
     patch.facilityType = type;
     patch.facilityOwner = owner;
+    patch.facilityTenure = tenure;
   }
   return patch;
 }
