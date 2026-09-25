@@ -48,8 +48,16 @@ import {
   type Rect,
   type SpriteFn,
 } from './gameui.ts';
-import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountButtonDownSound, amountSlotOfId } from './amount-keys.ts';
-import { amountPixelId, drawAmountWindow, getAmountHitMap } from './amount-window.ts';
+import {
+  AMOUNT_KEY_RECTS,
+  AMOUNT_WINDOW,
+  amountButtonDownSound,
+  amountDragTo,
+  amountSlotOfId,
+  amountWindowPos,
+  setAmountWindowPos,
+} from './amount-keys.ts';
+import { AMOUNT_BAR_RECT, amountPixelId, drawAmountWindow, getAmountHitMap } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
 import { BOX_TEXT_STYLE, FONT_FAMILY, drawGdiText, gdiFont } from './font.ts';
@@ -496,6 +504,8 @@ export function layoutDialog(
   //   （见 `amount-keys.ts` 头部：ESC 是全局钩子补成 `0x205` 关的窗）。
   //   所以 `labels` 里保留一颗「取消」以便鼠标也能退，其余交给键盘窗。
   if (page !== null && amount !== undefined) {
+    // ★ 落点是**此刻**的（可拖，原版 `[0x48cab8]/[0x48cab6]`），不是开窗初值
+    const at = amountWindowPos();
     const slots: { label: string; rect: Rect; hit: DialogHit }[] = [];
     for (let id = 0; id < AMOUNT_KEY_RECTS.length; id++) {
       const r = AMOUNT_KEY_RECTS[id];
@@ -509,16 +519,17 @@ export function layoutDialog(
       if (slot.kind === 'cursorLeft' || slot.kind === 'cursorRight') continue;
       slots.push({
         label: '',
-        rect: boardRect({ x: AMOUNT_WINDOW.x + r.x, y: AMOUNT_WINDOW.y + r.y, w: r.w, h: r.h }),
+        rect: boardRect({ x: at.x + r.x, y: at.y + r.y, w: r.w, h: r.h }),
         hit: amountHitForSlot(slot, amount.step, id),
       });
     }
-    // 取消那颗由我们自己加（原版没有：它靠 ESC / 右键）
+    // 取消那颗由我们自己加（原版没有：它靠 ESC / 右键）—— 跟着窗走；窗拖到底下放不下就挪到窗上方
+    const below = at.y + AMOUNT_WINDOW.h + 4;
     slots.push({
       label: '取消',
       rect: boardRect({
-        x: AMOUNT_WINDOW.x,
-        y: AMOUNT_WINDOW.y + AMOUNT_WINDOW.h + 4,
+        x: at.x,
+        y: below + 20 <= 480 ? below : at.y - 24,
         w: AMOUNT_WINDOW.w,
         h: 20,
       }),
@@ -586,14 +597,23 @@ export function layoutDialog(
 export class AmountPressLatch {
   private pressed: DialogHit | null = null;
   private swallow = false;
+  /** 按在拖窗把手（id 1）上：窗内抓点（原版 `[0x48caba]/[0x48cabe]`，0x00452d67..0x00452d6d）*/
+  private grab: { x: number; y: number } | null = null;
 
   /**
-   * 左键按下。`hit` 是 `hitDialog` 在按下点的结果。
+   * 左键按下。`hit` 是 `hitDialog` 在按下点的结果；`at` 是按下点的**舞台坐标**（拖窗要记抓点）。
    * @returns `consumed` = 这一下落在填数窗上（调用方不要再往下传）；`sound` = 此刻要放的音
    */
-  down(hit: DialogHit | 'inside' | null): { consumed: boolean; sound: number | null } {
+  down(hit: DialogHit | 'inside' | null, at?: { x: number; y: number }): { consumed: boolean; sound: number | null } {
     this.pressed = null;
     this.swallow = false;
+    this.grab = null;
+    // ★ id 1 = 拖窗把手：记下窗内抓点，之后 `WM_MOUSEMOVE` 跟着挪（`drag`）
+    //   @source 0x00452d63 `cmp al,1 / jne` → 0x00452d67 `mov [0x48caba], lx` / `mov [0x48cabe], ly`
+    if (hit !== null && hit !== 'inside' && hit.kind === 'amountPad' && hit.id === 1 && at !== undefined) {
+      const w = amountWindowPos();
+      this.grab = { x: Math.trunc(at.x) - w.x, y: Math.trunc(at.y) - w.y };
+    }
     if (hit === null) return { consumed: false, sound: null };
     if (hit === 'inside') return { consumed: true, sound: null };
     switch (hit.kind) {
@@ -616,10 +636,35 @@ export class AmountPressLatch {
     }
   }
 
+  /**
+   * 光标移动（`WM_MOUSEMOVE`）：按着拖窗把手就把窗挪过去（`amountDragTo`，夹在 0..0x200 × 0..0x120）。
+   * @returns 窗挪了（要重画）
+   */
+  drag(at: { x: number; y: number }): boolean {
+    if (this.grab === null) return false;
+    const next = amountDragTo(at, this.grab);
+    const cur = amountWindowPos();
+    if (next.x === cur.x && next.y === cur.y) return false;
+    setAmountWindowPos(next.x, next.y);
+    return true;
+  }
+
+  /** 此刻在拖窗吗 */
+  get dragging(): boolean {
+    return this.grab !== null;
+  }
+
+  /** 键盘按了一颗键：原版先清 `[0x48cac2]`（0x00452e4b），拖到一半的窗就此停下 */
+  stopDrag(): void {
+    this.grab = null;
+  }
+
   /** 左键抬手：返回**按下时记下的**那一颗（要办的事）；没有就 `null`。办了就吞掉紧跟的 `click` */
   up(): DialogHit | null {
     const p = this.pressed;
     this.pressed = null;
+    // 抬手清 `[0x48cac2]`（`loc_0045310a`）⇒ 拖窗结束
+    this.grab = null;
     if (p !== null) this.swallow = true;
     return p;
   }
@@ -640,6 +685,7 @@ export class AmountPressLatch {
   reset(): void {
     this.pressed = null;
     this.swallow = false;
+    this.grab = null;
   }
 
   /** 此刻按着哪一颗（画按下图 / 单测用）*/
@@ -668,6 +714,18 @@ export function hitDialog(
     }
   }
   for (const b of l.buttons) if (inRect(x, y, b.rect)) return b.hit;
+  // 没载到 id 图：窗内没中钮的地方照真素材的样子分 —— 金额栏那片是 0x10，其余整片是 1（拖窗把手；
+  //   真图里没有 0，见 `amountPixelId`）。范围与 exe 同为闭区间 0..0x80 × 0..0xc0。
+  if (l.amountWindow === true) {
+    const at = amountWindowPos();
+    const lx = Math.floor(x + LAYOUT.board.x - at.x);
+    const ly = Math.floor(y + LAYOUT.board.y - at.y);
+    if (lx >= 0 && lx <= 0x80 && ly >= 0 && ly <= 0xc0) {
+      const bar = AMOUNT_BAR_RECT;
+      const onBar = lx >= bar.x && lx < bar.x + bar.w && ly >= bar.y && ly < bar.y + bar.h;
+      return { kind: 'amountPad', id: onBar ? 0x10 : 1 };
+    }
+  }
   // ★ 落在框上但没中按钮：也要**吃掉**这一次点击，否则会穿透到棋盘上
   //   去选格子 —— 那正是「点了个按钮结果棋子动了」这类怪事的来源。
   return inRect(x, y, l.box) ? 'inside' : null;

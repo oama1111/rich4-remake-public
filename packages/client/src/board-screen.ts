@@ -105,7 +105,7 @@ import {
 import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
 import { AmountPressLatch, drawDialog, hitDialog } from './dialog.ts';
-import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
+import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId, resetAmountWindowPos } from './amount-keys.ts';
 import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
@@ -1926,6 +1926,9 @@ function openPrice(env: UiScreenEnv, i: number): void {
   const market = marketPriceOf(env.state, env.topo, ui.pickKind, it.id, it.amount);
   ui.amount = { kind: ui.pickKind, id: it.id, amount: it.amount, market };
   // ★ 出价默认值 = 市價（原 stub 的说法）；股数那一类就是持有股數
+  // 开窗：落点回到 (0x100, 0x90) @source `fcn_00453544` 0x0045359c..0x004535a5
+  resetAmountWindowPos();
+  pricePress.reset();
   ui.amountPage = { choice: 0, value: ui.pickKind === LISTING.stock ? it.amount : market };
   ui.press = null;
   ui.pickHot = null;
@@ -1990,7 +1993,7 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
     const max = priceMax();
     ui.barHeld = max !== null && amountBarDragValue(x, y, max) !== null;
     // ★ 按下只记账 + 放按键音 7，数值在抬手才动（`onUp`）@source 0x00452d5e..0x00452d95
-    const r = pricePress.down(hitPricePage(env, x, y));
+    const r = pricePress.down(hitPricePage(env, x, y), { x, y });
     if (r.sound !== null) env.playEffect(r.sound);
     env.requestRender();
     return;
@@ -2330,6 +2333,11 @@ export const boardScreen: UiScreen = {
    */
   move(x: number, y: number, env: UiScreenEnv): void {
     if (ui.mode === 'price') {
+      // ★ 按在拖窗把手（id 1）上：窗跟着走（`0x0045320b cmp dh,1` 那一支，先于金额栏）
+      if (pricePress.drag({ x, y })) {
+        env.requestRender();
+        return;
+      }
       dragPriceBar(env, x, y);
       return;
     }

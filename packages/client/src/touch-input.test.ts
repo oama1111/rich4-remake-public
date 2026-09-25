@@ -17,6 +17,7 @@ import {
 } from './touch-input.ts';
 import { stageMetrics, SCREEN_H, SCREEN_W } from './stage.ts';
 import { AmountPressLatch, type DialogHit } from './dialog.ts';
+import { amountWindowPos, resetAmountWindowPos } from './amount-keys.ts';
 
 const kinds = (out: readonly { kind: string }[]): string[] => out.map((o) => o.kind);
 
@@ -507,5 +508,39 @@ describe('★ pt26 #3：触屏点填数窗 —— 按键音、动作各只一次
     expect(latch.down(null)).toEqual({ consumed: false, sound: null });
     expect(latch.up()).toBeNull();
     expect(latch.click()).toBe(false);
+  });
+});
+
+describe('★ pt26 #3c：触屏单指拖填数窗 —— 不触发长按取消', () => {
+  it('金额页（lp = false）：手指按住把手、停超过 500 ms 再拖 —— 只有 按下 → 移动…… → 抬起，没有右键', () => {
+    const g = new TouchGesture();
+    g.start(1, 100, 100, 0, false);
+    expect(g.due(LONG_PRESS_MS + 200)).toEqual([]);
+    const out = [
+      ...g.move(1, 100, 100 + TAP_SLOP_PX + 5, LONG_PRESS_MS + 300),
+      ...g.move(1, 160, 180, LONG_PRESS_MS + 320),
+      ...g.end(1, 160, 180, LONG_PRESS_MS + 400),
+    ];
+    expect(kinds(out)).toEqual(['move', 'down', 'move', 'move', 'up', 'click']);
+    expect(out.some((o) => o.kind === 'rightClick')).toBe(false);
+    // 按下落在起点（抓点 = 手指最初落的位置），之后逐拍跟手
+    expect(out[1]).toMatchObject({ kind: 'down', x: 100, y: 100 });
+  });
+
+  it('按下点走闩：抓点记在起点，移动把窗挪过去，抬手停', () => {
+    const latch = new AmountPressLatch();
+    const g = new TouchGesture();
+    g.start(1, 0x100 + 4, 0x90 + 4, 0, false);
+    const out = [...g.move(1, 0x100 + 4 + 40, 0x90 + 4 + 30, 50), ...g.end(1, 0x100 + 44, 0x90 + 34, 90)];
+    let moved = 0;
+    for (const o of out) {
+      if (o.kind === 'down') latch.down({ kind: 'amountPad', id: 1 }, o);
+      else if (o.kind === 'move' && latch.drag(o)) moved++;
+      else if (o.kind === 'up') expect(latch.up()).toBeNull();
+    }
+    expect(moved).toBe(1);
+    expect(latch.dragging).toBe(false);
+    expect(amountWindowPos()).toEqual({ x: 0x100 + 40, y: 0x90 + 30 });
+    resetAmountWindowPos();
   });
 });

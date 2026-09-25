@@ -67,6 +67,7 @@ import {
   AMOUNT_DIGIT_MAX,
   amountFromBarX,
   amountWindowHit,
+  amountWindowPos,
   type AmountKey,
 } from './amount-keys.ts';
 // ★ W-62：画的位置与命中框必须**同源** —— 命中框走 `boardRect()`（见 `dialog.ts`），
@@ -211,9 +212,10 @@ export function drawAmountWindow(
   // 底图还没解好时**什么都不画**：让调用方保留它自己的兜底（别画半扇窗）
   if (base === null) return false;
   // ★ W-62：屏幕坐标 → 棋盘画布坐标（与 `dialog.ts` 的命中框**同一处换算**）
+  //   落点是**此刻**的（可拖，`amountWindowPos`），不是开窗初值
   const o = boardRect({
-    x: AMOUNT_WINDOW.x,
-    y: AMOUNT_WINDOW.y,
+    x: amountWindowPos().x,
+    y: amountWindowPos().y,
     w: AMOUNT_WINDOW.w,
     h: AMOUNT_WINDOW.h,
   });
@@ -286,8 +288,8 @@ export const AMOUNT_BAR_DRAG_SOUND = 9;
  * @returns 新值；`null` = 原版**什么都不做**（没落在栏上、或 `x ≥ 118` 那一列）
  */
 export function amountBarDragValue(sx: number, sy: number, max: number): number | null {
-  const lx = sx - AMOUNT_WINDOW.x;
-  const ly = sy - AMOUNT_WINDOW.y;
+  const lx = sx - amountWindowPos().x;
+  const ly = sy - amountWindowPos().y;
   if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
   if (lx < AMOUNT_BAR_RECT.x || lx >= AMOUNT_BAR_RECT.x + AMOUNT_BAR_RECT.w) return null;
   if (ly < AMOUNT_BAR_RECT.y || ly >= AMOUNT_BAR_RECT.y + AMOUNT_BAR_RECT.h) return null;
@@ -343,8 +345,8 @@ export function getAmountHitMap(): Uint8Array | null {
  *   钮是 2..0xf，金额栏是 0x10 —— 所以原版点窗里空白是**拖窗、不响**。
  */
 export function amountPixelId(map: Uint8Array, sx: number, sy: number): number | null {
-  const lx = Math.floor(sx - AMOUNT_WINDOW.x);
-  const ly = Math.floor(sy - AMOUNT_WINDOW.y);
+  const lx = Math.floor(sx - amountWindowPos().x);
+  const ly = Math.floor(sy - amountWindowPos().y);
   if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
   return map[(ly << 7) + lx] ?? 0;
 }
@@ -360,8 +362,8 @@ export function amountWindowHitMapped(
   sx: number,
   sy: number,
 ): number | null {
-  const lx = sx - AMOUNT_WINDOW.x;
-  const ly = sy - AMOUNT_WINDOW.y;
+  const lx = sx - amountWindowPos().x;
+  const ly = sy - amountWindowPos().y;
   if (lx < 0 || ly < 0 || lx >= AMOUNT_WINDOW.w || ly >= AMOUNT_WINDOW.h) return null;
   if (map === null) return amountWindowHit(sx, sy);
   const id = map[ly * AMOUNT_WINDOW.w + lx] ?? 0;

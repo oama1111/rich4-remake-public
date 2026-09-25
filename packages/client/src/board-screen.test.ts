@@ -1264,6 +1264,31 @@ describe('★ pt26 #3：公佈欄出价填数页 —— 按下放按键音 7、�
     expect(boardScreenState().mode).toBe('board');
   });
 
+  it('★ 拖窗：按在窗底空白（id 1）拖着走；按钮跟着新落点；关了再开回 (0x100,0x90)', async () => {
+    const { amountWindowPos } = await import('./amount-keys.ts');
+    const { h, sounds } = priceHarness();
+    expect(amountWindowPos()).toEqual({ x: 0x100, y: 0x90 });
+    boardScreen.down?.(0x100 + 120, 0x90 + 186, h.env); // 窗底右下角空白
+    expect(sounds).toEqual([]); // 拖窗不响
+    boardScreen.move?.(0x100 + 120 - 150, 0x90 + 186 - 60, h.env);
+    expect(amountWindowPos()).toEqual({ x: 0x100 - 150, y: 0x90 - 60 });
+    boardScreen.up?.(0, 0, h.env);
+    boardScreen.move?.(600, 400, h.env); // 松了手：不再跟
+    expect(amountWindowPos()).toEqual({ x: 0x100 - 150, y: 0x90 - 60 });
+    // 在新落点上点「C」
+    const a = boardScreenState().amount!;
+    const layout = layoutDialog(h.env.stage, boardPriceUi(a.kind, a.id, a.amount, a.market), boardScreenState().amountPage);
+    const c = layout.buttons.find((b) => b.hit.kind === 'amountSlot' && b.hit.id === 4)!;
+    boardScreen.down?.(c.rect.x + LAYOUT.board.x + 2, c.rect.y + LAYOUT.board.y + 2, h.env);
+    boardScreen.up?.(c.rect.x + LAYOUT.board.x + 2, c.rect.y + LAYOUT.board.y + 2, h.env);
+    expect(boardScreenState().amountPage!.value).toBe(0);
+    expect(c.rect.x + LAYOUT.board.x).toBe(0x100 - 150 + 8);
+    // 右键退回、再开：回初值
+    boardScreen.contextmenu?.(0, 0, h.env);
+    priceHarness();
+    expect(amountWindowPos()).toEqual({ x: 0x100, y: 0x90 });
+  });
+
   it('按在窗里的空白 / 金额栏上：不放音，抬手也不办事', () => {
     const { h, sounds } = priceHarness();
     const v = boardScreenState().amountPage!.value;

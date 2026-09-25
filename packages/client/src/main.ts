@@ -406,6 +406,7 @@ import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
   AMOUNT_WINDOW,
+  resetAmountWindowPos,
   amountKeyOfVk,
   amountKeySound,
   amountKeyStep,
@@ -1327,6 +1328,7 @@ function openLoanAmount(op: LoanOp): void {
   );
   const c = idx >= 0 ? ui.choices[idx] : undefined;
   if (c?.amount === undefined) return;
+  amountWindowOpened();
   amountPage = { choice: idx, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
@@ -1817,6 +1819,7 @@ function stockTrade(kind: 'buy' | 'sell'): void {
     }
     stockAmount = { kind: 'sell', stock: row, max: held };
   }
+  amountWindowOpened();
   amountPage = { choice: 0, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
@@ -3014,6 +3017,12 @@ function closeAmountPage(): void {
  */
 const amountPress = new AmountPressLatch();
 
+/** 开一扇填数窗：落点回到 (0x100, 0x90)、按键记账清空 @source `fcn_00453544` 0x0045359c..0x004535a5 */
+function amountWindowOpened(): void {
+  resetAmountWindowPos();
+  amountPress.reset();
+}
+
 /** 此刻开着的填数页属于哪一份交互：股市屏借的那一扇，或棋盘 / 銀行上的对话框；没开就 `null` */
 function amountDialogUi(): InteractionUi | null {
   if (amountPage === null) return null;
@@ -3032,7 +3041,7 @@ function amountWindowDown(q: { x: number; y: number }): boolean {
     return false;
   }
   const h = hitDialog(boardCtx, ui, amountPage, q.x - LAYOUT.board.x, q.y - LAYOUT.board.y);
-  const r = amountPress.down(h);
+  const r = amountPress.down(h, q);
   if (r.sound !== null) sound.play('Effect.mkf', r.sound);
   if (r.consumed) requestRender();
   return r.consumed;
@@ -3065,6 +3074,7 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     if (c.amount !== undefined) {
       // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗
       //   （见 `interactions.ts` 的 `amount.initial`），其余各条照旧从 0 起
+      amountWindowOpened();
       amountPage = {
         choice: hit.index,
         value: c.amount.initial ?? AMOUNT_INITIAL,
@@ -3166,6 +3176,8 @@ function onAmountKey(ui: InteractionUi, key: AmountKey, playSfx = true): void {
   //   ★ 鼠标那一路**不在这里放**：原版在**按下**就放了（0x00452d95，`amountWindowDown`），
   //   抬手（0x202）进这里只动作 ⇒ `playSfx = false`。
   //   填数窗只开在本机行动者那一台（别的座位没有 `amountPage`），各端自己放。
+  // 键盘那一路先清 `[0x48cac2]`（0x00452e4b）⇒ 拖到一半的窗就此停下
+  if (playSfx) amountPress.stopDrag();
   const keySfx = playSfx ? amountKeySound(key) : null;
   if (keySfx !== null) sound.play('Effect.mkf', keySfx);
   const step = amountKeyStep(page.value, amount.max, key);
@@ -9025,6 +9037,11 @@ function amountBarMax(): number | null {
  */
 function dragAmountBar(p: { x: number; y: number }): void {
   if (amountPage === null) amountBarHeld = false;
+  // ★ 按在拖窗把手（id 1）上：窗跟着光标走（`0x0045320b` 的 `cmp dh,1` 那一支，先于金额栏那一支）
+  if (amountPage !== null && amountPress.drag(p)) {
+    requestRender();
+    return;
+  }
   if (amountPage === null || !amountBarHeld) return;
   const max = amountBarMax();
   if (max === null) return;
@@ -9426,7 +9443,9 @@ function drawGameStage(): void {
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
-    drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
+    // 填数窗（`fcn_00453544`）是另开的一扇窗、**可拖到棋盘外**（工具列 / 側欄上）⇒ 不画进棋盘画布，
+    //   等工具列与側欄都画完再盖到舞台上（见本函数末尾）
+    if (amountPage === null) drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
   } else if (diceFx.active) {
     // ★ 掷骰那一段（Q-TURN-1 §3/§4）：滚骰是 `Panel.mkf` 4/5/6 的 **FLIC**，
     //   滚完再把 `Panel.mkf` 3 的点数图盖上去定格 500 ms。
@@ -9485,6 +9504,16 @@ function drawGameStage(): void {
     panelRows: panelRows(hudState, topo, hudState.currentPlayer, panelPages[hudState.currentPlayer] ?? 0),
   });
   drawSurface(stageCtx, hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y, LAYOUT.panel.w, SCREEN_H, surfaceScale);
+  // 填数窗盖在最上面（它是另开的窗，拖到哪画到哪）
+  if (dlg !== null && amountPage !== null) drawAmountDialogOnStage(dlg);
+}
+
+/** 把填数页画到**舞台**上（照棋盘坐标排版，整体平移过去 —— 与股市 / 銀行那两处同一个做法）*/
+function drawAmountDialogOnStage(ui: InteractionUi): void {
+  stageCtx.save();
+  stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+  drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+  stageCtx.restore();
 }
 
 /**
@@ -9505,8 +9534,9 @@ function drawSceneStage(resource: number, ui: InteractionUi): void {
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   }
   boardCtx.clearRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
-  drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
+  if (amountPage === null) drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
   drawSurface(stageCtx, boardCanvas, LAYOUT.board.x, LAYOUT.board.y, LAYOUT.board.w, LAYOUT.board.h, surfaceScale);
+  if (amountPage !== null) drawAmountDialogOnStage(ui);
 }
 
 /**
@@ -10026,6 +10056,7 @@ function renderInteraction(): void {
           log(`▶ ${c.label}：这一屏自己接管输入（不是通用填数页）`);
           return;
         }
+        amountWindowOpened();
         amountPage = { choice: idx, value: AMOUNT_INITIAL };
         dialogHot = null;
         requestRender();
@@ -13087,6 +13118,7 @@ async function boot(): Promise<void> {
             kind === 'buy'
               ? { kind: 'buy', stock: row, max: stockCounterBuyMax(me.moneyInBank, st.price, st.f10) }
               : { kind: 'sell', stock: row, max: state.holdings[state.currentPlayer]?.[row]?.amount ?? 0 };
+          amountWindowOpened();
           amountPage = { choice: 0, value: AMOUNT_INITIAL };
           dialogHot = null;
           requestRender();
