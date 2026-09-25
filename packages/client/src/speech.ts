@@ -42,9 +42,9 @@
  *
  * 1. 原版在**中间档**用 `rand() & 1` 在相邻两句里随机二选一
  *    （`call _libc_rand / and eax,1 / mov reg,[表 + eax*4]`），事件 18 / 17 的闸是 1/2、1/3。
- *    本文件是纯函数、不许动 PRNG。✅ **WP-3（2026-09-24）改判**：不再「一律取 `eax = 0`」，
- *    改用 `speech-coin.ts` 的 `speechRand(after, 说话人, 站点 VA)` —— 对**进指纹**的共享状态做哈希，
- *    联机各端 / 单机 / 重放都掷出同一面，分布与原版一致（1/2、1/3），且不碰 core 的随机流。
+ *    本文件是纯函数、不许动 PRNG。✅ **2026-09-25（provenance 审计 events 第二轮）**：那一次 `rand()`
+ *    由 core 在 exe 掷的那一刻掷（与规则同一条流），原值记在 `after.lastSpeechRolls`；这里用
+ *    `speech-roll.ts` 的 `speechRand(before, after, 说话人, 站点 VA)` **查**它（先前 WP-3 的状态哈希已退役）。
  * 2. 原版 `_rich4_player_say` 是**逐句播完再返回**；本引擎台词队列逐句上台，语音经 `audio.ts` 的
  *    `VoiceChannel`（原版唯一那一路 `[0x47e750]`，起新句先 `0x454493` 停旧句）⇒ 不会再叠着响（pt26）。
  * 3. ✅ **2026-09-19：事件 16/17/22/23/26 已接线**（T-052 的 Q-SPEECH-5 原先登记为「没解」）：
@@ -84,7 +84,7 @@ import {
 import { cardAnswerBubbleOf, cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
 import type { SpeechCue } from './presentation-order.ts';
-import { NEWS_OWNER_RAND_SITE, SPEECH_RAND_SITE, speechCoin, speechRand } from './speech-coin.ts';
+import { NEWS_OWNER_RAND_SITE, SPEECH_RAND_SITE, speechCoin, speechRand } from './speech-roll.ts';
 
 // ============================================================
 //  对外形状
@@ -294,7 +294,7 @@ export const SMALL_LOSS_LOW = 3;
  * 返回**事件号**（不是档位下标）。
  *
  * @param coin 中间档那次 `rand() & 1`（@source 0x0044f3d1）—— 调用方用
- *   `speechCoin(after, 说话人, SPEECH_RAND_SITE.gain)` 掷（WP-3；**必填**，不许默认成前一句）
+ *   `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.gain)` 查 core 掷的那一次（**必填**，不许默认成前一句）
  */
 export function gainEventFor(amount: number, priceIndex: number, coin: number): number | null {
   if (amount >= MONEY_TIER_HIGH * priceIndex) return 6;
@@ -316,7 +316,7 @@ export function gainEventFor(amount: number, priceIndex: number, coin: number): 
  * ★ 与「進帳」不同：**最低档是 > 0**，没有 2000 那道线。
  *
  * @param coin 中间档那次 `rand() & 1`（付錢 @source 0x0044f4a7 / 罰款 @source 0x0044f5e1）——
- *   调用方用 `speechCoin(after, 说话人, SPEECH_RAND_SITE.pay | .fine)` 掷（WP-3；必填）
+ *   调用方用 `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.pay | .fine)` 查 core 掷的那一次（必填）
  */
 export function payTierFor(amount: number, priceIndex: number, coin: number): 0 | 1 | 2 | null {
   if (amount >= MONEY_TIER_HIGH * priceIndex) return 0;
@@ -330,7 +330,7 @@ export function payTierFor(amount: number, priceIndex: number, coin: number): 0 
  * 小额获得（事件 0/1/2）的档位，返回 **0..2**。
  * @source `fcn_0044f230` @ VA 0x0044f230：
  * `cmp edx,0x64 / jle` → 0；`cmp edx,0x32 / jle` → 0|1（`0x0044f280` rand&1 = `coin`）；`test edx,edx / je 返回` → 2
- * @param coin `speechCoin(after, 说话人, SPEECH_RAND_SITE.smallGain)`（WP-3；必填）
+ * @param coin `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.smallGain)`（core 掷的那一次；必填）
  */
 export function smallGainTierFor(amount: number, coin: number): 0 | 1 | 2 | null {
   if (amount > SMALL_GAIN_HIGH) return 0;
@@ -343,7 +343,7 @@ export function smallGainTierFor(amount: number, coin: number): 0 | 1 | 2 | null
  * 小额损失（事件 3/4/5）的档位，返回 **0..2**。
  * @source `fcn_0044f2c2` @ VA 0x0044f2c2：
  * `cmp edx,6 / jle` → 0；`cmp edx,3 / jle` → 0|1（`0x0044f312` rand&1 = `coin`）；`test edx,edx / je 返回` → 2
- * @param coin `speechCoin(after, 说话人, SPEECH_RAND_SITE.smallLoss)`（WP-3；必填）
+ * @param coin `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.smallLoss)`（core 掷的那一次；必填）
  */
 export function smallLossTierFor(amount: number, coin: number): 0 | 1 | 2 | null {
   if (amount > SMALL_LOSS_HIGH) return 0;
@@ -597,7 +597,7 @@ export function detectMoneyGained(before: GameState, after: GameState): Detected
   if (says === null || says === (before.lastGainSays ?? null)) return [];
   const out: DetectedSay[] = [];
   for (const g of says) {
-    const event = gainEventFor(g.amount, after.priceIndex, speechCoin(after, g.player, SPEECH_RAND_SITE.gain));
+    const event = gainEventFor(g.amount, after.priceIndex, speechCoin(before, after, g.player, SPEECH_RAND_SITE.gain));
     if (event !== null) out.push({ player: g.player, event });
   }
   return out;
@@ -654,7 +654,7 @@ export function detectNoticeSay(before: GameState, after: GameState): DetectedSa
       out.push({ player: say.player, event: say.event });
       continue;
     }
-    const tier = payTierFor(say.reliefAmount, after.priceIndex, speechCoin(after, say.player, SPEECH_RAND_SITE.fine));
+    const tier = payTierFor(say.reliefAmount, after.priceIndex, speechCoin(before, after, say.player, SPEECH_RAND_SITE.fine));
     if (tier !== null) out.push({ player: say.player, event: 12 + tier });
   }
   return out;
@@ -677,7 +677,7 @@ export function detectNoticeSay(before: GameState, after: GameState): DetectedSa
  * 说事件 18（表 +0x480892）；return 1
  * ```
  * 返回 1 时调用点**不再**调 `fcn_0044f42d` —— 即 18 **顶替** 9/10/11。
- * 那 1/2 機率（`0x0044f525 call rand / test al,1 / je 0x44f561`）由 `speechRand` 掷（WP-3）；
+ * 那 1/2 機率（`0x0044f525 call rand / test al,1 / je 0x44f561`）由 core 在付款之前掷（`tollSpeechDraws`）；
  * 没中 ⇒ 返回 0 ⇒ 调用点照常 `call 0x44f42d`（`0x00419f63 jne / 0x00419f67`），那里的中间档**另掷一次**。
  *
  * 收款方的还原：同一动作里 `monthlyReceived` 涨了的那个玩家 = 收錢的人；
@@ -720,15 +720,18 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
 
     if (payee >= 0) {
       // @source 0x0044f4ed：最敵對玩家拿走 ≥ 5000×物價指數 → 事件 18
+      //   core 只在闸成立时掷（`hostileDrawsRand`）⇒ 有那一次就说明闸成立，奇数才说
+      const hostileRoll = speechRand(before, after, i, SPEECH_RAND_SITE.hostile);
       if (
         payee === mostHostilePlayer(before, i) &&
         amount >= MONEY_TIER_MID * after.priceIndex &&
-        (speechRand(after, i, SPEECH_RAND_SITE.hostile) & 1) !== 0
+        hostileRoll !== null &&
+        (hostileRoll & 1) !== 0
       ) {
         out.push({ player: i, event: 18 });
         continue;
       }
-      const tier = payTierFor(amount, after.priceIndex, speechCoin(after, i, SPEECH_RAND_SITE.pay));
+      const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     } else if (poolGrew > 0) {
       // ★★ 第十四份試玩回報 #1（Charles，2026-09-23）：「为什么交保险这个倒霉的事情触发的是
@@ -744,7 +747,7 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
       //   除此之外进公库的钱（乞丐 `0x41b686`、大窮神 `0x40f076`、新聞的稅 / 罰款、
       //   无卖家的拍卖…）原版都**不**经过 `0x44f42d` / `0x44f567` ⇒ 不说。
       if (i === fortunePayer) {
-        const tier = payTierFor(amount, after.priceIndex, speechCoin(after, i, SPEECH_RAND_SITE.pay));
+        const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
         if (tier !== null) out.push({ player: i, event: 9 + tier });
       }
     } else if (companyFundsGrew(before, after)) {
@@ -757,7 +760,7 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
       //   先前注释说「那种情形付款人的 `monthlyPaid` 本来就不涨」，是因为企業那一路当时还没接顶替；
       //   现在接上了（`chargeCompanyFee`），替死鬼 / 死神的 `monthlyPaid` 会涨 ⇒ 只认当前玩家。
       if (i !== before.currentPlayer) continue;
-      const tier = payTierFor(amount, after.priceIndex, speechCoin(after, i, SPEECH_RAND_SITE.pay));
+      const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     }
   }
@@ -818,7 +821,7 @@ export function detectHotelStay(before: GameState, after: GameState): DetectedSa
   for (const i of enteredBlocking(before, after, 'inHotel')) {
     const raw = after.players[i]?.blocking.inHotel ?? 0;
     const days = (raw & 0x7f) + 1;
-    const tier = smallLossTierFor(days, speechCoin(after, i, SPEECH_RAND_SITE.smallLoss));
+    const tier = smallLossTierFor(days, speechCoin(before, after, i, SPEECH_RAND_SITE.smallLoss));
     if (tier === null) continue;
     out.push({ player: i, event: 3 + tier });
   }
@@ -871,7 +874,7 @@ export function detectPointsGained(before: GameState, after: GameState): Detecte
     //   （它的调用点只有 `0x40ee46`/`0x41b38c`/`0x41b98b`/`0x41bafa`/`0x42ea23`/`0x452753`）⇒ **不说话**。
     //   手上的卡或道具变少、點券变多 = 这一笔是变卖。
     if (soldInventory(before, after, i)) continue;
-    const tier = smallGainTierFor(amount, speechCoin(after, i, SPEECH_RAND_SITE.smallGain));
+    const tier = smallGainTierFor(amount, speechCoin(before, after, i, SPEECH_RAND_SITE.smallGain));
     if (tier === null) continue;
     out.push({ player: i, event: tier });
   }
@@ -926,14 +929,14 @@ function pointsSquareEventThisAction(
  *   房主 = **抽到命運的人自己**，不是别家。
  *   原版排在 `sleep 300`（`0x0044bf5e`）与镜头复位（`0x0044bf51`）**之后** ⇒ `afterStage`。
  *
- * ✅ WP-3：那一次 `rand()&1`（`0x0044bf86`）由 `speechCoin` 掷（不走 core、不动 RNG 流）⇒ 槽 3 | 4。
+ * ✅ 那一次 `rand()&1`（`0x0044bf86`）由 core 在拆完之后掷（同一条流，FU-1），这里查 ⇒ 槽 3 | 4。
  *   先前固定取槽 3（Q-SPEECH-3 的旧口径）。
  */
 export function detectDemolishedHouse(before: GameState, after: GameState): DetectedSay[] {
   const ev = demolishedHouseThisAction(before, after);
   if (ev === null) return [];
   const player = after.currentPlayer;
-  return [{ player, event: 3 + speechCoin(after, player, SPEECH_RAND_SITE.demolished), expression: 2 }];
+  return [{ player, event: 3 + speechCoin(before, after, player, SPEECH_RAND_SITE.demolished), expression: 2 }];
 }
 
 /**
@@ -954,8 +957,8 @@ export function detectDemolishedHouse(before: GameState, after: GameState): Dete
  *   19（`0x0044aad7`..`0x0044ab19`）同一张表 `0x480856`、同一个 `push 2`。
  *   新聞 20「超級颱風」**没有**这一段（`0x0044ac87` sleep 500 之后直接返回）。
  *
- * ✅ WP-3：那一次 `rand()&1`（四个站点见 `NEWS_OWNER_RAND_SITE`）由 `speechCoin` 掷
- *   （不走 core、不动 RNG 流）⇒ 事件 3 | 4。先前固定取事件 3（与命運 0 同一条旧口径）。
+ * ✅ 那一次 `rand()&1`（四个站点见 `NEWS_OWNER_RAND_SITE`）由 core 在施加之后掷（同一条流，FU-1），
+ *   这里查 ⇒ 事件 3 | 4。先前固定取事件 3（与命運 0 同一条旧口径）。
  */
 export function detectNewsPlaceOwner(before: GameState, after: GameState): DetectedSay[] {
   const ev = after.lastEvent ?? null;
@@ -966,7 +969,7 @@ export function detectNewsPlaceOwner(before: GameState, after: GameState): Detec
   // ★ `player_say` 开头那三道闸（消失 / 梦游 / 冬眠的人不出声）
   if (owner === 0 || who === undefined || !speechGatesOpen(who)) return [];
   const site = NEWS_OWNER_RAND_SITE.get(ev.id) ?? 0;
-  return [{ player: owner - 1, event: 3 + speechCoin(after, owner - 1, site), expression: 2 }];
+  return [{ player: owner - 1, event: 3 + speechCoin(before, after, owner - 1, site), expression: 2 }];
 }
 
 /**
@@ -982,7 +985,7 @@ export function detectNewsPlaceOwner(before: GameState, after: GameState): Detec
  * 0044c573  edi = ebp                               ; 两支都 +1（取消也算）
  * 0044c57b  test edi,edi / je 返回                   ; ★ 一个合格的人都没有 ⇒ 不说
  * 0044c585  call 0x41d476(0, 0, 3)                  ; 重画棋盘（bit0，不移镜头）
- * 0044c5ad  call rand / and eax,1                   ; ★ 二选一（WP-3：`speechCoin` 站点 0x0044c5ad）
+ * 0044c5ad  call rand / and eax,1                   ; ★ 二选一（core 掷，站点 0x0044c5ad）
  * 0044c5b5  ebp = [角色*108 + eax*4 + 0x48084a]     ; = 事件 0 | 1
  * 0044c5c5  call 0x44ef41(当前玩家, 0, ebp)
  * ```
@@ -1008,7 +1011,7 @@ export function detectBirthdayLine(before: GameState, after: GameState): Detecte
   const player = after.currentPlayer;
   const p = after.players[player];
   if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
-  return [{ player, event: speechCoin(after, player, SPEECH_RAND_SITE.birthday), expression: 0 }];
+  return [{ player, event: speechCoin(before, after, player, SPEECH_RAND_SITE.birthday), expression: 0 }];
 }
 
 /** 命運 5「今天是你生日」@source 命運表 `event-table.ts` id 5 = `0x0044c3b7` */
@@ -1069,7 +1072,7 @@ function demolishedHouseThisAction(
  * 即：**買下一块无主地** → 16；**在自己的地上加蓋**（且没到 5 級）→ 17
  * （到 5 級那一支在 `0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 处
  * 改说事件 15，故 17 只在 `等級 ≠ 5` 时说）。
- * `0x44f627` 的 `rand()%3`（`0x0044f67b`，余数为 0 才说 ⇒ 1/3）由 `speechRand` 掷（WP-3；
+ * `0x44f627` 的 `rand()%3`（`0x0044f67b`，余数为 0 才说 ⇒ 1/3）由 core 在加蓋那一刻掷（FU-1；
  * 先前确定性取「说」，Q-SPEECH-3 的旧口径）。買地那一支（`push 0`）不掷，照旧必说 16。
  *
  * ── 街區号从哪来 ─────────────────────────────────────────────
@@ -1120,7 +1123,8 @@ export function detectAreaMonopoly(
   if (owned < 3) return [];
   if (pend.kind === 'buyLand') return [{ player, event: 16 }];
   // @source 0x0044f67b `call rand / idiv 3` → 0x0044f68c `test edx,edx / jne 0x44f6e7`（不说）
-  if (speechRand(after, player, SPEECH_RAND_SITE.areaMonopoly) % 3 !== 0) return [];
+  const roll = speechRand(before, after, player, SPEECH_RAND_SITE.areaMonopoly);
+  if (roll === null || roll % 3 !== 0) return [];
   return [{ player, event: 17 }];
 }
 
@@ -1360,7 +1364,7 @@ export function detectShopGift(before: GameState, after: GameState): DetectedSay
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
   if (!speechGatesOpen(p)) return [];
-  const tier = smallGainTierFor(hint.points, speechCoin(after, p.index, SPEECH_RAND_SITE.smallGain));
+  const tier = smallGainTierFor(hint.points, speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain));
   if (tier === null) return [];
   return [{ player: p.index, event: tier }];
 }
@@ -1390,7 +1394,7 @@ export function detectGodCard(before: GameState, after: GameState): DetectedSay[
     // 一卡（小福神 / 大福神只拿到一张）：用它自己那张的点数价
     if (n.key === 'god.gotCard') {
       if (n.cardId === undefined) continue;
-      const tier = smallGainTierFor(priceOf(n.cardId), speechCoin(after, p.index, SPEECH_RAND_SITE.smallGain));
+      const tier = smallGainTierFor(priceOf(n.cardId), speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain));
       if (tier !== null) out.push({ player: p.index, event: tier });
       continue;
     }
@@ -1401,7 +1405,7 @@ export function detectGodCard(before: GameState, after: GameState): DetectedSay[
       if (ids.length === 0) continue;
       const tier = smallGainTierFor(
         ids.reduce((sum, id) => sum + priceOf(id), 0),
-        speechCoin(after, p.index, SPEECH_RAND_SITE.smallGain),
+        speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain),
       );
       if (tier !== null) out.push({ player: p.index, event: tier });
     }
@@ -1477,13 +1481,13 @@ export function detectSmallWealthLine(before: GameState, after: GameState): Dete
  * 0040ed7c  push esi / 0040ed84 push 玩家 / 0040ed85 call 0x44f354   ; = gainEventFor 那条档位表
  * ```
  * 闸门就是 `≥ 5000 × 物價` ⇒ 只会落在 `gainEventFor` 的前两档：≥ 9000 × 物價 说 6，
- *   5000..9000 × 物價 是中间档 `rand()&1`（`0x0044f3d1`）⇒ 6 | 7（WP-3 起按 `speechCoin` 掷，先前恒 6）。
+ *   5000..9000 × 物價 是中间档 `rand()&1`（`0x0044f3d1`）⇒ 6 | 7（core 在 `0x0040ed85` 那一刻掷，这里查）。
  */
 export function detectBigWealthLine(before: GameState, after: GameState): DetectedSay[] {
   const hint = godPowerHintThisAction(before, after);
   if (hint === null || hint.type !== BIG_WEALTH_GOD_TYPE) return [];
   if (hint.amount < MONEY_TIER_MID * after.priceIndex) return [];
-  const event = gainEventFor(hint.amount, after.priceIndex, speechCoin(after, hint.player, SPEECH_RAND_SITE.gain));
+  const event = gainEventFor(hint.amount, after.priceIndex, speechCoin(before, after, hint.player, SPEECH_RAND_SITE.gain));
   if (event === null) return [];
   const p = after.players[hint.player];
   if (p === undefined || !isAlive(p)) return [];
