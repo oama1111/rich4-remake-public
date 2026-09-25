@@ -259,6 +259,99 @@ describe('★ 踩到上市企業', () => {
     expect(r.players[0]?.cash).toBe(100_000);
   });
 
+  // ★★ 20260925-153539948（需求方补充：「如果我是董事长可以修2级」）：董事長那一支的两次
+  //   `0x40b110` 对**真人**一样走 —— 原版不管座位是不是电脑，靠的是落点那家企业
+  //   `[企業+0x18] == 当前玩家+1`（`0x0041a9e0 cmp eax,edx / jne 0x41ab6d`）。
+  //   ⚠️ 两次调用**不分「蓋新」与「加蓋」**：`0x40b110` 只看 `[+0x18]`（种类）与 `[+0x1a]`（等级），
+  //   **不看归属** ⇒ 空地从 0 直接蓋到 2 级、别人家的房子也照升两级（都不收董事長的钱）。
+  it('★★ 董事長（真人）：自家建設公司选地后**连升两级** —— 空地 0 → 2（`0x0041aae8` + `0x0041aafb`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    // 空地（`landOwner` 保持 0）：`0x40b110` 不看归属，只看种类 0 与等级 < 5
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(100_000); // 董事長一分不掏（`0x0041aaf7 jne 0x41ab04` 那一路）
+    expect(done.pending?.kind).toBe('buyShares');
+  });
+
+  it('★★ 董事長（真人）：别人家的地也照升两级、地主不变、自己不掏钱', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 2; // 对手（下标 1）的房子
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(3);
+    expect(done.landOwner[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(100_000);
+  });
+
+  it('★★ 董事長（真人）：4 → 5 顶到上限 ⇒ 第二次不蓋（`0x0041aaf7 test al,0x80 / jne 0x41ab04`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 4;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(5);
+    // 第一次就置了 bit7（`0x40b16e or al,0x80`）⇒ 表现层要看见那扇 `0x20b`
+    expect(done.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★★ 董事長（真人）：連鎖店（种类 1）只到 1 级 —— `0x40b110` 第二次自己拒绝（`landType === 1 && level === 0`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const lands = [{ ...(topo.lands ?? [])[0]!, type: 1 }];
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landType = [...s0.landType];
+    landType[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landType }, { type: 'settle' }, { ...topo, lands });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, { ...topo, lands });
+    expect(done.landLevel[1]).toBe(1);
+  });
+
+  it('★★ 董事長（真人）：选等级 0 的設施 ⇒ 先选种类，选完也连升两级（`0x40b1e2` 那一支 + 第二次 `0x40b110`）', () => {
+    const topo: MapTopology = {
+      ...topoWith(INDUSTRY.construction),
+      facilities: [makeFacility({ id: 1, name: '空地', owner: 1, level: 0, landPrice: 3000 })],
+    };
+    const askedOne = reduce(landing(0), { type: 'settle' }, topo);
+    expect(askedOne.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const askedType = reduce(askedOne, { type: 'buildTarget', entityId: 0xfa0 + 1 }, topo);
+    expect(askedType.pending).toMatchObject({
+      kind: 'buildFacility',
+      free: true,
+      company: { commercialId: CID, charge: false },
+    });
+    const done = reduce(askedType, { type: 'buildFacility', facilityType: 2 }, topo);
+    expect(done.facilityType[1]).toBe(2);
+    expect(done.facilityLevel[1]).toBe(2); // 首建 1 级 + `companyBuildTail` 的第二次
+    expect(done.players[0]?.cash).toBe(100_000);
+  });
+
+  it('★ 别人家的建設公司（真人）：只升一级（`0x0041ad7e` 只调一次）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(1);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: true });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(99_000); // 工程費 = 地價 1000 × 物價 1
+  });
+
   it('★ 别人的建設公司（电脑）：加一级后付那块地 地價 × 物價 的工程費', () => {
     const s0 = landing(1, { players: [0, 1].map((i) => makePlayer({ index: i, nodeId: i === 0 ? 2 : 1, cash: 100_000, whoPlays: 2 })) });
     const landOwner = [...s0.landOwner];

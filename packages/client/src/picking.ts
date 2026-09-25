@@ -45,6 +45,7 @@ import {
   ACTOR_MIN,
   canUseCard,
   canUseTool,
+  decodeEstate,
   isAlive,
   TOOL_TELEPORTER,
   type CardTarget,
@@ -60,7 +61,17 @@ export type PickSource =
    * `teleportFrom`：傳送機（11）的**第二段**拾取 —— 第一段选中的来源编码（见 core `decodeTeleportSource`）。
    * 缺席 = 第一段（选来源）。
    */
-  | { kind: 'tool'; toolId: number; teleportFrom?: number };
+  | { kind: 'tool'; toolId: number; teleportFrom?: number }
+  /**
+   * 建設公司的「請選擇欲加蓋地點」—— 真人是在**地图上点**，不是从清单里挑。
+   * 候选 = core 给的 `pending.choices`（全图每块地 / 每处設施）。
+   *
+   * @source 自家 `0x0041aa6a` / 别人家 `0x0041acff`：`push 0x2090086 / call 0x446ae8`
+   *   → 窗口过程 `0x445e4d`（盖在棋盘上的窗口，**光标变化是唯一反馈**）。
+   *   左键抬手交回光标底下的实例编码 `0x00446691 push [0x48c584] / call 0x401966`；
+   *   右键交回 0（`0x004466c6 test byte [0x48c594],8` 未置 ⇒ 可取消）。
+   */
+  | { kind: 'buildTarget' };
 
 /** 一个候选目标 */
 export interface PickCandidate {
@@ -161,6 +172,60 @@ export const TOOL_SELECT_PARAM: ReadonlyMap<number, number> = new Map([
   [9, 0x2090006], // 機器工人
   [11, 0x1200036], // 傳送機 —— 第一段选来源（`0x00447469`），第二段见 `teleportTargetParam`
 ]);
+
+/**
+ * 建設公司选地窗的选择参数 —— **不是道具**，是落点那家企业是建設公司时的真人那一问。
+ *
+ * @source 自家 `0x0041aa6a push 0x2090086` / 别人家 `0x0041acff push 0x2090086`
+ *   → `0x446ae8`。低 16 位 `0x0086` = **地块（bit1）| 設施（bit2）| 贴边推镜头（bit7）**，
+ *   bit3（目标必选）**没有** ⇒ 右键交回 0；高 16 位 `0x0209` ⇒ 指针 = 图 9 起 3 帧
+ *   （与機器工人同一组准星，见 `pickCursorSpec`）。
+ *   `0x445e` 那条初始化把低字写进 `[0x48c594]`（`0x00445ee6`），
+ *   高字节 `[0x48c595]` = 0 ⇒ `0x0044630a` 不再按归属 / 等级细筛 —— 全图每一块地、
+ *   每一处設施都算（`0x0044624e` / `0x0044627d`）。
+ */
+export const BUILD_PICK_PARAM = 0x2090086;
+
+/**
+ * 建設公司的选地窗**这一刻开不开得起来** —— 纯判据（宿主取值在 `main.ts` 的 `tickBuildPick`）。
+ *
+ * ★ 两道闸的来历都在原版里：
+ *   1. `0x0041aa45` / `0x0041acda` 先 `push 0x463a4a`（「%s\n\n請選擇欲加蓋地點」）
+ *      → `0x0041aa62` / `0x0041acf7 call 0x440cac`（**阻塞**訊息框，1500 ms）
+ *      → 框收掉才 `push 0x2090086 / call 0x446ae8`。所以訊息框还在台上时**不许**先摆出选地窗：
+ *      否则玩家能在演出没演完时把这一趟答掉（与 20260925-134801926 商店窗那条同一个坑）。
+ *   2. 别的待决交互（通用对话框 / 别的拾取模式）开着时不抢屏。
+ *   联机只由本座位答、电脑（含託管）自己答 —— 与 `currentDialog()` 同一套判据。
+ */
+export function buildPickMayOpen(f: {
+  /** 此刻 `state.pending.kind`（`null` = 没有待决交互）*/
+  pendingKind: string | null;
+  /** 已经开着一次拾取（可能是别的卡片 / 道具那一趟）*/
+  pickOpen: boolean;
+  /** 已经为**这一问**开过一次（`pending` 的对象身份相同）*/
+  openedForThisPending: boolean;
+  /** 联机：本机就是当前座位 */
+  localSeat: boolean;
+  /** 当前玩家由电脑 / 託管作答 */
+  aiTurn: boolean;
+  /** 通用对话框（`interactions.ts` 那份）此刻开着 */
+  dialogOpen: boolean;
+  /** 有一段纯演出整屏在接管（`blockingPresentation()`，含 `notice` 屏）*/
+  blocking: boolean;
+  /** 訊息框还在弹 / 还排着（含「排着等台词」那一拍）*/
+  noticeShowing: boolean;
+}): boolean {
+  return (
+    f.pendingKind === 'chooseBuildTarget' &&
+    !f.pickOpen &&
+    !f.openedForThisPending &&
+    f.localSeat &&
+    !f.aiTurn &&
+    !f.dialogOpen &&
+    !f.blocking &&
+    !f.noticeShowing
+  );
+}
 
 /**
  * 选择参数的**类别位** —— 决定「光标底下什么算数」。
@@ -268,6 +333,48 @@ export function classNeedsItsOwnList(cls: TargetClass): boolean {
 }
 
 /**
+ * 建設公司选地窗的候选 —— **core 给什么就是什么**。
+ *
+ * 候选表由 core 算（`pending.choices` = `reduce.ts` 的 `buildTargetCandidates`：
+ * 全图每块地 + 每处設施，不看归属、不看等级 —— 原版 `0x2090086` 那两位类别位
+ * 加上 `[0x48c595] == 0` 就是这层意思）。本模块只把它们摆到各自的**记录坐标**上
+ * （地块 / 設施画在自己的 x/y，不是节点坐标 —— 见 `instanceAnchor`）。
+ *
+ * `code` 就是交回 core 的那个实例编码（`0x7d0 + 地块下标` / `0xfa0 + 設施下标`），
+ * 与 `buildTarget` action 的 `entityId` 同一套。
+ */
+export function buildPickCandidates(state: GameState, topo: MapTopology): PickCandidate[] {
+  const pend = state.pending;
+  if (pend === null || pend.kind !== 'chooseBuildTarget') return [];
+  const out: PickCandidate[] = [];
+  for (const code of pend.choices) {
+    const e = decodeEstate(code);
+    const node =
+      e.kind === 'land'
+        ? topo.nodes.find((n) => n.ref.kind === 'land' && n.ref.index === e.index)
+        : topo.nodes.find((n) => n.ref.kind === 'facility' && n.ref.index === e.index);
+    const anchor =
+      e.kind === 'land'
+        ? topo.lands?.find((x) => x.id === e.index)
+        : topo.facilities?.find((x) => x.id === e.index);
+    const wx = anchor?.x ?? node?.x;
+    const wy = anchor?.y ?? node?.y;
+    if (wx === undefined || wy === undefined) continue; // 没有落点就画不出、也点不到
+    out.push({
+      wx,
+      wy,
+      target:
+        e.kind === 'land'
+          ? { kind: 'entity', entityId: e.index }
+          : { kind: 'facility', facilityId: e.index },
+      nodeId: node?.id ?? 0,
+      code,
+    });
+  }
+  return out;
+}
+
+/**
  * 枚举候选 —— **纯函数**，进会话时算一次。
  *
  * 每一条都拿 core 的预演过一遍（`canUseCard` / `canUseTool`），
@@ -292,6 +399,9 @@ export function pickCandidates(
 ): PickCandidate[] {
   const nodes = topo.nodes;
   const out: PickCandidate[] = [];
+
+  // ── 建設公司选地窗：候选表整份由 core 给，本模块一条规则都不加 ──
+  if (source.kind === 'buildTarget') return buildPickCandidates(state, topo);
 
   const ok = (target: CardTarget, nodeId: number): boolean =>
     source.kind === 'card'
