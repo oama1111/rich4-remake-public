@@ -39,14 +39,16 @@
  *   不看 `+0x40`），但掷骰前会按引信把骰子数压到 1 颗 —— 回报现场引信 7、掷了 3 颗，
  *   是本引擎先前**根本没有这一步**（AI 骑上车就永远是 `VEHICLE_DICE` 的满数）。
  *
- * ⚠️ `rand() & 1` 在纯策略层用 `aiRoll` 的确定性替身（D-004，与卡片/道具同一约定）；
+ * ★ FU-2（2026-09-25 审计）：`rand() & 1` 走 `roll`（真随机流；替身仅留给直接单测，
+ *   与卡片/道具同一约定，见 `ai/rand.ts`）；
  *   它只依赖 `rngState`，`setDiceCount` 不改 `rngState` ⇒ 同一局面答案固定，不会来回改。
  */
 
 import type { MapTopology } from '../state/reduce.ts';
 import type { GameState } from '../state/types.ts';
 import type { FacilityInfo, LandInfo } from '../loaders/map.ts';
-import { aiRoll, lookahead } from './card-policy.ts';
+import { lookahead } from './card-policy.ts';
+import { aiRand, type AiRoll } from './rand.ts';
 
 /** 引信低于这个格数就只掷 1 颗 @source VA 0x00422202 / 0x0042234e `cmp edx, 0xf / jl` */
 export const AI_BOMB_FUSE_ONE_DIE = 0xf;
@@ -73,6 +75,7 @@ export function aiDiceCount(
   topo: MapTopology,
   lands: readonly LandInfo[],
   facilities: readonly FacilityInfo[],
+  roll?: AiRoll,
 ): number | null {
   const meIndex = state.currentPlayer;
   const me = state.players[meIndex];
@@ -111,6 +114,7 @@ export function aiDiceCount(
     me.lastNodeId,
     AI_DICE_LOOKAHEAD,
     car ? SALT_CAR_LOOKAHEAD : SALT_MOTO_LOOKAHEAD,
+    roll,
   );
   const me1 = meIndex + 1;
   let safe = 0; // ebx：无主或我的
@@ -132,7 +136,7 @@ export function aiDiceCount(
     else hostile++;
   }
   // @source 0x004222d8 / 0x00422411：前面全是别人的（≥3 块）⇒ 冲过去
-  if (safe === 0 && hostile > 2) dice = car ? 2 + aiRoll(state, SALT_CAR_RAND, 2) : 2;
+  if (safe === 0 && hostile > 2) dice = car ? 2 + aiRand(state, roll, SALT_CAR_RAND, 2) : 2;
   // @source 0x004222fb / 0x00422428：前面有 ≥2 块能买/能盖、别人的 ≤1 块 ⇒ 只掷 1 颗慢慢走
   if (safe >= 2 && hostile <= 1) dice = 1;
   return dice;

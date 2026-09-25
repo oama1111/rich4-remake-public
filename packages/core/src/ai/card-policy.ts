@@ -19,8 +19,9 @@
  * 3. **同區**（`strcmp(land+4, other+4) == 0`）：同名地块 = 同一條街。
  *
  * ⚠️ 这里只回答「值不值、对谁」；能不能出由 `cards/registry.ts` 说了算（C-ARC-2）。
- *   随机（天使卡挑哪組、冬眠卡 1/4、岔路选边…）在纯策略层用 `aiRoll` 的确定性替身，
- *   与 policy.ts 的 `gateRoll` 同一约定（D-004）。
+ *   ★ FU-2（2026-09-25 审计）：随机（天使卡挑哪組、冬眠卡 1/4、岔路选边…）**不再用替身** ——
+ *   `CardAiView.roll` 是真随机流（`ai/rand.ts`），生产路径由调用方从 `state.rngState` 播种、
+ *   掷完写回；不推进的 `aiRoll` 替身只留给直接单测判定函数的调用点（D-004 的遗留口径）。
  */
 
 import type { GameState, Player } from '../state/types.ts';
@@ -36,6 +37,7 @@ import { ATTACH_STATE_REAPER, canAttach } from '../cards/summon.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
 import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
 import { FACILITY_TYPE } from '../rules/facility.ts';
+import { aiRand, type AiRoll } from './rand.ts';
 
 // ============================================================
 //  目标与随机
@@ -64,13 +66,10 @@ export interface AiCardChoice {
 }
 
 /**
- * 纯策略层的 `rand() % n` 替身：由 `rngState` 与一个盐派生，同一状态同一问题答案固定，
- * 不推进随机序列（D-004）。
+ * 策略层的 `rand()` —— 真随机流优先，没有才退回确定性替身（D-004 / FU-2）。
+ * 定义在 `ai/rand.ts`；这里 re-export 保持既有导入路径（`policy.ts`、`tool-policy.ts`、测试）。
  */
-export function aiRoll(state: GameState, salt: number, n: number): number {
-  if (n <= 0) return 0;
-  return (((state.rngState >>> 0) ^ (Math.imul(salt, 0x9e3779b1) >>> 0)) >>> 0) % n;
-}
+export { aiRoll, type AiRoll } from './rand.ts';
 
 // ============================================================
 //  视野、最恨的人、同區
@@ -117,6 +116,12 @@ export interface CardAiView {
    * 缺省 = 手牌 ≤ 8 张时的值 8。由 `policy.ts` 的 `decideCard` 按 `cardLoopEsiAfterFill` 给出。
    */
   cardLoopEsi?: number;
+  /**
+   * ★ FU-2：这一次决策用的真随机流（`AiRoll`）。给了就**每一步 `rand()` 都问它**
+   *   （推进全局序列，与原版同序）；不给才退回 `aiRoll` 的确定性替身 —— 只有直接单测
+   *   某个判定函数时才不给，生产路径（客户端 / 服务器 / reducer 补掷）一律给。
+   */
+  roll?: AiRoll;
 }
 
 /**
@@ -244,6 +249,7 @@ export function lookahead(
   prev: number,
   n: number,
   salt: number,
+  roll?: AiRoll,
 ): { nodes: number[]; forked: boolean } {
   const nodes: number[] = [];
   let forked = false;
@@ -255,7 +261,8 @@ export function lookahead(
     if (cands.length === 0) next = last;
     else if (cands.length === 1) next = cands[0]!;
     else {
-      next = cands[aiRoll(state, salt * 31 + i, cands.length)]!;
+      // @source 0x40b221：岔路那次 `call 0x456f2d / idiv 候选数`
+      next = cands[aiRand(state, roll, salt * 31 + i, cands.length)]!;
       forked = true;
     }
     nodes.push(next);
@@ -419,7 +426,7 @@ const gaijian: Handler = (view, hated) => {
     if (f.owner === me1) {
       if (f.type !== FACILITY_TYPE.park || f.level !== 1) return null;
       // @source 0x0041eeab：`rand() % 4 + 1` 写 [0x48be58] —— 改成旅馆/购物中心/加油站/研究所
-      return { target: { kind: 'none' }, facilityType: aiRoll(view.state, 7, 4) + 1 };
+      return { target: { kind: 'none' }, facilityType: aiRand(view.state, view.roll, 7, 4) + 1 };
     }
     if (f.owner === 0 || f.type === FACILITY_TYPE.park) return null;
     // @source 0x0041ef0c：对手那一支把 [0x48be58] 写成 **0 = 公園**
@@ -456,7 +463,7 @@ const tianshi: Handler = (view) => {
   }
   const ok = groups.filter((g) => g.count >= 3);
   if (ok.length === 0) return null;
-  return land(ok[aiRoll(view.state, 9, ok.length)]!.first);
+  return land(ok[aiRand(view.state, view.roll, 9, ok.length)]!.first);
 };
 
 /**
@@ -682,7 +689,7 @@ const tingliu: Handler = (view) => {
 };
 
 /** 冬眠卡 @source 0x0041fe4e：rand() % 4 == 0 */
-const dongmian: Handler = (view) => (aiRoll(view.state, 15, 4) === 0 ? NONE : null);
+const dongmian: Handler = (view) => (aiRand(view.state, view.roll, 15, 4) === 0 ? NONE : null);
 
 /** 夢遊卡 / 陷害卡 @source 0x0041fe6f：画面里没在冬眠、手里没復仇卡的对手；最恨的人优先，否则随机 */
 const mengyouXianhai = (cardId: number): Handler => (view, hated) => {
@@ -692,7 +699,7 @@ const mengyouXianhai = (cardId: number): Handler => (view, hated) => {
   });
   if (cands.length === 0) return null;
   if (cands.includes(hated)) return player(hated);
-  return player(cands[aiRoll(view.state, cardId, cands.length)]!);
+  return player(cands[aiRand(view.state, view.roll, cardId, cands.length)]!);
 };
 
 /** 送神符 @source 0x0041ff77：身上的神是坏神；或另一个跟班（f64）不是死神态 */
@@ -904,7 +911,7 @@ const zhangjia: Handler = (view, hated) => {
  */
 const chafeng: Handler = (view, hated) => {
   const me1 = view.meIndex + 1;
-  const ahead = lookahead(view.topo, view.state, view.me.nodeId, view.me.lastNodeId, 6, 28).nodes;
+  const ahead = lookahead(view.topo, view.state, view.me.nodeId, view.me.lastNodeId, 6, 28, view.roll).nodes;
   let prevName: string | null = null;
   for (const nid of ahead) {
     const node = nodeOf(view.topo, nid);
@@ -967,7 +974,7 @@ const wugui: Handler = (view) => {
   const me1 = view.meIndex + 1;
   const pi = view.state.priceIndex;
 
-  const self = lookahead(view.topo, view.state, me.nodeId, me.lastNodeId, 3, 30);
+  const self = lookahead(view.topo, view.state, me.nodeId, me.lastNodeId, 3, 30, view.roll);
   let selfOk = !self.forked;
   if (selfOk) {
     let total = 0;
@@ -1010,7 +1017,7 @@ const wugui: Handler = (view) => {
 
   for (const i of visibleRivals(view)) {
     const p = view.state.players[i]!;
-    const ahead = lookahead(view.topo, view.state, p.nodeId, p.lastNodeId, 3, 300 + i);
+    const ahead = lookahead(view.topo, view.state, p.nodeId, p.lastNodeId, 3, 300 + i, view.roll);
     if (ahead.forked) continue;
     let total = 0;
     let count = 0;

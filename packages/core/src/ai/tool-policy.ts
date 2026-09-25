@@ -33,7 +33,7 @@
  *
  * ⚠️ 这里只回答「用不用、对谁」；能不能用由 reduce 的 `useToolAction` 说了算（C-ARC-2）。
  *   随机（>4 的起点、地雷/定時炸彈挑候选、機車/汽車的 1/4、工程車的 %15）在纯策略层
- *   用 `aiRoll` 的确定性替身，与卡片同一约定（D-004）。
+ *   ★ FU-2（2026-09-25 审计）：走 `view.roll`（真随机流），与卡片同一条路（`ai/rand.ts`）。
  */
 
 import type { MapNode } from '../loaders/map.ts';
@@ -49,7 +49,6 @@ import { runtimeOccupiedNodes } from '../rules/object-landing.ts';
 import { nodeObjectIndex } from '../rules/special-actors.ts';
 import { anyPlayerConfined } from '../rules/confinement.ts';
 import {
-  aiRoll,
   inView,
   lookahead,
   mostHated,
@@ -57,6 +56,7 @@ import {
   visibleEntities,
   type CardAiView,
 } from './card-policy.ts';
+import { aiRand } from './rand.ts';
 
 /** 道具 AI 的视野与牌共用同一个 */
 export type ToolAiView = CardAiView;
@@ -78,7 +78,7 @@ export type AiToolChoice =
   | { kind: 'build'; nodeId: number }
   | { kind: 'teleportSelf'; nodeId: number };
 
-/** 各判定函数的 VA——同时充当 aiRoll 的盐（D-004） */
+/** 各判定函数的 VA —— 同时充当退回替身时的盐（D-004）；生产路径走 `view.roll` */
 const SALT = {
   doll: 0x420efa,
   luzhang: 0x42107f,
@@ -146,7 +146,7 @@ function villainOnNode(view: ToolAiView, nodeId: number): boolean {
  * 起点/来路对调——从 lastNodeId 出发、避开 nodeId。
  */
 function backtrack(view: ToolAiView, n: number, salt: number): { nodes: number[]; forked: boolean } {
-  return lookahead(view.topo, view.state, view.me.lastNodeId, view.me.nodeId, n, salt);
+  return lookahead(view.topo, view.state, view.me.lastNodeId, view.me.nodeId, n, salt, view.roll);
 }
 
 /**
@@ -213,7 +213,7 @@ const doll: Handler = (view) => {
   const { state, me } = view;
   const pi = state.priceIndex;
   const me1 = view.meIndex + 1;
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.doll);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.doll, view.roll);
   if (ahead.forked) return null;
   for (const nid of ahead.nodes) {
     const obj = objectOnNode(view, nid);
@@ -255,7 +255,7 @@ const luzhang: Handler = (view) => {
   const pi = state.priceIndex;
   const me1 = view.meIndex + 1;
 
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.luzhang);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.luzhang, view.roll);
   // @source 0x42109d：forked 直接跳阶段二
   if (!ahead.forked) {
     const rich = me.cash + me.moneyInBank > 10000 && me.fortune >= 0 && me.blocking.tortoiseWalking === 0;
@@ -339,7 +339,7 @@ function mineLike(view: ToolAiView, salt: number, enemyOnly: boolean): AiToolCho
   }
   if (candidates.length === 0) return null;
   // @source 0x42153e：两件道具共用的收尾——call rand / idiv 候选数
-  const picked = candidates[aiRoll(view.state, 0x42153e, candidates.length)]!;
+  const picked = candidates[aiRand(view.state, view.roll, 0x42153e, candidates.length)]!;
   return place(picked);
 }
 
@@ -348,11 +348,11 @@ const dingzha: Handler = (view) => mineLike(view, SALT.dingzha, false);
 
 /** 5 機車 @source 0x00421644：徒步（traffic & 3 == 0）且 rand()%4 == 0 → 用 */
 const jiche: Handler = (view) =>
-  (view.me.trafficMethod & 3) === 0 && aiRoll(view.state, SALT.jiche, 4) === 0 ? PLAIN : null;
+  (view.me.trafficMethod & 3) === 0 && aiRand(view.state, view.roll, SALT.jiche, 4) === 0 ? PLAIN : null;
 
 /** 6 汽車 @source 0x00421675：(traffic & 3) < 2 且 rand()%4 == 0 → 用 */
 const qiche: Handler = (view) =>
-  (view.me.trafficMethod & 3) < 2 && aiRoll(view.state, SALT.qiche, 4) === 0 ? PLAIN : null;
+  (view.me.trafficMethod & 3) < 2 && aiRand(view.state, view.roll, SALT.qiche, 4) === 0 ? PLAIN : null;
 
 /**
  * 7 飛彈 @source 0x00421717
@@ -378,7 +378,7 @@ const feidan: Handler = (view) => {
       }
     });
     if (rivals.length === 0) return null;
-    target = rivals[aiRoll(state, SALT.feidan + 1, rivals.length)]!;
+    target = rivals[aiRand(state, view.roll, SALT.feidan + 1, rivals.length)]!;
   }
   const tp = state.players[target];
   if (tp === undefined || !isAlive(tp)) return null;
@@ -418,7 +418,7 @@ const yaokong: Handler = (view) => {
   if (me.blocking.tortoiseWalking !== 0) return null;
   if (me.cash + me.moneyInBank < 10000) return null;
   if (me.fortune < 0) return null;
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 6, SALT.yaokong);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 6, SALT.yaokong, view.roll);
   if (ahead.forked) return null;
 
   let bestLevel = 0;
@@ -538,7 +538,7 @@ const chuansong: Handler = (view) => {
  */
 const gongcheng: Handler = (view) => {
   if ((view.me.trafficMethod & 3) === 3) return null;
-  return aiRoll(view.state, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
+  return aiRand(view.state, view.roll, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
 };
 
 /** 核子飛彈爆风窗的半宽（格）@source 0x0040a236 `add ebx,0xe` / 0x0040a251 `cmp ebx,0x1c` */
@@ -608,7 +608,7 @@ const NUKE_MAX_TRIES = 10;
  * ⚠️ 本函数**没有钱闸**：`0x421e62` 全程不读現金/存款/財運（「我出不起」由
  *   效果侧与回合流程管）。候选只看 归属/等级 三项。
  *
- * ⚠️ D-004：原版**每次 try 摇一次** `rand()`（最多 10 次）。本引擎 `aiRoll`
+ * ⚠️ D-004：原版**每次 try 摇一次** `rand()`（最多 10 次）。本引擎（FU-2 后走真随机流；替身仅单测）`aiRoll`
  *   不推进序列，故逐次用 `SALT.hedan + try` 区分；否则 10 次会取到同一个候选、
  *   重试循环成了死码（「中止后换下一个候选」这条可观测行为就没了）。
  *
@@ -662,7 +662,7 @@ const hedan: Handler = (view) => {
   const alivePlus2 = state.players.filter((p) => isAlive(p)).length + 2;
 
   for (let attempt = 0; attempt < NUKE_MAX_TRIES; attempt++) {
-    const pick = cands[aiRoll(state, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
+    const pick = cands[aiRand(state, view.roll, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
     const cx = tileOf(pick.x);
     const cy = tileOf(pick.y);
     const inWindow = (x: number, y: number): boolean =>

@@ -206,3 +206,19 @@ export function personalityAllows(f7: number, personality: number, roll: number)
   if (gap === 1) return roll === 0;
   return true;
 }
+
+/**
+ * 同一条闸门，但 `rand() % 3` **懒求值**。
+ *
+ * ★★ FU-2（2026-09-25 审计）：原版只在**差一档**那一条才 `call 0x456f2d`
+ *   （`0x0041e6c1 cmp edx,2 / jl 0x41e6c9` → `0x0041e6c9 cmp edx,1 / jne 0x41e6e6`），
+ *   差两档直接 `xor eax,eax; ret`、差 ≤0 档直接去调判定函数 —— 两条都**不掷**。
+ *   先前调用方把 `gateRoll(state, cardId)` 当**实参**求值（替身没有副作用，看不出来）；
+ *   换成真随机流之后，急切求值会多掷、与原版错位，故这里把随机数收进 thunk。
+ */
+export function personalityAllowsLazy(f7: number, personality: number, roll: () => number): boolean {
+  const gap = f7 - personality;
+  if (gap >= 2) return false;
+  if (gap === 1) return personalityAllows(f7, personality, roll() % 3);
+  return true;
+}
