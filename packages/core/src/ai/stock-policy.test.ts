@@ -298,7 +298,7 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
 //  賣股 @source 0x0042c79f
 // ============================================================
 
-import { SELL_GAIN_SHIFT, SELL_RATIO, aiStockSellPick, lowestHistory, pickForSale, scoreStockForSale, sellScoreInput, type SellScoreInput } from './stock-policy.ts';
+import { SELL_GAIN_SHIFT, SELL_RATIO, aiStockSellPick, lowestHistory, pickForSale, scoreStockForSale, type SellScoreInput } from './stock-policy.ts';
 import { loanSellPressure, loanStillUncovered } from '../places/stock-market.ts';
 import { reduce } from '../state/reduce.ts';
 

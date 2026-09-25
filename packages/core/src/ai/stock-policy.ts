@@ -66,7 +66,7 @@ import { stockBudget } from './personality.ts';
 import { watcomQsort } from '../rules/watcom-qsort.ts';
 import { dayNumberSince1998 } from '../places/calendar.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
-import { isLimitDown, isLimitUp, loanSellPressure, marketOpenOn } from '../places/stock-market.ts';
+import { isLimitDown, isLimitUp, marketOpenOn } from '../places/stock-market.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
 
 /** 距還款日不足这么多天就不进股市 @source 0x0042bf65 `cmp eax, 0xf` */
