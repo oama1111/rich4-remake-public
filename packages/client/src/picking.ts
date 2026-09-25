@@ -46,6 +46,7 @@ import {
   canUseCard,
   canUseTool,
   isAlive,
+  TOOL_TELEPORTER,
   type CardTarget,
   type GameState,
   type MapTopology,
@@ -55,7 +56,11 @@ import {
 /** 这一次拾取是为了用什么 */
 export type PickSource =
   | { kind: 'card'; cardId: number }
-  | { kind: 'tool'; toolId: number };
+  /**
+   * `teleportFrom`：傳送機（11）的**第二段**拾取 —— 第一段选中的来源编码（见 core `decodeTeleportSource`）。
+   * 缺席 = 第一段（选来源）。
+   */
+  | { kind: 'tool'; toolId: number; teleportFrom?: number };
 
 /** 一个候选目标 */
 export interface PickCandidate {
@@ -71,6 +76,8 @@ export interface PickCandidate {
   target: CardTarget;
   /** 发 `useTool` 时要带的 `nodeId`（0 = 不带）—— 引擎的 target 契约一直是**节点号** */
   nodeId: number;
+  /** 傳送機：这个候选的实例编码（来源 = 精灵码 / 地块 0x7d0+ / 設施 0xfa0+；目标 = 地块 / 設施 / 节点号）*/
+  code?: number;
 }
 
 /** 一次拾取会话 */
@@ -152,7 +159,7 @@ export const TOOL_SELECT_PARAM: ReadonlyMap<number, number> = new Map([
   [7, 0x300c0], // 飛彈
   [13, 0x400c0], // 核子飛彈
   [9, 0x2090006], // 機器工人
-  [11, 0x2090001], // 傳送機
+  [11, 0x1200036], // 傳送機 —— 第一段选来源（`0x00447469`），第二段见 `teleportTargetParam`
 ]);
 
 /**
@@ -303,6 +310,9 @@ export function pickCandidates(
   //   → 候选挂在**白格/建筑**上，路面不算数；
   //   路障/地雷/定時炸彈/傳送機（`0x1` = 只认格子）→ 候选挂在路面上；
   //   飛彈/核子（`0xc0` → `pickClasses` 展开成 0x37）→ 两处都算。
+  if (source.kind === 'tool' && source.toolId === TOOL_TELEPORTER) {
+    return teleportCandidates(state, topo, source.teleportFrom);
+  }
   if (source.kind === 'tool') {
     const classes = pickClasses(param);
     for (const n of nodes) {
@@ -659,3 +669,69 @@ export function pickScrollCamera(
 
 /** 推镜头的定时器周期（毫秒）@source `SetTimer(hwnd, id, 0x32, 0)` = 50 */
 export const PICK_SCROLL_TICK_MS = 0x32;
+
+/** 傳送機两段拾取的参数 @source `0x00447469 push 0x1200036`（来源）/ `0x004474f5 push 0x2090802`（地块）/
+ *  `0x00447598 push 0x2090804`（設施）/ `0x00447653`、`0x004478df push 0x2090001`（人 / 惡人 / 物件搬到一格）*/
+export const TELEPORT_SOURCE_PARAM = 0x1200036;
+export function teleportTargetParam(from: number): number {
+  if (from > 0x7d0 && from < 0xfa0) return 0x2090802;
+  if (from > 0xfa0 && from < 0x1770) return 0x2090804;
+  return 0x2090001;
+}
+
+/**
+ * 傳送機的候选。
+ * - 第一段（来源，`0x1200036`：地块 | 設施 | 玩家 / 惡人 | 物件，组字节 0 = 不设限）：所有地块、設施，
+ *   在场的玩家（`+0x15` ≠ 0）、在场的惡人 4..7、地上的物件（附身的物件画在附身者身上，点到的是附身者）；
+ * - 第二段：地块 / 設施来源 ⇒ 无主 0 级的同类（core 判），否则 ⇒ 空着的路面格（core 判）。
+ */
+function teleportCandidates(state: GameState, topo: MapTopology, from: number | undefined): PickCandidate[] {
+  const out: PickCandidate[] = [];
+  const at = (nodeId: number) => topo.nodes[nodeId - 1];
+  const none: CardTarget = { kind: 'none' };
+  if (from === undefined) {
+    for (const n of topo.nodes) {
+      const ref = n.ref;
+      if (ref.kind === 'land') {
+        const p = instanceAnchor(topo, n, PICK_CLASS.land);
+        out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code: 0x7d0 + ref.index });
+      } else if (ref.kind === 'facility') {
+        const p = instanceAnchor(topo, n, PICK_CLASS.facility);
+        out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code: 0xfa0 + ref.index });
+      }
+    }
+    for (const p of state.players) {
+      const n = at(p.nodeId);
+      if (n === undefined || (p.whoPlays & 0xff) === 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | (1 << p.index) });
+    }
+    for (let i = 0; i < 4 && i < state.specialActors.length; i++) {
+      const a = state.specialActors[i]!;
+      const n = at(a.nodeId);
+      if (n === undefined || a.place !== 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | (1 << (i + ACTOR_MIN)) });
+    }
+    for (let i = 0; i < state.objects.length; i++) {
+      const o = state.objects[i]!;
+      const n = at(o.nodeId);
+      if (n === undefined || o.attached !== 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | ((i + 1) << 8) });
+    }
+    return out;
+  }
+  const land = from > 0x7d0 && from < 0xfa0;
+  const facility = from > 0xfa0 && from < 0x1770;
+  for (const n of topo.nodes) {
+    const ref = n.ref;
+    if (land || facility) {
+      if (ref.kind !== (land ? 'land' : 'facility') || !('index' in ref)) continue;
+      const code = (land ? 0x7d0 : 0xfa0) + ref.index;
+      if (!canUseTool(state, topo, TOOL_TELEPORTER, from, code)) continue;
+      const p = instanceAnchor(topo, n, land ? PICK_CLASS.land : PICK_CLASS.facility);
+      out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code });
+    } else if (canUseTool(state, topo, TOOL_TELEPORTER, from, n.id)) {
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: n.id });
+    }
+  }
+  return out;
+}

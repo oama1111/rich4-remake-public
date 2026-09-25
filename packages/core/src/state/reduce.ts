@@ -47,6 +47,9 @@ import {
 import {
   TOOL_TELEPORTER,
   decodeTeleport,
+  decodeTeleportSource,
+  teleportActorTo,
+  teleportObjectTo,
   teleportLand,
   teleportPlayer,
   teleportFacility,
@@ -5143,24 +5146,39 @@ function teleportWith(
   source: number,
   target: number,
 ): GameState | null {
-  const from = decodeTeleport(source);
-  const to = decodeTeleport(target);
-  if (from?.kind === 'land' && to?.kind === 'land') {
-    return teleportLand(state, from.index, to.index);
+  const from = decodeTeleportSource(source, state.objects);
+  if (from === null) return null;
+  // 地產 / 設施：目标由第二次拾取给（`0x2090802` / `0x2090804`，子类 8 = 无主 0 级，见 teleportLand）
+  if (from.kind === 'land' || from.kind === 'facility') {
+    const to = decodeTeleport(target);
+    if (from.kind === 'land') return to?.kind === 'land' ? teleportLand(state, from.index, to.index) : null;
+    return to?.kind === 'facility' ? teleportFacility(state, from.index, to.index) : null;
   }
-  if (from?.kind === 'facility' && to?.kind === 'facility') {
-    return teleportFacility(state, from.index, to.index);
+  // 人 / 惡人 / 物件：目标是一格（真人 `0x2090001` 拾取 = 路面、没人没物件（`0x409bc0 test [+0x24],0xffff00`）；
+  //   电脑 `0x00447661 call 0x420eee(0)` 直接用策略给的格，不再过这道闸）
+  const node = topo.nodes[target - 1];
+  if (node === undefined) return null;
+  const me = state.players[state.currentPlayer];
+  if (me !== undefined && (me.whoPlays & 0xff) === WHO_PLAYS_HUMAN && placementBlockedAt(state, target)) return null;
+  if (from.kind === 'actor') {
+    const a = state.specialActors[from.actor - 4];
+    if (!actorActive(a)) return null;
+    const actors = teleportActorTo(state.specialActors, topo.nodes, from.actor, target);
+    return actors === null ? null : { ...state, specialActors: actors };
   }
-  // 地產↔設施 混搬原版没有这一路（三段编码各走各的）
-  if (from?.kind === 'facility' || to?.kind === 'facility') return null;
-  // 搬人：source 是玩家下标 + 1，target 是节点号
-  const playerIndex = source - 1;
+  if (from.kind === 'object') {
+    const objects = teleportObjectTo(state.objects, from.slot, target);
+    return objects === null ? null : { ...state, objects };
+  }
+  const playerIndex = from.index;
   if (playerIndex < 0 || playerIndex >= state.players.length) return null;
+  const who = state.players[playerIndex];
+  // 拾取的玩家类只收在场的（`0x004462d9 cmp byte [+0x15],0 / je`）
+  if (who === undefined || (who.whoPlays & 0xff) === 0) return null;
   const self = playerIndex === state.currentPlayer;
   // ★★ 搬的是**自己**：先拍時光機快照（`0x004477c3 call 0x44808a`，道具还在手上），
   //   然后 `0x004477ca [0x48baf8] = 0`（剩余步数 0）/ `0x004477d6 走子态 = 1` —— 这一回合**不再掷骰**，
   //   直接在新格做停步处理（`0x41982d`）；落点物件那一段（`0x41b42d`）不跑（没有「走到一格」）。
-  //   先前自搬之后还停在 awaitingRoll，电脑接着掷骰再走一趟。
   const base = self ? snapshotForTimeMachine(state) : state;
   const moved = teleportPlayer(base, topo.nodes, playerIndex, target);
   if (moved === null) return null;

@@ -28,6 +28,7 @@ import {
   pickScrollDirIndex,
   pickScrollNextStep,
   startPick,
+  teleportTargetParam,
 } from './picking.ts';
 import { CARD_CURSOR, cursorImageAt } from './soft-cursor.ts';
 
@@ -103,6 +104,22 @@ describe('会话与候选', () => {
   it('★ 库存里没有这件道具 → 一个候选都没有（也不会炸）', () => {
     const s = startPick(stateOf(), topo, { kind: 'tool', toolId: 2 }, 'none', 0x1);
     expect(s.candidates).toEqual([]);
+  });
+
+  it('★★ 傳送機第一段（0x1200036）：地块 / 設施 / 在场玩家 / 地上物件都是来源；来源编码照原版精灵码', () => {
+    const st = stateOf({
+      players: [{ index: 0, nodeId: 3, cards: [], whoPlays: 1 }],
+      objects: [{ type: 16, nodeId: 3, state: 0, attached: 0 }],
+    });
+    const s = startPick(st, topo, { kind: 'tool', toolId: 11 }, 'none', TOOL_SELECT_PARAM.get(11)!);
+    const codes = s.candidates.map((c) => c.code);
+    expect(codes).toContain(0x7d0 + 1);
+    expect(codes).toContain(0xfa0 + 1);
+    expect(codes).toContain(0x8000 | 1);
+    expect(codes).toContain(0x8000 | (1 << 8));
+    expect(teleportTargetParam(0x7d1)).toBe(0x2090802);
+    expect(teleportTargetParam(0xfa1)).toBe(0x2090804);
+    expect(teleportTargetParam(0x8001)).toBe(0x2090001);
   });
 
   it('★ 目标必选（bit3）时右键取消不了', () => {

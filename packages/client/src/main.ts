@@ -67,6 +67,7 @@ import {  autoAction,
   actingSeat,
   cardPassiveHolder,
   TOOL_GET_OFF,
+  TOOL_TELEPORTER,
   isAiControlled,
   stateFingerprint,
   toolCount,
@@ -737,6 +738,7 @@ import {
   pickScrollCamera,
   pickScrollNextStep,
   startPick,
+  teleportTargetParam,
   type PickEdge,
   type PickSession,
 } from './picking.ts';
@@ -11792,6 +11794,17 @@ function bindInput(): void {
           if (type === null) return;
           dispatch({ type: 'useTool', toolId, nodeId, value: type });
         });
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom === undefined) {
+        // ★★ 傳送機第一段选完来源 ⇒ 马上开第二段（地块 `0x2090802` / 設施 `0x2090804` / 其余 `0x2090001`）；
+        //   第二段右键取消 = 道具不消耗（`0x00447506` / `0x004475a9` / `0x00447673` / `0x004478f2 je 0x4479b3`）
+        const from = hit.code ?? 0;
+        pick = startPick(state, topo, { kind: 'tool', toolId: TOOL_TELEPORTER, teleportFrom: from }, 'none', teleportTargetParam(from));
+        pickHover = null;
+        if (pick.candidates.length === 0) log('「傳送機」这一件现在搬不到任何地方');
+        refreshPickCursor();
+        requestRender();
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom !== undefined) {
+        dispatch({ type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: source.teleportFrom, value: hit.code ?? hit.nodeId });
       } else {
         dispatch({ type: 'useTool', toolId: source.toolId, nodeId: hit.nodeId });
       }
