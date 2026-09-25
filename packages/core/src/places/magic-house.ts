@@ -28,6 +28,7 @@ import { addPoints } from '../rules/points.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
 import type { MapNode } from '../loaders/map.ts';
 import { pickTurnBackNode } from '../cards/turn-and-house.ts';
+import { receiveCard } from '../rules/receive-card.ts';
 
 // ============================================================
 //  目标转盘
@@ -379,8 +380,12 @@ export function applyMagicEffect(
         if (bag.length === 0) break;
         const id = bag[ctx.nextRandom() % bag.length] ?? 0;
         if (id === 0) break;
-        cardAmount[id - 1] = (cardAmount[id - 1] ?? 0) - 1;
-        p.cards = [...p.cards, id];
+        // ★★ 2026-09-24（provenance 审计）：`0x441e12` 收卡走 `0x4412e4` —— **满 15 张先弃最便宜的
+        //   一张**（弃牌回牌堆 `0x004413a2`）再收，新卡 −1（`0x0044133b`）。先前直接追加：
+        //   手牌可以超过 15 张、也不弃牌。见 `rules/receive-card.ts`。
+        const got = receiveCard(p, id, cardAmount);
+        cardAmount.splice(0, cardAmount.length, ...got.cardAmount);
+        p.cards = got.player.cards;
         log.push({ player: who, note: '得一張卡片', value: id });
         break;
       }

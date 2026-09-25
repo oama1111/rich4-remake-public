@@ -181,7 +181,7 @@ import {
   OBJECT_TYPE_ROADBLOCK,
 } from '../rules/object-landing.ts';
 import type { MapObject } from '../cards/summon.ts';
-import { demolishLand, isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
+import { isSealedStrict, sweepPriceStatus } from '../rules/land-mutation.ts';
 import { almsAmount, beggarAt } from '../rules/beggar.ts';
 import {
   MINIGAME_MAX_SCORE,
@@ -258,6 +258,7 @@ import { DISAPPEARING_MASK, displayRemainingDays } from '../rules/blocking.ts';
 import { wakeFromSleepwalk } from '../cards/sleepwalk.ts';
 import { OBJECT_NAMES, purchase, purchaseBlockedBy, type PurchaseFailure } from '../rules/purchase.ts';
 import { settleSpecialSquare, addPoints } from '../rules/special-square.ts';
+import { receiveCard } from '../rules/receive-card.ts';
 import { MAX_LAND_LEVEL, SPECIAL_KIND } from '../loaders/map.ts';
 import { drawEvent } from '../events/deck.ts';
 import { isNewsFeasible } from '../events/news.ts';
@@ -273,7 +274,7 @@ import {
   blessingLevelWithDraw,
 } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
-import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
+import { ALIEN_HOSPITAL_DAYS, applyNewsEffect, secondaryJudgement, type CompanyMutation, type LandMutation, type PriceChange } from '../events/news-effects.ts';
 // ★ 第 160 条：飛彈/核彈那一路**不再**用 `mutateFacility` —— `damage_area` 的
 //   設施轻击是另一份内联逻辑（`level == 0` 时照样清种类 + 放人，见 `fireMissile`）。
 import {
@@ -1831,16 +1832,18 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
           }
         }
         if (out.cardDrawn !== 0) {
-          const cardAmount = [...next.cardAmount];
-          const at = out.cardDrawn - 1;
-          cardAmount[at] = Math.max(0, (cardAmount[at] ?? 0) - 1);
           // ★ 满手牌口径修正（2026-09-17）：原版抽卡走 `giveCard`（`0x004412e4`，
           //   `0x00441e12` 的抽卡格在 `0x00441e64` 正是 `call 0x4412e4`）——
           //   **满了先丢最便宜的一张再收新的**，不是"满了就不发"。
-          //   见 `cards/rob.ts` 的 `giveCard`（照 `0x0044128f` 实现）。
-          next = withPlayer({ ...next, cardAmount }, state.currentPlayer, (p) => {
-            Object.assign(p, giveCard(p, out.cardDrawn));
-          });
+          // ★★ 2026-09-24（provenance 审计）：被丢的那张**回牌堆**（`0x441343` 尾 `0x004413a2 inc byte
+          //   [卡号+0x499197]`），新卡 −1 在 `0x0044133b`。先前只扣新卡 ⇒ 弃牌凭空消失。见 `rules/receive-card.ts`。
+          const me0 = next.players[state.currentPlayer];
+          if (me0 !== undefined) {
+            const got = receiveCard(me0, out.cardDrawn, next.cardAmount);
+            next = withPlayer({ ...next, cardAmount: got.cardAmount }, state.currentPlayer, (p) => {
+              Object.assign(p, got.player);
+            });
+          }
           // ★★ 抽卡格的棕色訊息框「得到%s！」—— `%s` = 抽到的**卡片名**：
           //   @source 0x0041b355 `mov edi, [eax*8 + 0x47fdea]`（卡片表第 0 项 =
           //   name 指针，1 基编号 ⇒ `0x47fdea + id*8` 正是 `0x47fdf2 + id*8`）
@@ -3565,8 +3568,12 @@ function applyGodPower(
         // @source `_rich4_player_receive_random_card` 0x441e12：袋空返回 0
         const id = drawRandomCard(rng, cardAmount);
         if (id === 0) break;
-        cardAmount[id - 1] = Math.max(0, (cardAmount[id - 1] ?? 0) - 1);
-        players = players.map((p, i) => (i === host ? giveCard(p, id) : p));
+        // ★ `0x441e12 → 0x4412e4`：满手弃掉的那张回牌堆（`0x004413a2`），新卡 −1（`0x0044133b`）
+        const hostNow = players[host];
+        if (hostNow === undefined) break;
+        const got = receiveCard(hostNow, id, cardAmount);
+        cardAmount.splice(0, cardAmount.length, ...got.cardAmount);
+        players = players.map((p, i) => (i === host ? got.player : p));
         drawn.push(id);
       }
       if (drawn.length === 0) return { ...state, players, cardAmount };
@@ -4074,16 +4081,34 @@ export function applyMagicRequest(
     case 'prison':
     case 'hospital': {
       const kind = req.kind === 'prison' ? 'prison' : 'hospital';
-      const occ = kind === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      // ★★ 2026-09-24（provenance 审计）：魔法屋这两支也过「免罪(21) → 嫁禍(19)」二级判定 ——
+      //   `0x441210` 的调用点有 **7** 个（不是 5 个），魔法屋占两个：
+      //   ```asm
+      //   00431e45  call 0x40df69(中签者, 施法者, 90×物價)   ; 敌意先记（applyMagicHouse 已写）
+      //   00431e54  call 0x441210(中签者)                    ; ★ 二级判定
+      //   00431e5c  cmp  eax, -1 / je 下一位                  ; 免罪 ⇒ 整支作废
+      //   00431e65  push 3 / push eax / call 0x43d593         ; ★ 关的是**返回值**（嫁禍 ⇒ 替死鬼）
+      //   ```
+      //   醫院那一支同形：`0x004323fe` 敌意 → `0x0043240d call 0x441210` → `0x00432421 call 0x43ec3f`。
+      //   先前直接关中签者 ⇒ 手里的免罪卡 / 嫁禍卡在魔法屋面前不起作用。
+      const rng = new WatcomRng();
+      rng.setState(state.rngState);
+      const judged = secondaryJudgement(state.players, req.player, rng);
+      if (judged.kind === 'absolution') {
+        return { ...state, players: [...judged.players], rngState: rng.getState() };
+      }
+      const victim = judged.victim;
+      const judgedState: GameState = { ...state, players: [...judged.players], rngState: rng.getState() };
+      const occ = kind === 'prison' ? judgedState.prisonOccupancy : judgedState.hospitalOccupancy;
       // ★ 首次关押清"另一张"占用表（原版 `call 0x40d761`，@source 0x0043d5e7）
-      const otherOcc = kind === 'prison' ? state.hospitalOccupancy : state.prisonOccupancy;
+      const otherOcc = kind === 'prison' ? judgedState.hospitalOccupancy : judgedState.prisonOccupancy;
       const c = sendToConfinement(
-        state.players,
-        state.objects,
+        judgedState.players,
+        judgedState.objects,
         topo.nodes,
         occ,
         kind,
-        req.player,
+        victim,
         req.amount,
         otherOcc,
         // ★ 首次关押的屏幕坐标取特殊景观记录（綠島／醫院大樓）—— 见 confinement.ts
@@ -4091,20 +4116,21 @@ export function applyMagicRequest(
       );
       const confined: GameState = kind === 'prison'
         ? {
-            ...state,
+            ...judgedState,
             players: c.players,
             objects: c.objects,
             prisonOccupancy: c.occupancy,
             ...(c.otherOccupancy === undefined ? {} : { hospitalOccupancy: c.otherOccupancy }),
           }
         : {
-            ...state,
+            ...judgedState,
             players: c.players,
             objects: c.objects,
             hospitalOccupancy: c.occupancy,
             ...(c.otherOccupancy === undefined ? {} : { prisonOccupancy: c.otherOccupancy }),
           };
-      return insureConfinement(confined, topo, req.player, req.amount);
+      // 保險理賠在 send_to_* 函数体内（`0x43d749` / `0x43edf8`）⇒ **关谁赔谁**
+      return insureConfinement(confined, topo, victim, req.amount);
     }
     // @source 0x40b110(type)：住宅 level < 5 可建；連鎖店只有 level == 0 时可建
     case 'build': {
@@ -4139,13 +4165,36 @@ export function applyMagicRequest(
       });
     }
     // @source 0x40ab4a(type, 0)：与拆除卡、炸彈同一套
+    // ★★ 2026-09-24（provenance 审计）：`0x0043234c call 0x40ab4a(格型别, 0)` 是 mode 0 的**两支**：
+    //   住宅（0x7d1..0xf9f）：等级 0 ⇒ 不动；否则 −1，連鎖店（`+0x18 ≠ 0`）夷平成 0 级住宅 ——
+    //     **种类也写回**（`0x0040aba4/0x0040aba8`）；
+    //   設施（0xfa1..0x176f）：等级 0 ⇒ 不动；否则 −1，减到 0 ⇒ 种类清 0 并 `call 0x40dffa` 放人
+    //     （`0x0040ac20..0x0040ac33`）。
+    //   先前只认住宅、只写等级（`demolishLand` 是拆除**卡**的另一段逻辑）⇒ 站在設施上什么都不拆、
+    //   拆連鎖店留下「0 级連鎖店」。现与炸彈那一支（`0x0041b715`，同一个 mode 0）共用 `mutateLand`/`mutateFacility`。
     case 'demolish': {
       const land = landAtPlayer(state, topo, req.player);
-      if (land === null) return state;
-      const d = demolishLand(land, state.priceIndex);
-      const landLevel = [...state.landLevel];
-      landLevel[land.id] = d.land.level;
-      return { ...state, landLevel };
+      if (land !== null) {
+        const m = mutateLand(land, MUTATE_DEMOLISH_ONE);
+        if (!m.changed) return state;
+        const landLevel = [...state.landLevel];
+        const landType = [...state.landType];
+        landLevel[land.id] = m.land.level;
+        landType[land.id] = m.land.type;
+        return { ...state, landLevel, landType };
+      }
+      const facIdx = facilityIndexAtPlayer(state, topo, req.player);
+      if (facIdx === null) return state;
+      const fac = effectiveFacility(state, topo, facIdx);
+      if (fac === null) return state;
+      const m = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
+      if (!m.changed) return state;
+      const facilityLevel = [...state.facilityLevel];
+      const facilityType = [...state.facilityType];
+      facilityLevel[fac.id] = m.facility.level;
+      facilityType[fac.id] = m.facility.type;
+      const demolished: GameState = { ...state, facilityLevel, facilityType };
+      return m.releasesConfined ? { ...demolished, players: releaseConfinedPlayers(demolished.players) } : demolished;
     }
     // @source run_auction(player, 1) @ 0x43bde5
     // ⚠️ 拍卖是**模态 UI**（出价由人给），按 C-ARC-2 不能在 reducer 里跑完。
@@ -4697,10 +4746,23 @@ function enterVisit(state: GameState, topo: MapTopology, specialKind: number): G
   //   或犯人名（`[槽*4 + 0x47ed5a]`）。@source 監獄 `0x0043d534 push 0x465169` / `0x0043d550 call 0x440cac`；
   //   醫院 `0x0043ebe0 push 0x465207` / `0x0043ebfc call 0x440cac`
   const bailed = d.slot < OBJECT_SLOT_BASE ? playerName(rolled, d.slot) : (INMATE_NAMES[d.slot - OBJECT_SLOT_BASE] ?? '');
-  const paid: GameState = appendFreshNotice(
+  let paid: GameState = appendFreshNotice(
     { ...rolled, players: r.players },
     { key: kind === 'prison' ? 'bail.prison' : 'bail.hospital', args: [bailed] },
   );
+  // ★★ 2026-09-24（provenance 审计）：电脑保釋到的若是惡人（槽 4..7），原版同样**把他摆到门口**：
+  //   監獄 `0x0043d566 cmp ebx,4 / jge 0x43d57f` → `0x0043d580 call 0x43d7bf(槽)`（+8 主人 = `[0x49910c]`）；
+  //   醫院同形 → `0x43ee6e`。与真人那一支（`case 'bail'`）是同一个放人函数。
+  //   先前电脑这一支只清占用表 ⇒ 惡人留在「关着」的状态、却已不在占用表里（再也不会被放出来）。
+  const slotIdx = specialSlotOf(d.slot);
+  if (slotIdx >= 0) {
+    const gate = gateNodeOf(topo, kind);
+    if (gate > 0) {
+      const specialActors = [...paid.specialActors];
+      specialActors[slotIdx] = releaseNpc(gate, state.currentPlayer, 0);
+      paid = { ...paid, specialActors };
+    }
+  }
   return kind === 'prison'
     ? { ...paid, prisonOccupancy: r.occupancy }
     : { ...paid, hospitalOccupancy: r.occupancy };
