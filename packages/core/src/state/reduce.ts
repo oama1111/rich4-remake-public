@@ -2155,11 +2155,14 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
       const player = state.players[state.currentPlayer];
       const fac = facilityAtPlayer(state, topo);
       if (player === undefined || fac === null) return state;
+      // ★ `facilityType: null` = 电脑那一支定种类（开着选种类窗被托管的真人，由 AI 代答）；真人座位不收
+      if (action.facilityType === null && !isAiControlled(player)) return state;
       if (state.pending.free === true) {
         // ★ 神明顯靈代蓋的那一次（`0x40b110` 里的 `0x0040b1e4 call 0x440aac`）：
         //   **不收钱、不看归属、不过衰神闸**（`0x40b110` 整支没有 `call 0x40fa61`）
-        if (!state.pending.choices.includes(action.facilityType)) return state;
-        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType);
+        //   `null`：`freeBuildFacilityById` 见座位 `& 6` 非 0 就自己走电脑支（`0x0040b1c5` rand()%4+1 / 非本人 0）
+        if (action.facilityType !== null && !state.pending.choices.includes(action.facilityType)) return state;
+        const built = freeBuildFacilityById(state, topo, fac.id, action.facilityType ?? -1);
         if (built === null) return labPanelTail({ ...state, pending: null, phase: 'turnEnd' }, topo);
         // 这扇框在尾块里（福神 `0x40f8be` / 天使 `0x40f381` 都在 `0x0041b0b3` 之前）⇒ 选完接着问研究所
         return labPanelTail(
@@ -2168,15 +2171,26 @@ function reduceCore(state: GameState, action: Action, topo: MapTopology): GameSt
         );
       }
       if (fac.owner !== state.currentPlayer + 1 || fac.level !== 0) return state;
-      if (!state.pending.choices.includes(action.facilityType)) return state;
+      let chosen: number;
+      let rolledState: GameState = state;
+      if (action.facilityType === null) {
+        // @source `0x0041a23e call rand / idiv 4 / inc edx` —— 电脑支，在衰神闸（`0x0041a261`）**之前**掷
+        const rng = new WatcomRng();
+        rng.setState(state.rngState);
+        chosen = aiPickFacilityType(rng.next());
+        rolledState = { ...state, rngState: rng.getState() };
+      } else {
+        if (!state.pending.choices.includes(action.facilityType)) return state;
+        chosen = action.facilityType;
+      }
       const bought = purchase(player, facilityBuildPrice(fac.landPrice, state.priceIndex));
-      if (!bought.ok) return godBlockedPurchase(state, bought.reason);
-      const paid = withPlayer(state, state.currentPlayer, (p) => {
+      if (!bought.ok) return godBlockedPurchase(rolledState, bought.reason);
+      const paid = withPlayer(rolledState, state.currentPlayer, (p) => {
         p.cash = bought.player.cash;
       });
       const facilityType = [...paid.facilityType];
       const facilityLevel = [...paid.facilityLevel];
-      facilityType[fac.id] = action.facilityType;
+      facilityType[fac.id] = chosen;
       facilityLevel[fac.id] = 1;
       // ★★ W-55 行 3 的**第 4 个**音效点：**付费首建設施（0 → 1 级）**也响
       //   `Effect.mkf` 50（`0x4823da`）—— 先前只接了天使/福神/自己加蓋三处。

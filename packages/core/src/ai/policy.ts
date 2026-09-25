@@ -34,7 +34,7 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
-import { aiCommercialShareCount } from '../places/company.ts';
+import { aiCommercialShareCount, aiPickConstructionTarget } from '../places/company.ts';
 import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
@@ -574,15 +574,23 @@ export function decidePending(state: GameState, map?: Rich4Map): Action | null {
     return { type: 'upgradeFacility' };
   }
   if (p.kind === 'chooseBuildTarget') {
-    // 电脑在 reducer 里已按 0x40b455 挑过；走到这里的是被托管的真人 —— 取第一个可选
-    const t = p.choices[0];
-    return t === undefined ? { type: 'declineDecision' } : { type: 'buildTarget', entityId: t };
+    // ★★ 审计（provenance-ai-econ）：走到这里的只会是**开着选地窗被托管的真人**（电脑在 reducer 里当场挑）。
+    //   原版那扇窗是模态的、托管位冒不出来，没有「窗开着被托管」这回事 ⇒ 按座位现在的身份走**电脑那一支**：
+    //   `0x0041ad12 call 0x40b455`（自家公司 `0x0041aa3c` 同一个函数）—— 自己的住宅地挑当前等级租金最高的、
+    //   設施挑地價最高的（`aiPickConstructionTarget`）。先前这里是自拟的「取第一个可选」。
+    //   挑不出（或不在可选里）就关窗。
+    if (map === undefined) return { type: 'declineDecision' };
+    const t = aiPickConstructionTarget(
+      state.currentPlayer, map.lands, state.landOwner, state.landLevel, state.landType,
+      map.facilities, state.facilityOwner, state.facilityLevel, state.facilityType,
+    );
+    return t !== 0 && p.choices.includes(t) ? { type: 'buildTarget', entityId: t } : { type: 'declineDecision' };
   }
   if (p.kind === 'buildFacility') {
-    // 走到这里的只会是被托管的真人（电脑在 reducer 里已抽完）：照电脑的口味，
-    // 不蓋公園，取可选里最小的非 0 种类 —— 确定性的
-    const t = p.choices.find((c) => c !== 0) ?? p.choices[0];
-    return t === undefined ? null : { type: 'buildFacility', facilityType: t };
+    // ★★ 审计（provenance-ai-econ）：同上，只会是**开着选种类窗被托管的真人**。按电脑那一支定种类
+    //   （付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5`：`rand()%4+1`）—— 随机数不能进 AI，交 `null` 由 reducer 掷。
+    //   先前这里是自拟的「不蓋公園、取最小的非 0 种类」（恒为旅館）。
+    return { type: 'buildFacility', facilityType: null };
   }
   if (p.kind === 'buyShares') {
     // ★ 照原版电脑那支（pt27-stock「忍太郎怎么一下就买了3000股保险公司？」）：

@@ -23,6 +23,7 @@ import {
 import { WHEEL, WHEEL_TABLE, spinWheel } from '../rules/facility.ts';
 import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
+import { decidePending } from '../ai/policy.ts';
 import { emptyOwnership } from './commercial.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { WHO_PLAYS_HUMAN, type GameState } from '../state/types.ts';
@@ -270,6 +271,19 @@ describe('★ 踩到上市企業', () => {
     expect(done.landLevel[1]).toBe(1);
     expect(done.players[0]?.cash).toBe(99_000);
     expect(done.pending?.kind).toBe('buyShares');
+  });
+
+  it('★★ 选地窗开着时被托管：AI 代答走电脑那一支 0x40b455（租金最高的自家住宅地），不是「取第一个」', () => {
+    const s0 = landing(1);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const topo = topoWith(INDUSTRY.construction);
+    const asked = reduce({ ...s0, landOwner }, { type: 'settle' }, topo);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const map = { ...topo, facilities: [], landscapes: [], dataSize: 0 } as never;
+    expect(decidePending(piloted, map)).toEqual({ type: 'buildTarget', entityId: 0x7d0 + 1 });
+    // 电脑挑出来的不在可选里（或挑不出）⇒ 关窗
+    expect(decidePending({ ...piloted, landLevel: [0, 5] }, map)).toEqual({ type: 'declineDecision' });
   });
 
   it('★ 真人没有可加蓋的地：不弹选地，直接問認購', () => {

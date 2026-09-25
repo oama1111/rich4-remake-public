@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { decideAction } from '../ai/policy.ts';
 import {
   FACILITY_MAX_LEVEL,
   FACILITY_NAMES,
@@ -226,6 +227,24 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(asked.pending.choices).toEqual([0, 1, 2, 3, 4]);
     const built = reduce(asked, { type: 'buildFacility', facilityType: FACILITY_TYPE.hotel }, topo);
     expect(built.facilityType[FAC_ID]).toBe(FACILITY_TYPE.hotel);
+    expect(built.facilityLevel[FAC_ID]).toBe(1);
+    expect(built.players[0]?.cash).toBe(97_000);
+  });
+
+  it('★★ 选种类窗开着时被托管（座位变成 1|4）：AI 代答 `facilityType: null` ⇒ reducer 走电脑支 rand()%4+1（0x0041a23e）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const asked = reduce(standing({ facilityOwner: owner }), { type: 'settle' }, topo);
+    // 真人座位不收 null
+    expect(reduce(asked, { type: 'buildFacility', facilityType: null }, topo)).toBe(asked);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const a = decideAction({ state: piloted, map: { nodes: [], lands: [], facilities: [], commercials: [], landscapes: [], dataSize: 0 } as never });
+    expect(a).toEqual({ type: 'buildFacility', facilityType: null });
+    const built = reduce(piloted, a!, topo);
+    const rng = new WatcomRng();
+    rng.setState(piloted.rngState);
+    expect(built.facilityType[FAC_ID]).toBe((rng.next() % 4) + 1);
+    expect(built.rngState).toBe(rng.getState());
     expect(built.facilityLevel[FAC_ID]).toBe(1);
     expect(built.players[0]?.cash).toBe(97_000);
   });

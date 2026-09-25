@@ -111,6 +111,8 @@ function humanAction(state: GameState, map: ReturnType<typeof parseMap>, seat: n
   if (a === null) throw new Error(`座位 ${seat} 无决策：${state.phase} / ${state.pending?.kind ?? '-'}`);
   // ★ 貸款屏上 AI 给的是「托管 ⇒ 按电脑那一支办」（`bank/auto`），恰好真人不认这一手 ⇒ 真人这一端按 EXIT 离开
   if (a.type === 'bank' && a.op === 'auto') return { type: 'declineDecision' };
+  // ★ 选種類窗上 AI 给的是 `facilityType: null`（托管 ⇒ 电脑那一支掷），恰好真人不认 ⇒ 真人这一端点一格（旅館）
+  if (a.type === 'buildFacility' && a.facilityType === null) return { type: 'buildFacility', facilityType: 1 };
   return a;
 }
 
