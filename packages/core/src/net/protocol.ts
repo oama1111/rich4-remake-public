@@ -918,6 +918,23 @@ export function stateFingerprint(
   landType?: readonly number[] | undefined;
   /** 上次過路費（`land + 0x2c`）—— 过路费与傳送機清源头都写 */
   landLastToll?: readonly number[] | undefined;
+  /**
+   * 上市企業的**公帳**（`+0x28`）。
+   *
+   * ★ 2026-09-25（ai 区补报，与位置 / 惡人表同一类缺口）：先前也不在指纹里 ——
+   *   而百货公司营业额（`0x0042ed75` / `0x0042ed7e`，电脑支与真人支共用那段收尾）与
+   *   分红都写它，两端分岔时校验和照样相等。是规则状态，进指纹。
+   */
+  companyFunds?: readonly number[] | undefined;
+  /** 上市企業的累計**營業額**（分红公式的分子，`+0x2c`）—— 同上 */
+  companyProfit?: readonly number[] | undefined;
+  /** 商業用地（企業）的持股数 */
+  commercialShares?: readonly number[] | undefined;
+  /** 商業用地（企業）的**經營權与持股排名**（`{owner, ranking}` 整表，规范化 JSON） */
+  commercialOwners?: readonly unknown[] | undefined;
+  // ⚠️ `viewRotation` 刻意**不进**指纹：它是**每个客户端各自的镜头**（原版存在 `0x48c570` / `0x48c574`，
+  //    玩家拖过 / 贴边推过都算），算进校验和会把「两个人转了不同角度」变成假失步。
+  //    将来若要按投影复刻 AI 取景（ai-move 的 FU-1），先得把镜头变成共享状态或换一套对账口径 —— 见台账。
   },
   opts: { rng?: boolean } = {},
 ): string {
@@ -949,6 +966,13 @@ export function stateFingerprint(
   if (state.landTenure !== undefined) parts.push('|tenure', ...state.landTenure);
   if (state.landType !== undefined) parts.push('|ltype', ...state.landType);
   if (state.landLastToll !== undefined) parts.push('|ltoll', ...state.landLastToll);
+  // ★ 2026-09-25（ai 区补报）：上市企業的公帳 / 營業額 / 持股 / 經營權 —— 分红、百货营业额、
+  //   經營權易主都写这些；先前不在指纹里 ⇒ 两端在「企業帐上有多少钱、誰有經營權」上分岔时
+  //   校验和照样相等。缺席 = 不参与（同 toolStock 口径）。
+  if (state.companyFunds !== undefined) parts.push('|cfund', ...state.companyFunds);
+  if (state.companyProfit !== undefined) parts.push('|cprofit', ...state.companyProfit);
+  if (state.commercialShares !== undefined) parts.push('|cshare', ...state.commercialShares);
+  if (state.commercialOwners !== undefined) parts.push('|cown', canonicalJson(state.commercialOwners));
   // ★ 下面这几项是后来补进引擎的，一度不在指纹里——那意味着
   //   两端在公库、樂透、股市上分歧时**校验和照样相等**，
   //   desync 会一直拖到有人破产才暴露。指纹必须覆盖所有会变的共享状态。

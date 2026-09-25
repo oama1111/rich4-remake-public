@@ -102,6 +102,27 @@ describe('校验和', () => {
     expect(stateFingerprint({ ...a, landLastToll: a.landLastToll.map((v, i) => (i === 0 ? v + 1 : v)) })).not.toBe(stateFingerprint(a));
   });
 
+  run('★ 上市企業的公帳 / 營業額 / 持股 / 經營權也参与指纹（ai 区补报的同类缺口）', () => {
+    const map = loadMap();
+    const a = newGame({ map, players: allComputer(), seed: 5 });
+    // 分红与百货营业额都写 companyFunds / companyProfit；經營權易主写 commercialOwners
+    expect(stateFingerprint({ ...a, companyFunds: a.companyFunds.map((v, i) => (i === 0 ? v + 1 : v)) }))
+      .not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, companyProfit: a.companyProfit.map((v, i) => (i === 0 ? v + 1 : v)) }))
+      .not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({ ...a, commercialShares: a.commercialShares.map((v, i) => (i === 0 ? v + 1 : v)) }))
+      .not.toBe(stateFingerprint(a));
+    expect(stateFingerprint({
+      ...a,
+      commercialOwners: a.commercialOwners.map((o, i) => (i === 0 ? { ...o, owner: o.owner + 1 } : o)),
+    })).not.toBe(stateFingerprint(a));
+    // viewRotation 刻意**不**进指纹（每个客户端各自的镜头）——记在这里免得下一轮又有人想加。
+    // 参数类型是一张显式白名单，直接写进字面量会被 TS 的多余属性检查挡下（TS2353），
+    // 所以先落到 GameState 再传 —— 若哪天有人把 viewRotation 加进白名单，这一条会红。
+    const rotated: typeof a = { ...a, viewRotation: a.viewRotation + 1 };
+    expect(stateFingerprint(rotated)).toBe(stateFingerprint(a));
+  });
+
   run('★ 旧回报口径：把后补的字段全部去掉 ⇒ 少一段参与（缺席 = 不参与）', () => {
     const map = loadMap();
     const a = newGame({ map, players: allComputer(), seed: 5 });
