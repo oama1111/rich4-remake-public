@@ -164,7 +164,7 @@
 | `Q-CARD-1` | 偏离登记（换地/换屋的目標類別跟脚下走 + 拆除卡的物件分支） | ? | docs/deviations/Q-CARD-1.md:1 |
 | `Q-CARD-2` | AI 想出但引擎接不住的目标，会顺延到下一张卡（**已解决 2026-09-14，T-009**） | 结案 | docs/known-deviations.md:3858 |
 | `Q-CHAR-1` | 棋子那 21 个资源只认了 2 个 | ? | docs/known-deviations.md:2824 |
-| `Q-CO-1` | 真人在建設公司对等级 0 的設施加蓋要选种类 | ? | docs/known-deviations.md:683 |
+| `Q-CO-1` | 真人在建設公司对等级 0 的設施加蓋要选种类 —— **种类窗已接线**；「在种类窗上取消」是有意偏离（原版写种类 255 + 等级 1，我们选择不蓋，见该节 asm） | 已接线 + 有意偏离 | docs/known-deviations.md:692 |
 | `Q-COM-1` | 企业的持股排名与归属（**已结案**） | 结案 | docs/known-deviations.md:1680 |
 | `Q-COMMERCIAL-1` | —— 上市企業落点：**路过 vs 停留**、以及买股的「通用填数窗」 | ? | docs/deviations/Q-COMMERCIAL-1.md:1 |
 | `Q-DOLL-1` | 機器娃娃（道具 1）的**动画与音效** —— 表现层缺口 | ? | docs/deviations/Q-DOLL-1.md:1（另有 1 处） |
