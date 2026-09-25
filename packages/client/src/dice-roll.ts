@@ -305,3 +305,12 @@ export class DiceRollFx {
     return false;
   }
 }
+
+/**
+ * 这一次起步**不掷骰**（停留 / 龜行）—— 与 core `rollDice` 的两道闸同源，表现层据此不起预动作 / 滚骰。
+ * @source 起步 `fcn_0040dd1f`：`0x0040dd64 cmp [p+0x38],0`（停留）/ `0x0040dd7e cmp [p+0x39],0`（龜行），
+ *   两支都不进掷骰态（`[rec+2] = 2` 那一句 `0x0040dd87` 走不到）。
+ */
+export function rollsWithoutDice(me: { blocking: { stopping: number; tortoiseWalking: number } }): boolean {
+  return me.blocking.stopping !== 0 || me.blocking.tortoiseWalking !== 0;
+}
