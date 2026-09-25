@@ -409,15 +409,19 @@ export function compactRows(p: { cash: number; moneyInBank: number }): readonly 
  * 00416118  movzx esi, byte [0x498e70]     ;   8 ⇒ 画替身记录 +8（主人）那位玩家
  * ```
  *
- * 本引擎的替身回合在 core 里一条 action 走完（`rules/npc-walk.ts`），表现层按 `lastNpcWalks`
- * 逐格补间；`[0x49910c]` = 替身号的那一段就是**补间在走**的那一段（`render.ts` 的
- * `npcWalkWorld().slot`，与小地图白框 `minimapFrameCenter` 同一个判据）。
+ * ★★ 第二十六份 panel #1：`[0x49910c]` = 惡人的那一段**不止补间在走的那几格**。侧栏只在整窗重画时才画，
+ *   而惡人回合开头（`fcn_00418c55`，`0x00418d69 call 0x41d546` → `0x41906a(1)` → WM_PAINT）重画一次之后
+ *   就不再碰侧栏，直到下一位行动者回合开头那次重画 ⇒ 走完之后的「小偷偷得…」框、受害者台词、
+ *   **停留**不走的那一回合都画惡人那一版。本引擎一个惡人回合 = 一条 action，core 在那一条里交出
+ *   `GameState.lastNpcTurn`（只活一条 action，见 `NpcTurnHint`）⇒ 由 `panelActorSlot` 取槽号。
+ *   （先前按补间在走的那几格判 —— 走完就回到玩家、停留的惡人从不出现，已订正。）
+ *   保釋当场那一趟不算（原版保釋不动 `[0x49910c]`）；小地图白框仍跟着补间走（`minimapFrameCenter`）。
  *
  * ★ 機器娃娃（槽 4）画 `[0x498e70]` = 用道具的人（`0x00446b7b [0x498e70] = [0x49910c]`，道具只能在
  *   自己回合用）⇒ 就是 `currentPlayer`。不读 `specialActors[4].owner`：core 走完那一趟就把娃娃
  *   收回 `idleActor()`（owner 清 0），补间播放时那一格已经不是主人了。
  *
- * @param npcSlot 此刻正在走的替身槽（actor − 4）；`null` = 轮的是玩家
+ * @param npcSlot 此刻的行动者若是替身，其槽号（actor − 4，见 `panelActorSlot`）；`null` = 轮的是玩家
  */
 export type PanelSubject =
   | { kind: 'player'; player: number }
@@ -430,6 +434,20 @@ export type PanelSubject =
       /** 替身记录 +8 主人（保釋他出来的人）—— 小头像画的是**他的** @source `0x0041603d byte [actor×16 + 0x498df0]` */
       owner: number;
     };
+
+/**
+ * 侧栏此刻的行动者是不是惡人 —— 是就给槽号（actor − 4），否则 `null`（画玩家）。
+ *
+ * 取的是 core 交出来的 `lastNpcTurn`（这一条 action 轮到的惡人，只活一条 action ⇒ 从轮到他那一刻
+ * 起、到下一位行动者那条 action 为止 = 原版 `[0x49910c]` 停在他身上、侧栏没被重画走的那一段）。
+ * 单机 / 联机同一份状态、同一条判据（各端重放同一串 action ⇒ 同一份提示）。
+ */
+export function panelActorSlot(state: Pick<GameState, 'lastNpcTurn'>): number | null {
+  const actor = state.lastNpcTurn?.actor;
+  if (actor === undefined) return null;
+  const slot = actor - SPECIAL_ACTOR_BASE;
+  return slot >= 0 && slot < NPC_NAMES.length ? slot : null;
+}
 
 export function panelSubject(state: GameState, npcSlot: number | null | undefined): PanelSubject {
   if (npcSlot === null || npcSlot === undefined) return { kind: 'player', player: state.currentPlayer };
@@ -639,8 +657,8 @@ export interface HudInput {
    */
   npcFrame?: { x: number; y: number } | null;
   /**
-   * 此刻正在走的替身**槽**（actor − 4；0..3 四大惡人、4 機器娃娃）—— 侧栏据此换成惡人那一版
-   * （见 `panelSubject`）。`null` / 缺省 = 轮的是玩家。
+   * 此刻行动者（`[0x49910c]`）若是替身，其**槽**（actor − 4；0..3 四大惡人、4 機器娃娃）—— 侧栏据此换成
+   * 惡人那一版（见 `panelSubject`；`main.ts` 传 `panelActorSlot(state)`）。`null` / 缺省 = 轮的是玩家。
    */
   npcSlot?: number | null;
   /** 正被按下的箭头（1 = 左，2 = 右）；没按返回 null */

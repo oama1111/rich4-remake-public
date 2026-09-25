@@ -2412,8 +2412,8 @@ export class BoardRenderer {
    * （`fcn_0040dd1f` 那一族逐 tick 写）。镜头（`actorCenterWorld`）与侧栏小地图的
    * 白框（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d 那一支）都认它。
    *
-   * `slot` = actor − 4（0..3 四大惡人、4 機器娃娃）—— 侧栏面板据此换成惡人那一版
-   * （`hud.ts` 的 `panelSubject`，VA 0x00415fc1 / 0x00416767 判 `[0x49910c]`）。
+   * `slot` = actor − 4（0..3 四大惡人、4 機器娃娃）。⚠️ 侧栏面板**不**按它换（那是惡人的整个回合，
+   * 不只补间在走的这几格 —— 见 `hud.ts` 的 `panelActorSlot` / core 的 `lastNpcTurn`）。
    */
   npcWalkWorld(now: number): { x: number; y: number; slot: number } | null {
     for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {

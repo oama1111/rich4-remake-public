@@ -469,3 +469,85 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     expect(stateFingerprint(other)).toBe(base);
   });
 });
+
+describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标在惡人身上的那一整条 action（侧栏画他那一版）', () => {
+  /** 四个惡人全在盘上（各站一格），玩家 3 是最后一名 */
+  function four(over: Partial<GameState> = {}): GameState {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      phase: 'turnEnd',
+      currentPlayer: 3,
+      ...over,
+    });
+    const specialActors = [...s.specialActors];
+    for (let slot = 0; slot < 4; slot++) specialActors[slot] = { ...releaseNpc(slot + 1, slot + 4, 0), stepsRemaining: 0 };
+    return { ...s, specialActors };
+  }
+
+  it('@source 0x00418f9c 游标 4→5→6→7：`endTurn` 交出 actor 4，之后每条 `npcStep` 交出下一个（含推日期那一条）', () => {
+    let s = reduce(four({ rngState: 7 }), { type: 'endTurn' }, ring);
+    const seen = [s.lastNpcTurn?.actor];
+    while ((s.pendingNpcSlots ?? []).length > 0) {
+      s = reduce(s, { type: 'npcStep' }, ring);
+      seen.push(s.lastNpcTurn?.actor);
+    }
+    expect(seen).toEqual([4, 5, 6, 7]);
+    // 最后一个惡人那一条连推日期、换到 0 号 —— 侧栏仍是他，直到下一条 action（原版 0x00418c55 那次重画才换走）
+    expect(s.phase).toBe('turnStart');
+    expect(s.currentPlayer).toBe(0);
+    expect(s.lastNpcTurn).toEqual({ actor: 7 });
+    const next = reduce(s, { type: 'startTurn' }, ring);
+    expect(next).not.toBe(s);
+    expect(next.lastNpcTurn ?? null).toBeNull();
+  });
+
+  it('★ 停留（+0x0e）的惡人：不走（`lastNpcWalks` 空）但这一回合照样是他的 @source 0x00418d5f 重画在 0x0040de2b 判停留之前', () => {
+    const after = reduce(withThief({ rngState: 3 }, { halted: 2 }), { type: 'endTurn' }, ring);
+    expect(after.lastNpcWalks).toEqual([]);
+    expect(after.lastNpcTurn).toEqual({ actor: SPECIAL_ACTOR_BASE });
+  });
+
+  it('不绕回的 `endTurn`、不在盘上的惡人、機器娃娃 ⇒ 都不写', () => {
+    expect(reduce({ ...withThief(), currentPlayer: 0 }, { type: 'endTurn' }, ring).lastNpcTurn ?? null).toBeNull();
+    expect(reduce(withThief({}, { place: ACTOR_PLACE.prison }), { type: 'endTurn' }, ring).lastNpcTurn ?? null).toBeNull();
+    const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
+    tools[1] = 1;
+    const s = makeGameState({ players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })), tools });
+    const doll = reduce(s, { type: 'useTool', toolId: 1 }, ring);
+    expect(doll.lastNpcWalks[0]?.slot).toBe(4);
+    expect(doll.lastNpcTurn ?? null).toBeNull();
+  });
+
+  it('★ 保釋当场那一趟不写（原版保釋 0x0043d7e0 不动 `[0x49910c]`，侧栏仍是保釋的那位玩家）', () => {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, points: 900 })),
+      prisonOccupancy: initialConfinement('prison', 8),
+      phase: 'turnEnd',
+      pending: { kind: 'bail', place: 'prison', candidates: [{ slot: 4, player: -1, name: '', cost: 300, affordable: true }], points: 900 },
+    });
+    const after = reduce(s, { type: 'bail', slot: 4 }, away);
+    expect(after.lastNpcWalks).toHaveLength(1);
+    expect(after.lastNpcTurn ?? null).toBeNull();
+  });
+
+  it('只活一条 action：没生效的 action 原样留着（恒等），生效的清成 null', () => {
+    const s = reduce(four({ rngState: 7 }), { type: 'endTurn' }, ring);
+    expect(s.lastNpcTurn).toEqual({ actor: 4 });
+    // 惡人段里 `endTurn` 不动状态 ⇒ 原样返回（提示也还在）
+    expect(reduce(s, { type: 'endTurn' }, ring)).toBe(s);
+    // 同一个号再来一条 action 也是**新**对象（按引用判「这一条新写的」）
+    const t = reduce(s, { type: 'npcStep' }, ring);
+    expect(t.lastNpcTurn).not.toBe(s.lastNpcTurn);
+  });
+
+  it('★ C-DET：不进 stateFingerprint；两份独立重放（单机 / 联机旁观端）得到同一份', () => {
+    const a = reduce(four({ rngState: 11 }), { type: 'endTurn' }, ring);
+    const b = reduce(structuredClone(four({ rngState: 11 })), { type: 'endTurn' }, ring);
+    expect(b.lastNpcTurn).toEqual(a.lastNpcTurn);
+    const base = stateFingerprint(a);
+    const blanked = { ...a, lastNpcTurn: null };
+    const other = { ...a, lastNpcTurn: { actor: 6 } };
+    expect(stateFingerprint(blanked)).toBe(base);
+    expect(stateFingerprint(other)).toBe(base);
+  });
+});

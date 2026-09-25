@@ -102,7 +102,7 @@ import {
   optionValueOf,
   type LobbyHit,
 } from './lobby.ts';
-import { PANEL_ROWS } from './hud.ts';
+import { PANEL_ROWS, panelActorSlot } from './hud.ts';
 import { panelRows } from './panel.ts';
 import {
   aiSettingsDraft,
@@ -9381,7 +9381,7 @@ function drawGameStage(): void {
 
   // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
   const hudState = magicShownState();
-  // ★ 替身那一趟：小地图白框框它、侧栏换成惡人那一版（VA 0x00415fc1 / 0x00416767 判 `[0x49910c]`）
+  // ★ 替身那一趟：小地图白框框它（补间在走的那几格，VA 0x00416f3d）
   const npcWalk = renderer.npcWalkWorld(performance.now());
   hud.draw({
     // ★ 降落伞那一段期间小地图上也先没有他（`0x00416fc9 cmp [player+0x08], 0`，坐标播完才写）
@@ -9394,7 +9394,10 @@ function drawGameStage(): void {
     minimapMarker,
     // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
     npcFrame: npcWalk,
-    npcSlot: npcWalk?.slot ?? null,
+    // ★★ 第二十六份 panel #1：侧栏换成惡人那一版 = 行动者 `[0x49910c]` 是他的整个回合（VA 0x00415fc1 / 0x00416767；
+    //   回合开头 0x00418d69 那次整窗重画起、到下一位行动者那次重画止）——
+    //   含走完之后的訊息框 / 台词、停留不走的那一回合；取 core 的 `lastNpcTurn`（见 `hud.ts` 的 `panelActorSlot`）
+    npcSlot: panelActorSlot(hudState),
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,

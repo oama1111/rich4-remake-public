@@ -897,9 +897,12 @@ function npcStepOnce(
     specialActors[slot] = a;
     return { ...st, specialActors };
   };
+  // ★★ 第二十六份 panel #1：游标交给了他 ⇒ 侧栏画他那一版，直到下一位行动者（见 `NpcTurnHint`）。
+  //   停留的那一回合也算（原版 `0x00418c55` 照样开回合、整窗重画，`0x0040de2b` 才判停留）。
+  const turn = { actor: actorId };
   if (steps === 0) {
     // 停留（`+14 halted != 0`）：这一趟不走，但计数照样走了一天
-    return put({ ...state, rngState: rng.getState(), lastNpcWalks: [] }, ticked);
+    return put({ ...state, rngState: rng.getState(), lastNpcWalks: [], lastNpcTurn: turn }, ticked);
   }
   const walk = runNpc(
     actorId,
@@ -918,6 +921,7 @@ function npcStepOnce(
       ...settled.state,
       rngState: rng.getState(),
       lastNpcWalks: [{ slot, path: walk.path, steps }],
+      lastNpcTurn: turn,
       ...(notices.length > 0 ? { notices } : {}),
     },
     walk.actor,
@@ -1277,6 +1281,10 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
     raw !== state && (raw.lastGainSays ?? null) !== null && raw.lastGainSays === state.lastGainSays;
   const staleAway =
     raw !== state && (raw.lastDisappearSay ?? null) !== null && raw.lastDisappearSay === state.lastDisappearSay;
+  // ★★ 第二十六份 panel #1：惡人回合（`lastNpcTurn`，侧栏画他那一版）同一套：只活一条 action ——
+  //   下一条 action 就是下一位行动者（原版 `0x00418c55` 那次整窗重画把侧栏换走）。
+  const staleNpcTurn =
+    raw !== state && (raw.lastNpcTurn ?? null) !== null && raw.lastNpcTurn === state.lastNpcTurn;
   // ★★ 第二十一份：月结现场（`lastMonthlySettle`）同一套：只活一条 action。
   const staleMonthly =
     raw !== state && (raw.lastMonthlySettle ?? null) !== null && raw.lastMonthlySettle === state.lastMonthlySettle;
@@ -1294,7 +1302,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
   const staleAuction = reduceDepth === 0 && raw !== state && auctionsNow !== null && !auctionsAppended;
   const trimAuction = reduceDepth === 0 && auctionsAppended && priorAuctions !== null && priorAuctions.length > 0;
   const next =
-    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleMonthly || staleAuction || trimAuction
+    staleView || staleLine || stalePower || staleGift || staleToll || staleDraw || staleBeats || staleSays || staleGain || staleAway || staleNpcTurn || staleMonthly || staleAuction || trimAuction
       ? {
           ...raw,
           ...(staleView ? { lastViewTarget: null } : {}),
@@ -1307,6 +1315,7 @@ export function reduce(state: GameState, action: Action, topo: MapTopology): Gam
           ...(staleSays ? { lastBlockedSays: null } : {}),
           ...(staleGain ? { lastGainSays: null } : {}),
           ...(staleAway ? { lastDisappearSay: null } : {}),
+          ...(staleNpcTurn ? { lastNpcTurn: null } : {}),
           ...(staleMonthly ? { lastMonthlySettle: null } : {}),
           ...(staleAuction ? { lastAuctionResults: null } : {}),
           ...(trimAuction ? { lastAuctionResults: auctionsNow!.slice(priorAuctions!.length) } : {}),

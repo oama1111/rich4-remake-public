@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * 侧栏各端自己画（`client/src/hud.ts`），画什么只取：
- *   - #2 惡人回合：`lastNpcWalks`（哪个槽在走）+ `specialActors[槽].owner`（小头像画谁）
+ *   - #2 惡人回合：`lastNpcTurn`（行动者游标在哪个惡人身上，第二十六份 panel #1）+ `specialActors[槽].owner`（小头像画谁）
  *     @source 0x00415fc1 判 `[0x49910c]`、0x0041603d 取替身记录 +8；
  *   - #3 结盟小头像：`players[*].alliedPlayer`（`[p+0x41]`，0x00416256 / 0x0041685a）；
  *   - #16 落地影片期间：`currentPlayer` 已是新玩家（换人后 0x41c84f → 0x436a5a → 0x41906a(1) 那次
@@ -48,6 +48,8 @@ function submitBoth(room: Room, mirror: { s: GameState }, topo: ReturnType<typeo
 /** 侧栏要读的那几样 */
 const sidebarInputs = (s: GameState) => ({
   currentPlayer: s.currentPlayer,
+  // ★★ 第二十六份 panel #1：侧栏画惡人那一版的判据 = 行动者游标（core 的 `lastNpcTurn`）
+  turn: s.lastNpcTurn ?? null,
   walks: s.lastNpcWalks.map((w) => w.slot),
   owners: s.specialActors.map((a) => a.owner),
   allies: s.players.map((p) => p.alliedPlayer),
@@ -85,6 +87,33 @@ describe('★★ 联机：侧栏面板的输入两端一致', () => {
     expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
     // 结盟还在（天数只在推日期里减），两端一样
     expect(room.state.players[1]!.alliedPlayer).toBe(4);
+  });
+
+  run('★★ 第二十六份 panel #1：惡人的整个回合（含**停留**不走的那一个）两端都交出同一个行动者；下一位行动者那条 action 清掉', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = landAll(
+      newGame({ map, players: seats().map((s) => ({ character: s.character, kind: s.kind })), seed: 13, mode: 'multiplayer' }),
+      map.nodes,
+    );
+    const specialActors = [...base.specialActors];
+    specialActors[0] = releaseNpc(map.nodes[6]!.id, 1, 0); // 小偷：会走
+    specialActors[2] = { ...releaseNpc(map.nodes[12]!.id, 2, 0), halted: 3 }; // 流氓：停留
+    const state: GameState = { ...base, currentPlayer: 3, phase: 'turnEnd', pending: null, pendingNpcSlots: [], specialActors };
+    const room = new Room({ id: 'PANMP3', map, globalMapId: 0, seed: 13, seats: seats(), options: LOBBY_DEFAULT_OPTIONS, base: { state, snapshot: '' } });
+    room.start();
+    const mirror = { s: state };
+    expect(submitBoth(room, mirror, topo, 3, { type: 'endTurn' }).ok).toBe(true);
+    expect(room.state.lastNpcTurn).toEqual({ actor: 4 });
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
+    expect(submitBoth(room, mirror, topo, room.actingSeat, { type: 'npcStep' }).ok).toBe(true);
+    expect(room.state.lastNpcWalks).toEqual([]); // 停留 ⇒ 没有补间
+    expect(room.state.lastNpcTurn).toEqual({ actor: 6 });
+    expect(room.state.phase).toBe('turnStart'); // 最后一个惡人那一条连推日期、换到 0 号
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
+    expect(submitBoth(room, mirror, topo, room.actingSeat, { type: 'startTurn' }).ok).toBe(true);
+    expect(room.state.lastNpcTurn ?? null).toBeNull();
+    expect(sidebarInputs(mirror.s)).toEqual(sidebarInputs(room.state));
   });
 
   run('#16 换人让下一位落地 ⇒ 两端 `currentPlayer` 都已是他（侧栏在影片期间画他）', () => {

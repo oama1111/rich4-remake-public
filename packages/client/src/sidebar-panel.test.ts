@@ -31,6 +31,7 @@ import {
   MINI_PORTRAIT,
   VILLAIN_PANEL,
   allyPortraitPlayer,
+  panelActorSlot,
   panelSubject,
   type HudInput,
 } from './hud.ts';
@@ -64,6 +65,23 @@ function callTarget(va: number): number {
 //  ① exe 字节
 // ============================================================
 describe('① 回 exe 钉', () => {
+  runExe('★★ 第二十六份 panel #1：惡人**回合开头**整窗重画一次（侧栏换成他），之后到下一位行动者才再画', () => {
+    // 游标推进 00418f9c mov [0x49910c], esi
+    expect(hex(exeBytes(0x418f9c, 6))).toBe('89 35 0c 91 49 00');
+    // 回合开头 fcn_00418c55（主循环 00401db3 调它）
+    expect(callTarget(0x401db3)).toBe(0x418c55);
+    // 00418d41 mov ecx,[0x49910c] / cmp ecx,4 / jl / cmp ecx,8 / jge / shl 4 / cmp byte [eax+0x498df2],0 / jne
+    // 00418d5f push 1 / call 0x416e6d / 00418d69 call 0x41d546
+    expect(hex(exeBytes(0x418d41, 0x2d))).toBe(
+      '8b 0d 0c 91 49 00 83 f9 04 7c 22 83 f9 08 7d 1d 89 c8 c1 e0 04 80 b8 f2 8d 49 00 00 75 0f 6a 01 e8 07 e1 ff ff 83 c4 04 e8 d8 47 00 00',
+    );
+    expect(callTarget(0x418d61)).toBe(0x416e6d);
+    expect(callTarget(0x418d69)).toBe(0x41d546);
+    // 0041d546 [0x48be18] = 0 / push 1 / call 0x41906a（→ 0x417e26 WM_PAINT → 0x415f69 / 0x4166f8）
+    expect(hex(exeBytes(0x41d546, 0x13))).toBe('31 d2 89 15 18 be 48 00 6a 01 e8 15 bb ff ff 83 c4 04 c3');
+    expect(callTarget(0x41d550)).toBe(0x41906a);
+  });
+
   runExe('#2 两个面板开头同一条判据：`[0x49910c] < [0x499114]` 或 `== 8` ⇒ 玩家，其余 ⇒ 惡人', () => {
     // 整版 00415fc1 mov eax,[0x49910c] / cmp eax,[0x499114] / jl / cmp eax,8 / je
     expect(hex(exeBytes(0x415fc1, 26))).toBe(
@@ -202,6 +220,18 @@ describe('② `panelSubject` / `allyPortraitPlayer`', () => {
 
   it('★ 機器娃娃（槽 4 = actor 8）⇒ 仍是玩家（用道具的那位 = 当前玩家）', () => {
     expect(panelSubject(state(), 4)).toEqual({ kind: 'player', player: 3 });
+  });
+
+  it('★★ 第二十六份 panel #1：`panelActorSlot` 读 core 的 `lastNpcTurn`（行动者游标），不看补间', () => {
+    expect(panelActorSlot({})).toBeNull();
+    expect(panelActorSlot({ lastNpcTurn: null })).toBeNull();
+    expect(panelActorSlot({ lastNpcTurn: { actor: 4 } })).toBe(0);
+    expect(panelActorSlot({ lastNpcTurn: { actor: 7 } })).toBe(3);
+    // 表外的号（玩家 / 機器娃娃）一律不算惡人
+    expect(panelActorSlot({ lastNpcTurn: { actor: 2 } })).toBeNull();
+    expect(panelActorSlot({ lastNpcTurn: { actor: 8 } })).toBeNull();
+    const s = { ...state(), lastNpcTurn: { actor: 5 } };
+    expect(panelSubject(s, panelActorSlot(s))).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
   });
 
   it('`alliedPlayer` = 玩家号 + 1；0 = 没有', () => {
@@ -447,18 +477,46 @@ describe('④ 单机 / 联机画的是同一个东西', () => {
       const walk = host.lastNpcWalks.find((w) => w.slot === 1);
       expect(walk, '强盜这一趟交给了表现层').toBeTruthy();
       expect(remote.lastNpcWalks).toEqual(host.lastNpcWalks);
-      expect(panelSubject(host, 1)).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
-      expect(panelSubject(remote, 1)).toEqual(panelSubject(host, 1));
+      // ★★ 第二十六份 panel #1：侧栏跟的是行动者游标（`lastNpcTurn`），整条 action 都是他 —— 补间走没走完都一样
+      expect(panelActorSlot(host)).toBe(1);
+      expect(panelActorSlot(remote)).toBe(1);
+      expect(panelSubject(host, panelActorSlot(host))).toEqual({ kind: 'villain', actor: 5, name: '強盜', owner: 2 });
+      expect(panelSubject(remote, panelActorSlot(remote))).toEqual(panelSubject(host, panelActorSlot(host)));
+      // 下一条 action（下一位行动者）⇒ 两端都回到当前玩家（含结盟小头像）
+      const hostNext = reduce(host, { type: 'startTurn' }, topo);
+      const remoteNext = reduce(remote, { type: 'startTurn' }, topo);
+      expect(panelActorSlot(hostNext)).toBeNull();
+      expect(panelActorSlot(remoteNext)).toBeNull();
       for (const view of [0, 1, 2]) {
-        // 补间在走的那一段
-        const a = await drawTwice(host, map, view, 1);
-        const b = await drawTwice(remote, map, view, 1);
+        const a = await drawTwice(host, map, view, panelActorSlot(host));
+        const b = await drawTwice(remote, map, view, panelActorSlot(remote));
         expect(b).toEqual(a);
-        // 补间走完 ⇒ 回到当前玩家（含结盟小头像）
-        const c = await drawTwice(host, map, view, null);
-        const d = await drawTwice(remote, map, view, null);
+        expect(images(a).some((i) => i.tag === `Panel.mkf:0:${view === 2 ? COMPACT.image : VILLAIN_PANEL.image}`)).toBe(true);
+        const c = await drawTwice(hostNext, map, view, panelActorSlot(hostNext));
+        const d = await drawTwice(remoteNext, map, view, panelActorSlot(remoteNext));
         expect(d).toEqual(c);
+        expect(images(c).some((i) => i.tag === `Panel.mkf:0:${VILLAIN_PANEL.image}`)).toBe(false);
       }
+    });
+
+    runMap(`★★ ${mode}：**停留**的强盜（不走）⇒ 这一回合侧栏照样是他；两端一致`, async () => {
+      const map = loadMap();
+      const topo = topoOf(map);
+      const s0 = landAll(
+        newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: (i * 5) % 12, kind: 'computer' as const })), seed: 5, mode }),
+        map.nodes,
+      );
+      const specialActors = [...s0.specialActors];
+      specialActors[1] = { ...releaseNpc(map.nodes[10]!.id, 2, 0), halted: 3 };
+      const before: GameState = { ...s0, currentPlayer: 3, phase: 'turnEnd', pending: null, pendingNpcSlots: [], specialActors };
+      const host = reduce(before, { type: 'endTurn' }, topo);
+      const remote = reduce(structuredClone(before), { type: 'endTurn' }, topo);
+      expect(host.lastNpcWalks, '停留 ⇒ 没有补间').toEqual([]);
+      expect(panelActorSlot(host)).toBe(1);
+      expect(panelActorSlot(remote)).toBe(1);
+      const a = await drawTwice(host, map, 1, panelActorSlot(host));
+      expect(a).toEqual(await drawTwice(remote, map, 1, panelActorSlot(remote)));
+      expect(strip(texts(a))).toContainEqual({ s: '強盜', x: 142, y: 40 });
     });
   }
 });
@@ -493,7 +551,9 @@ describe('#16 落地影片期间：侧栏已是**新**玩家（原版在影片�
     const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     expect(main).toContain('state: withLandingHidden(hudState),');
     expect(main).toContain('panelPage: panelPages[hudState.currentPlayer] ?? 0,');
-    expect(main).toContain('npcSlot: npcWalk?.slot ?? null,');
+    // ★★ 第二十六份 panel #1：侧栏跟行动者游标（core 的 `lastNpcTurn`），不跟补间
+    expect(main).toContain('npcSlot: panelActorSlot(hudState),');
+    expect(main).not.toContain('npcSlot: npcWalk?.slot ?? null,');
   });
 });
 

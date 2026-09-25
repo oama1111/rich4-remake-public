@@ -394,6 +394,32 @@ export interface NpcWalkHint {
 }
 
 /**
+ * ★★ **这一条 action 把行动者游标交给了哪个惡人**（actor 4..7）—— 纯表现提示（第二十六份 panel #1）。
+ *
+ * 原版侧栏画谁只看行动者 `[0x49910c]`（整版 `0x00415fc1` / 窄版 `0x00416767`），而侧栏只在整窗重画时才画：
+ * ```asm
+ * ; 游标推进 fcn_00418ebd
+ * 00418f9c  mov [0x49910c], esi            ; 轮到下一位（4..7 = 惡人，+0x0a ≠ 0 的跳过 0x00418fdc）
+ * 00419058  or  byte [actor×0x34 + 0x498ea0], 0x80   ; 挂「该开回合了」
+ * ; 回合开头 fcn_00418c55（主循环 0x00401db3）
+ * 00418d41  cmp ecx, 4 / jl · cmp ecx, 8 / jge · cmp byte [actor×16 + 0x498df2], 0 / jne
+ * 00418d5f  call 0x416e6d(1) / 00418d69 call 0x41d546   ; → 0x41906a(1) → WM_PAINT 0x00418bb9 → 0x415f69 / 0x4166f8
+ * 00418d70  call 0x40c912(0) → 0x00418dc6 … 0x00418e75 call 0x40dd1f   ; 这才开始走（停留的 0x0040de2b 也照样开回合）
+ * ```
+ * ⇒ 惡人一轮到就整窗重画成**他那一版**，之后侧栏不再重画（走子 `0x40829d`、訊息框 `0x440cac` 都不碰侧栏），
+ *   一直留到下一位行动者回合开头那次重画 —— 走完之后的「小偷偷得…」框、受害者台词、**停留**不走的那一回合都算他的。
+ *
+ * core 一条 `npcStep`（或绕回的那条 `endTurn`）就是一个惡人的整个回合，下一条 action 就是下一位行动者
+ * ⇒ 本字段**只活一条 action**（`reduce` 出口按引用相等清成 null，同 `lastBlockedSays`），
+ *   表现层在它还在时画惡人那一版。不进指纹、不进存档、不进 history。
+ *   保釋当场那一趟**不写**：原版保釋（`0x0043d7e0` / `0x0043ee8f`）不动 `[0x49910c]`。
+ */
+export interface NpcTurnHint {
+  /** 行动者号 4..7（= 槽 + 4）*/
+  readonly actor: number;
+}
+
+/**
  * **上一次「某玩家用出了某张卡」** —— 纯表现提示（卡牌使用者台词）。
  *
  * ★ 为什么要有它：原版每张卡的函数体里都有一句
@@ -1351,6 +1377,12 @@ export interface GameState {
    *     的规则可见部分，读了它反而是把表现混进确定性重放（C-DET-4）。
    */
   lastNpcWalks: NpcWalkHint[];
+
+  /**
+   * ★★ 这一条 action 轮到的惡人（侧栏画他那一版）—— 纯表现提示，见 `NpcTurnHint`。
+   * 只活一条 action；缺席 / `null` = 这一条不是惡人的回合。
+   */
+  lastNpcTurn?: NpcTurnHint | null;
 
   /**
    * **上一次用出的卡**（出牌者 + 卡号）—— 纯表现提示，见 `CardPlayHint`。
