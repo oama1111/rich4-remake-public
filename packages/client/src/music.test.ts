@@ -585,3 +585,89 @@ describe('★ 背景曲要用的三样：从半路放起 / 放到哪儿了 / 放
     }
   });
 });
+
+// ------------------------------------------------------------
+//  ★ 弯音（第十二份試玩回報「背景音乐卡住了」）—— 解析见 `midi.ts` 文件头
+//    midi07（百貨公司 / 樂透）那组 23.9 秒长音靠弯音换和弦；两个后端都得把它排到音高上。
+// ------------------------------------------------------------
+
+describe('★ 弯音排到音高上（两个后端）', () => {
+  const bentNote = {
+    time: 0,
+    duration: 2,
+    note: 69,
+    velocity: 100,
+    channel: 2,
+    program: 50,
+    bend: -1,
+    bends: [
+      { at: 0.5, semitones: -2 },
+      { at: 1.5, semitones: 0 },
+    ],
+  };
+
+  it('★★ 振荡器：起音按 `bend`、途中每条 `bends` 在「起音 + at」阶跃到对应频率', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule(bentNote, 10);
+    const osc = ctx.sources[0] as FakeOscillator;
+    const sets = osc.frequency.events.filter((e) => e.kind === 'set');
+    expect(sets.map((e) => e.time)).toEqual([10, 10.5, 11.5]);
+    expect(sets[0]!.value).toBeCloseTo(440 * Math.pow(2, -1 / 12), 6);
+    expect(sets[1]!.value).toBeCloseTo(440 * Math.pow(2, -2 / 12), 6);
+    expect(sets[2]!.value).toBeCloseTo(440, 6);
+    voice.stop();
+  });
+
+  it('振荡器：不带弯音的音符不多排任何频率事件（形状与先前一样）', () => {
+    const { voice, ctx } = drumVoice();
+    voice.schedule({ time: 0, duration: 1, note: 69, velocity: 100, channel: 0, program: 0 }, 0);
+    const osc = ctx.sources[0] as FakeOscillator;
+    expect(osc.frequency.value).toBeCloseTo(440, 6);
+    expect(osc.frequency.events).toHaveLength(0);
+    voice.stop();
+  });
+
+  it('★★ 音色库：弯音 × 100 音分叠到 playbackRate 上（根音 69 ⇒ 不弯 = 1.0）', () => {
+    const ctx = new FakeAudioContext();
+    const dest = ctx.createGain();
+    const sf = new SoundFontVoice(
+      ctx as unknown as AudioContext,
+      dest as unknown as AudioNode,
+      parseSoundFont(buildTestSf2({ rootKey: 69 })),
+    );
+    // 测试音色库只有 0 号预设 ⇒ 换成 program 0（弯音与音色无关）
+    sf.schedule({ ...bentNote, program: 0 }, 10);
+    const src = ctx.sources[0]!;
+    const sets = src.playbackRate.events.filter((e) => e.kind === 'set');
+    expect(sets.map((e) => e.time)).toEqual([10, 10.5, 11.5]);
+    expect(sets[0]!.value).toBeCloseTo(Math.pow(2, -1 / 12), 9);
+    expect(sets[1]!.value).toBeCloseTo(Math.pow(2, -2 / 12), 9);
+    expect(sets[2]!.value).toBeCloseTo(1, 9);
+    sf.stop();
+  });
+
+  it('★ 经 MusicPlayer 整条链路：与 midi07 同形的长音真的被排了弯音（不再是死和弦）', () => {
+    // 手搓一份与 midi07 同形的最小片段：按住 A、两拍后弯到 −2、再回中
+    const song = wrapMidi(
+      trackChunk([
+        { delta: 0, bytes: [0xc2, 50] },
+        { delta: 0, bytes: [0x92, 69, 76] },
+        { delta: 960, bytes: [0xe2, 0x00, 0x00] },
+        { delta: 960, bytes: [0xe2, 0x00, 0x40] },
+        { delta: 960, bytes: [0x82, 69, 0] },
+      ]),
+    );
+    const { player, ctx } = readyPlayer();
+    player.play('midi07.mid', song);
+    const osc = ctx.sources[0] as FakeOscillator;
+    const sets = osc.frequency.events.filter((e) => e.kind === 'set');
+    // 起音那一刻（不弯）+ 两次变化
+    expect(sets).toHaveLength(3);
+    expect(sets[0]!.time).toBeCloseTo(osc.starts[0]!.when, 9);
+    expect(sets[0]!.value).toBeCloseTo(440, 6);
+    expect(sets[1]!.time - osc.starts[0]!.when).toBeCloseTo(1, 6); // 960 tick = 2 拍 = 1 s
+    expect(sets[1]!.value).toBeCloseTo(440 * Math.pow(2, -2 / 12), 6);
+    expect(sets[2]!.value).toBeCloseTo(440, 6);
+    player.stop();
+  });
+});

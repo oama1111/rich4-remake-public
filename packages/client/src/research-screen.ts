@@ -55,8 +55,10 @@ import type { PendingInteraction } from '@rich4/core';
 import { RESEARCH_MIN_PROJECT, RESEARCH_MAX_PROJECT, researchTool } from '@rich4/core';
 import { TOOLS } from '@rich4/data';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
+import { ARROW_CURSOR, localTurn, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 立绘板与五格条所在的档案 @source `read_mkf(Data.mkf, 0x205)`（VA 0x00408072 尾）*/
 export const RESEARCH_ARCHIVE: ArchiveName = 'Data.mkf';
@@ -388,14 +390,10 @@ function researchText(
   x: number,
   y: number,
 ): void {
-  ctx.font = `${RESEARCH_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = RESEARCH_OUTLINE;
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = RESEARCH_FILL;
-  ctx.fillText(text, x, y);
+  // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x004410fd —— 粗体 + 右下 1 px 阴影（`font.ts`）
+  drawGdiText(ctx, text, x, y, { size: RESEARCH_FONT_SIZE, color: RESEARCH_FILL, color2: RESEARCH_OUTLINE, flags: 3, spacing: 1 });
 }
 
 /**
@@ -447,8 +445,9 @@ export function drawResearchScreen(
   // ── 立绘板 + 标题 ──
   const title = researchSprite(sprite, RESEARCH_ARCHIVE, RESEARCH_RESOURCE, RESEARCH_TITLE_CHUNK);
   if (title !== null) {
-    ctx.drawImage(
-      title.bitmap,
+    drawSprite(
+      ctx,
+      title,
       RESEARCH_TITLE_CHUNK_AT.x - title.anchorX,
       RESEARCH_TITLE_CHUNK_AT.y - title.anchorY,
     );
@@ -458,8 +457,9 @@ export function drawResearchScreen(
   // ── 五格条 ──
   const strip = researchSprite(sprite, RESEARCH_ARCHIVE, RESEARCH_RESOURCE, RESEARCH_STRIP_CHUNK);
   if (strip !== null) {
-    ctx.drawImage(
-      strip.bitmap,
+    drawSprite(
+      ctx,
+      strip,
       RESEARCH_STRIP_AT.x - strip.anchorX,
       RESEARCH_STRIP_AT.y - strip.anchorY,
     );
@@ -475,7 +475,7 @@ export function drawResearchScreen(
     );
     if (icon !== null) {
       const at = researchIconAt(i);
-      ctx.drawImage(icon.bitmap, at.x - icon.anchorX, at.y - icon.anchorY);
+      drawSprite(ctx, icon, at.x - icon.anchorX, at.y - icon.anchorY);
     }
     const g = researchGrayRectAt(i);
     researchGray(ctx, g.x, g.y, g.w, g.h);
@@ -527,6 +527,14 @@ export const researchScreen: UiScreen = {
 
   active(env: UiScreenEnv): boolean {
     return env.screen === 'game' && isResearchPending(env.state.pending);
+  },
+
+  /**
+   * 软件指针：面板 `WM_CREATE` 里放出箭头 @source 0x0044035e `fcn_00402460(1)`（与 0x00440355 挪指针同一拍）；
+   * 联机旁观 / 电脑的回合藏着。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return localTurn(env) ? showCursor(ARROW_CURSOR) : null;
   },
 
   draw(env: UiScreenEnv): void {

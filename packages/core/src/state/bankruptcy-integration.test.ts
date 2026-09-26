@@ -6,17 +6,28 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
-import { WHO_PLAYS_DEAD, isAlive } from './types.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_DEAD, WHO_PLAYS_HUMAN, isAlive } from './types.ts';
 import { applyBankruptcy, applyMagicRequest, gameOverCode, isGameOver, reduce } from './reduce.ts';
 import { decideAction } from '../ai/policy.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 import type { GameState } from './types.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
 const loadMap = () => parseMap(new Uint8Array(readFileSync(MAP)));
+// ★ 2026-09-24 审计：0 号是真人。原版破产后数的是**在场真人**（`0x0040d029 test esi, esi`），
+//   全电脑的局第一次破产就收局（码 1）—— 清算 / 拍卖那几条要在「还有真人在场」的局里测。
 const players = (n = 4) =>
-  Array.from({ length: n }, (_, i) => ({ character: i, kind: 'computer' as const }));
+  Array.from({ length: n }, (_, i) => ({ character: i, kind: i === 0 ? ('human' as const) : ('computer' as const) }));
 
 const fresh = (n = 4): GameState => newGame({ map: loadMap(), players: players(n), seed: 1 });
 
@@ -32,6 +43,22 @@ describe('破产标记', () => {
     expect(after.prisonOccupancy[1]).toBe(0);      // ★ 自己那格清掉
     expect(after.hospitalOccupancy[1]).toBe(0);    // ★ 两张都清（即便当时不在医院）
     expect(after.hospitalOccupancy[2]).toBe(1);    // 别人的床位不动
+  });
+
+  run('★★ 第十八份：破产先把贴图坐标按所在格重同步（住店时的旅館坐标不留下）@source 0x0040cdb0..0x0040cde4', () => {
+    const map = loadMap();
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
+    const base = fresh();
+    const node = map.nodes.find((n) => n.id === base.players[1]!.nodeId)!;
+    const s: GameState = {
+      ...base,
+      players: base.players.map((p, i) =>
+        i === 1 ? { ...p, xpos: node.x + 24, ypos: node.y + 71, blocking: { ...p.blocking, inHotel: 0x80 } } : p,
+      ),
+    };
+    const after = applyBankruptcy(s, 1, topo);
+    expect([after.players[1]!.xpos, after.players[1]!.ypos]).toEqual([node.x, node.y]);
+    expect(after.players[1]!.blocking.inHotel).toBe(0);
   });
 
   run('出局者 whoPlays 归零、现金清空', () => {
@@ -191,11 +218,63 @@ describe('★ 破产清算的下線拍卖', () => {
     }
   });
 
-  run('释放 > 3 处：开拍，且队列里恰好再排 2 场（共 3 场）', () => {
+  run('释放 > 3 处：开拍，抽签与开拍交错（★ AUC-43：队列里只有「下一抽」）', () => {
     const s = applyBankruptcy(withLands(5), 1, topo());
     expect(s.pending?.kind).toBe('auction');
-    expect(s.pendingQueue.length).toBe(2);
+    // ★★ AUC-43（`0x0040d1d7` ↔ `0x0040d1e3`）：原版**抽一处就开一场**（开拍自己还要掷
+    //   心理价位的 rand），那一场跑完才回来抽下一处。所以队列里不会有「已经抽好的下一场」，
+    //   只有一个「下一抽」的待办 —— 它在前一场落槌后才真正掷 rand。
+    expect(s.pendingQueue.length).toBe(1);
+    expect(s.pendingQueue[0]?.kind).toBe('bankruptcyDraw');
     expect(s.phase).toBe('awaitingDecision');
+    // 三场连打：每一场落槌后自动接上下一抽
+    const first = s.pending;
+    expect(first?.kind).toBe('auction');
+    const opened: number[] = [first?.kind === 'auction' ? first.entityId : 0];
+    let cur = s;
+    for (let i = 0; i < 2; i++) {
+      cur = reduce(cur, { type: 'auction', winner: 0, price: 0 }, topo());
+      const p = cur.pending;
+      expect(p?.kind).toBe('auction');
+      opened.push(p?.kind === 'auction' ? p.entityId : 0);
+    }
+    expect(new Set(opened).size, '三场不重复（抽到就划掉）').toBe(3);
+    cur = reduce(cur, { type: 'auction', winner: 0, price: 0 }, topo());
+    expect(cur.pendingQueue).toEqual([]);
+  });
+
+  run('★★ AUC-43：抽签与原版同序 —— 每一抽都发生在**前一场开拍之后**', () => {
+    // 夹具：0 号真人、1 号破产者（名下 5 块地）、2/3 号电脑。
+    // 在座出价者里两位都是电脑 ⇒ **每场开拍正好掷四次** rand（`auctionAiLimit` 的
+    // `rand()/32767` 与 `rand()/65536` 两个系数 × 两家，`0x439f0d` 那一段，每家两次）。
+    const base = withLands(5);
+    const s = applyBankruptcy(base, 1, topo());
+    // 交错的模型（原版 0x40d1d7..0x40d20f）：抽一处（空槽重抽）→ 开拍（2×2 次 rand）→ 再抽
+    const model = new WatcomRng();
+    model.setState(base.rngState);
+    const slots = [0, 1, 2, 3, 4];
+    const picked: number[] = [];
+    for (let round = 0; round < 3; round++) {
+      let at = -1;
+      do {
+        at = model.next() % slots.length;
+      } while (slots[at] === 0);
+      slots[at] = 0;
+      picked.push(at);
+      // 开拍：在座的**每一位电脑**座位各掷两次（心理价位系数 + 缺地系数）
+      for (let k = 0; k < 4; k++) model.next();
+    }
+    // 地块 id = 下标 + 1（`withLands` 铺的是 landOwner[1..5]）⇒ `pending.entityId` 就是那个 id
+    const expected = picked.map((i) => i + 1);
+    let cur = s;
+    const opened: number[] = [];
+    for (let round = 0; round < 3; round++) {
+      expect(cur.pending?.kind).toBe('auction');
+      opened.push(cur.pending?.kind === 'auction' ? cur.pending.entityId : -1);
+      cur = reduce(cur, { type: 'auction', winner: -1, price: 0 }, topo());
+    }
+    expect(opened, '抽签次序 = 交错模型（旧「三抽在前」在这个夹具上是 2,5,3）').toEqual(expected);
+    expect(cur.rngState, '整条随机流也逐位对上').toBe(model.getState());
   });
 
   run('★ 只拍 3 场 —— 剩下的地仍然无主', () => {
@@ -293,7 +372,11 @@ describe('★ 破产者的拍卖不会卡死', () => {
     const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
     const base = fresh();
     // 玩家 0 出局（他正是 currentPlayer），玩家 1 名下有 4 块地 → 触发下線拍卖
-    const players = base.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_DEAD } : p));
+    // 3 号换成**託管的真人**（1|4）：0 号（唯一的真人）出局后还得有真人在场，否则原版直接收局
+    //   （0x0040d029 数的是 `who_plays & 1`，託管也算）；託管照样由 `decideAction` 替他举牌
+    const players = base.players.map((p, i) =>
+      i === 0 ? { ...p, whoPlays: WHO_PLAYS_DEAD } : i === 3 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT } : p,
+    );
     const landOwner = [...base.landOwner];
     for (let i = 1; i <= 4; i++) landOwner[i] = 2;
     const s = applyBankruptcy({ ...base, players, landOwner }, 1, topo);
@@ -337,9 +420,10 @@ describe('终局判定', () => {
     const s: GameState = {
       ...base,
       players: base.players.map((p, i) => (i === 0 ? p : { ...p, whoPlays: WHO_PLAYS_DEAD })),
+      phase: 'gameOver',
     };
     expect(isGameOver(s)).toBe(true);
-    expect(gameOverCode(s)).toBeGreaterThan(0);
+    expect(gameOverCode(s)).toBe(2);
   });
 
   run('★ 全员出局给出终局码 1', () => {
@@ -347,8 +431,45 @@ describe('终局判定', () => {
     const s: GameState = {
       ...base,
       players: base.players.map((p) => ({ ...p, whoPlays: WHO_PLAYS_DEAD })),
+      phase: 'gameOver',
     };
     expect(gameOverCode(s)).toBe(1);
+  });
+});
+
+describe('★ 审计订正：真人全出局即收局 @source 0x0040cfdb..0x0040d034', () => {
+  run('单人类局：唯一的真人破产 ⇒ 当场终局（码 1），清算跳过 —— 电脑还剩 3 家也一样', () => {
+    const base = fresh();
+    const landOwner = [...base.landOwner];
+    landOwner[1] = 1; // 真人 0 号有一块地
+    const s = applyBankruptcy({ ...base, landOwner }, 0);
+    expect(s.phase).toBe('gameOver');
+    expect(gameOverCode(s)).toBe(1);
+    expect(s.landOwner[1]).toBe(1); // 终局路径不清算
+  });
+
+  run('2 真人局：一个真人破产、另一个还在 ⇒ 照常清算；第二个也破产 ⇒ 收局', () => {
+    const base = fresh();
+    const two: GameState = {
+      ...base,
+      humanPlayers: 2,
+      players: base.players.map((p, i) => (i === 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p)),
+    };
+    const first = applyBankruptcy(two, 0);
+    expect(first.phase).not.toBe('gameOver');
+    const second = applyBankruptcy({ ...first, pending: null, pendingQueue: [] }, 1);
+    expect(second.phase).toBe('gameOver');
+    expect(gameOverCode(second)).toBe(1);
+  });
+
+  run('破产者被别人记着的敌意清零 @source 0x0040cf47..0x0040cf6b', () => {
+    const base = fresh();
+    const s0: GameState = {
+      ...base,
+      players: base.players.map((p, i) => (i === 2 ? { ...p, hostility: [5, 7, 0, 9] } : p)),
+    };
+    const s = applyBankruptcy(s0, 1);
+    expect(s.players[2]!.hostility).toEqual([5, 0, 0, 9]);
   });
 });
 
@@ -383,12 +504,83 @@ describe('★ 付不起过路费会真的破产', () => {
   });
 });
 
+/**
+ * ★★ PAY-05：清算拍卖**跑完**才轮到收款人入账。
+ *
+ * @source `pay_money` VA 0x0041d2c6：
+ * ```asm
+ * 0041d375  push esi
+ * 0041d376  call 0x40cd87        ; ★ 清算 + 下線拍卖（0x40d1e3 call 0x43bde5 是**阻塞**的）
+ * 0041d37b  add  esp, 4
+ * 0041d37e  imul eax, esi, 0x68
+ * 0041d381  add  [eax + 0x496bc4], ebx     ; 本月支出
+ * 0041d387  cmp  edi, -1                   ; ← 收款方分支在**清算之后**
+ * ```
+ * ⇒ 地主在清算拍卖期间**还没拿到**这笔过路费，他的現金不参与竞价。
+ */
+describe('★★ PAY-05：破产清算跑完才给收款人入账', () => {
+  run('踩到高级地产付不起 ⇒ 先清算拍卖，地主在拍卖期间拿不到钱，打完才到账', () => {
+    const map = loadMap();
+    const topo = { nodes: map.nodes, lands: map.lands };
+    // ★ 场上要有**两位真人**：只有一位时他一出局就收局，清算整段被跳过（`0x0040cfdb`，见 BKR-06）
+    const base = newGame({
+      map,
+      players: [
+        { character: 0, kind: 'human' as const },
+        { character: 1, kind: 'computer' as const },
+        { character: 2, kind: 'human' as const },
+        { character: 3, kind: 'computer' as const },
+      ],
+      seed: 1,
+    });
+    const landNode = map.nodes.find((n) => n.ref.kind === 'land');
+    if (landNode === undefined) return;
+    const idx = landNode.ref.kind === 'land' ? landNode.ref.index : 0;
+    // 玩家 0 名下另有 4 块地 ⇒ 破产清算要开 3 场拍卖（> 3 处）
+    const landOwner = [...base.landOwner];
+    landOwner[idx] = 2; // 落点这块归玩家1（地主）
+    const spare = map.lands.filter((l) => l.id !== idx && l.id >= 1).slice(0, 4).map((l) => l.id);
+    for (const id of spare) landOwner[id] = 1; // 归玩家0（破产者）
+    const landLevel = [...base.landLevel];
+    landLevel[idx] = 5; // 满级，租金必然付不起
+    const s: GameState = {
+      ...base,
+      landOwner,
+      landLevel,
+      priceIndex: 50,
+      players: base.players.map((p, i) =>
+        i === 0 ? { ...p, nodeId: landNode.id, cash: 1, moneyInBank: 0 } : p,
+      ),
+      phase: 'settling',
+    };
+    const landlordBankBefore = s.players[1]!.moneyInBank;
+
+    const after = reduce(s, { type: 'settle' }, topo);
+    expect(isAlive(after.players[0]!)).toBe(false);
+    expect(after.pending?.kind, '清算开出了拍卖').toBe('auction');
+    expect(after.players[1]!.moneyInBank, '★ 拍卖期间地主还没拿到这笔钱').toBe(landlordBankBefore);
+    expect(after.pendingQueue.some((q) => q.kind === 'credit')).toBe(true);
+
+    // 把这场清算的三场拍卖打完（流拍，免得中标者又付不起）
+    let cur = after;
+    let auctions = 0;
+    while (cur.pending?.kind === 'auction' && auctions < 10) {
+      auctions++;
+      cur = reduce(cur, { type: 'auction', winner: -1, price: 0 }, topo);
+      if (cur.players[1]!.moneyInBank !== landlordBankBefore) break;
+    }
+    expect(auctions, '三场清算拍卖').toBe(3);
+    expect(cur.pendingQueue, '队列清空').toEqual([]);
+    expect(cur.players[1]!.moneyInBank, '★ 三场打完地主的入账才落地').toBe(landlordBankBefore + 1);
+    expect(cur.players[1]!.monthlyReceived).toBe(s.players[1]!.monthlyReceived + 1);
+  });
+});
+
 // ============================================================
 //  ★ 变卖手牌与道具（2026-09-16 补）
 //    @source `rich4_player_bankrupt.asm:412-417`：
 //    `call _rich4_player_sell_all_tools` / `call _rich4_player_sell_all_the_card`
 // ============================================================
-
 describe('★ 破产清算会把出局者的手牌与道具**卖回商店**', () => {
   run('道具清空、编号 ≤ 8 的进商店库存、所得不进點券', () => {
     const base = fresh();

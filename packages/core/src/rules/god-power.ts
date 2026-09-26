@@ -34,17 +34,17 @@
  * ## 金額是那扇窗转出来的（C-DET：結果由 core 定）
  *
  * 上面四种「金額」型的神都 `call fcn_00440706(arg)` 开一扇**浮窗**
- *（`arg`：0 小財神 / 1 大財神 / 4 小窮神 / 5 大衰神……见 `Q-GOD-1`），
+ *（`arg`：0 小財神 / 1 大財神 / 4 小窮神 / 5 大窮神，见 `Q-GOD-1`），
  * 窗里的 `fcn_0043f23e` 每 **10 tick** 重掷一次四个数字
- *（`[0x48c504+i] = rand() % 10 * 2 + 1`，WA 0x0040f2d7 那个循环），退出时拼成一个数：
+ *（`[0x48c504+i] = rand() % 10 * 2 + 1`，VA 0x0043f2d7 那个循环），退出时拼成一个数：
  *
  * ```asm
- * ; VA 0x0043f66x（拼数）—— 四个字节分别是 [0x48c504..0x48c507]
+ * ; VA 0x0043f630..0x0043f685（拼数）—— 四个字节分别是 [0x48c504..0x48c507]
  * edx  = (c6/2)*10                       ; shl 2 + add 自身 = ×5，再 ×2
  * edx += (c7/2)
  * edx += (c5/2)*100                      ; imul eax, eax, 0x64
  * [esp+0xac] = edx
- * if (arg == 0) [esp+0xac] += (c4/2)*1000  ; ★ 只有小財神加千位
+ * if (ebp == 0) [esp+0xac] += (c4/2)*1000  ; ★ ebp = (arg & 1) ^ 1：只有大財神 / 大窮神加千位（0x0043f662）
  * ```
  * 即**最多四位**的十进制数：`c4/2` 千位、`c5/2` 百位、`c6/2` 十位、`c7/2` 个位；
  * `c_i/2` 是**算术右移**，对 `rand()%10*2+1` 正好等于 `rand()%10`。
@@ -127,15 +127,15 @@ export type GodPower =
   | { kind: 'sellEverything' };
 
 /**
- * 轉盤窗每 10 tick 重掷的「數字」个数 —— 原版那个循环恒 `ebx < 4`（0x0040f2d7）。
+ * 轉盤窗每 10 tick 重掷的「數字」个数 —— 原版那个循环恒 `ebx < 4`（0x0043f2f3）。
  * 四种金額型的神都取满 4 次 `rand()`，故替身也取 4 次（随机数消耗同形）。
  */
 export const GOD_POWER_DIGITS = 4;
 
 export interface GodAmounts {
-  /** 四位數：`d4*1000 + d5*100 + d6*10 + d7`（小財神）*/
+  /** 四位數：`d4*1000 + d5*100 + d6*10 + d7`（大財神 / 大窮神 —— 四位數老虎机）*/
   four: number;
-  /** 三位數：`d5*100 + d6*10 + d7`（大財神 / 小窮神 / 大窮神）*/
+  /** 三位數：`d5*100 + d6*10 + d7`（小財神 / 小窮神 —— 三位數老虎机）*/
   three: number;
 }
 
@@ -143,7 +143,7 @@ export interface GodAmounts {
  * 掷一次「金額」：`GOD_POWER_DIGITS` 次 `rand() % 10`，按原版那个顺序
  * （`[0x48c504] → [0x48c505] → [0x48c506] → [0x48c507]`）当千/百/十/个位。
  *
- * @source 0x0040f2d7（`rand() % 10 * 2 + 1`）配 0x0043f66x（那份拼数）
+ * @source 0x0043f2d7（`rand() % 10 * 2 + 1`）配 0x0043f630..0x0043f685（那份拼数）
  */
 export function rollGodAmounts(rng: WatcomRng): GodAmounts {
   const digits: number[] = [];
@@ -163,19 +163,40 @@ export function rollGodAmounts(rng: WatcomRng): GodAmounts {
  *   **不**开那扇窗（`fcn_00440706` 的四个调用点就是 0/1/4/5），
  *   故这里也不能白抽（C-DET-4：不推进就没消耗）。
  */
-export function godPowerOf(type: number, rng: WatcomRng): GodPower {
+/**
+ * ★★ 2026-09-24（provenance 审计）：**自动转**的老虎机要掷 4 轮。
+ *
+ * ```asm
+ * 0043f2bc  cmp esi,3 / jge 跳过 ; 0043f2c8 计数 % 10 == 0 ⇒ 0043f2d7 rand()%10 ×4（一轮）
+ * 0043f2ff  inc 计数
+ * 0043f306  cmp byte [cur+0x15],1 / ja 0043f318         ; ★ who_plays > 1（无符号：电脑 2、託管 5…）
+ * 0043f30f  cmp byte [cur+0x37],0 / je 不自动           ; 或者正在夢遊
+ * 0043f318  cmp 计数,0x28 / jb / cmp esi,1 / jne / mov esi,2   ; 满 40 帧自动停 ⇒ 状态 2 当帧置 3（0x0043f44a）
+ * ```
+ *   ⇒ 自动那一支在计数 0 / 10 / 20 / 30 各掷一轮 = **4 轮 16 次 rand()**，结果取最后一轮；
+ *   真人是点停的（至少一轮，次数看点击时机 —— 本引擎按 1 轮，D-003）。先前一律 1 轮。
+ *   `[cur]` 是**当前玩家**（落点附身时 = 附身者）。
+ */
+export const GOD_SLOT_AUTO_ROLLS = 4;
+
+export function godPowerOf(type: number, rng: WatcomRng, auto = false): GodPower {
+  const roll = (): GodAmounts => {
+    let a = rollGodAmounts(rng);
+    if (auto) for (let k = 1; k < GOD_SLOT_AUTO_ROLLS; k++) a = rollGodAmounts(rng);
+    return a;
+  };
   switch (type) {
     // arg 0 → ebx 1 → 三位數（小財神那台是一台三位數老虎機）
     case GOD_SMALL_WEALTH:
-      return { kind: 'collectFromOpponents', amount: rollGodAmounts(rng).three };
+      return { kind: 'collectFromOpponents', amount: roll().three };
     // arg 1 → ebx 0 → 四位數
     case GOD_BIG_WEALTH:
-      return { kind: 'gain', amount: rollGodAmounts(rng).four };
+      return { kind: 'gain', amount: roll().four };
     case GOD_SMALL_POVERTY:
-      return { kind: 'payOpponents', amount: rollGodAmounts(rng).three };
+      return { kind: 'payOpponents', amount: roll().three };
     // arg 5 → ebx 0 → 四位數（大窮神那台是四位數老虎機）
     case GOD_BIG_POVERTY:
-      return { kind: 'payBank', amount: rollGodAmounts(rng).four };
+      return { kind: 'payBank', amount: roll().four };
     case GOD_SMALL_LUCK:
       return { kind: 'receiveCards', count: 1 };
     case GOD_BIG_LUCK:

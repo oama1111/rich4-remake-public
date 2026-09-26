@@ -9,7 +9,7 @@
  *
  *   目前这一层的模块全是纯 `Uint8Array` 运算，两边都跑得：
  *   mkf 容器与解压 / SPR·SMP 解码 / GND 底图 / WAV / MIDI / 素材分类 /
- *   切片与合并 / 锚点与清单 / 接缝 / 过审页。
+ *   切片与合并 / 锚点与清单 / 接缝 / 过审页 / 回缩比对闸 / 整组拼图。
  *
  *   ⚠️ 用了 `node:zlib` 的 PNG 编解码**不在**这里，走 `@rich4/assets-pipeline/node`。
  *   前端要读 PNG 请交给浏览器原生解码（`createImageBitmap(new Blob([bytes]))`）。
@@ -27,4 +27,7 @@ export * from './merge.ts';
 // ⚠️ assemble 不在这里：它引 png.ts（node:zlib）。走 @rich4/assets-pipeline/node。
 export * from './seams.ts';
 export * from './review.ts';
+export * from './gate.ts';
+export * from './grid.ts';
+// ⚠️ tier 不在这里：它引 png.ts（node:zlib）编解码。走 @rich4/assets-pipeline/node。
 export * from './upscale.ts';

@@ -33,7 +33,7 @@ OUT="$ROOT/.qa-tmp/net"
 #   换一个码之后老标签页自成一房，本跑互不干扰；它们那一房没人在线满 10 分钟会被
 #   服务器自己回收（正是 W-73 §4 那条）。
 ROOM="${ROOM:-$(python3 -c "import random;print(''.join(random.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(6)))")}"
-URL="http://localhost:5173/?ws=ws://localhost:${PORT}/ws&room=${ROOM}"
+URL="http://localhost:5173/?mute=1&ws=ws://localhost:${PORT}/ws&room=${ROOM}"
 JS=/tmp/net-e2e.js
 PROBE=/tmp/net-probe.js
 
@@ -47,6 +47,16 @@ cat > "$PROBE" <<'EOF'
 })()
 EOF
 
+# ★ 冻结比对：驱动停了，两端的收件箱 / 演出还在消化（观测到 2 秒不够：一端 moving、一端 settling）。
+#   每秒比一次，最多 10 次，摘要一致就收；到点仍不一致才算数。
+settle_pair() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+    [ "$(echo "$ca" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' 2>/dev/null)" = \
+      "$(echo "$cb" | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' 2>/dev/null)" ] && return
+  done
+}
 step() { printf '\n=== %s ===\n' "$1"; }
 # 读一个标签页的 checkpoint（用 eval <file>，多行脚本不要走 browse js）
 cp_of() { "$B" tab "$1" >/dev/null 2>&1; "$B" eval "$PROBE"; }
@@ -56,7 +66,7 @@ summary() { "$B" tab "$1" >/dev/null 2>&1; "$B" js "JSON.stringify(globalThis.__
 
 # ── 起服务器 ────────────────────────────────────────────────
 step "起服务器（--seats ${SEATS} --takeover ${TAKEOVER}）"
-pkill -f "server/src/cli.ts" 2>/dev/null
+pkill -f "server/src/cli.ts --port $PORT " 2>/dev/null  # 只收自己这个端口的（别误杀别人在跑的测试服务器）
 sleep 1
 # ★ 上一条服务器没死透的话，新的会 EADDRINUSE —— 而它只把警告写进日志，
 #   脚本看起来「起来了」，其实一直在跟**旧的**（带着旧的房间与旧座位）说话。踩过一次。
@@ -120,8 +130,7 @@ done
 
 # ── 2) 冻结比对 ─────────────────────────────────────────────
 step "2) 冻结两端比对全量摘要"
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 echo "A: $ca"; echo "B: $cb"
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
@@ -138,8 +147,7 @@ sleep 5
 "$B" eval "$JS" >/dev/null 2>&1
 resume_both
 sleep 8
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 echo "A: $ca"; echo "B: $cb"
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
@@ -155,8 +163,7 @@ resume_both; sleep 2
 "$B" js "JSON.stringify(globalThis.__net.tamper())"
 sleep 15
 for t in "$TA" "$TB"; do echo "  tab $t 失步行："; summary "$t" | python3 -c 'import json,sys; d=json.load(sys.stdin); [print("   ", x[:140]) for x in d["desyncLines"]]' 2>/dev/null; done
-pause_both; sleep 2
-ca=$(cp_of "$TA"); cb=$(cp_of "$TB")
+pause_both; settle_pair
 python3 - "$ca" "$cb" <<'PY'
 import json, sys
 a, b = (json.loads(x) for x in sys.argv[1:3])
@@ -169,11 +176,24 @@ step "5) 关掉 B 端，等过托管阈值，看 A 端还能不能自己推进"
 "$B" tab "$TB" >/dev/null 2>&1; "$B" closetab "$TB" >/dev/null 2>&1
 "$B" tab "$TA" >/dev/null 2>&1; "$B" eval "$JS" >/dev/null 2>&1
 t1=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
-echo "  关 B 端时 A 的回合数：${t1}；等 $((TAKEOVER/1000 + 12)) 秒…"
-sleep $((TAKEOVER/1000 + 12))
-t2=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
+# ★ 最多等 60 秒、每 3 秒看一次：一段长演出（樂透開獎按原版逐句等语音、魔法屋逐人演出、
+#   破产连拍…）本身就可能超过 18 秒 —— 只等 18 秒会把「演出还在演」误报成停摆。
+echo "  关 B 端时 A 的回合数：${t1}；最多等 60 秒…"
+t2=$t1; waited=0
+while [ "$waited" -lt 60 ] && [ "$t2" -le "$t1" ]; do
+  sleep 3; waited=$((waited + 3))
+  t2=$(summary "$TA" | python3 -c 'import json,sys; print(json.load(sys.stdin)["turnCount"])')
+done
+echo "  等了 ${waited} 秒"
 echo "  等待后 A 的回合数：${t2}"
-if [ "$t2" -gt "$t1" ]; then echo "PASS 5) 无人操作 B 座，回合仍在推进（服务器补位）"; else echo "FAIL 5) 回合停了"; fi
+if [ "$t2" -gt "$t1" ]; then echo "PASS 5) 无人操作 B 座，回合仍在推进（服务器补位）"; else
+  echo "FAIL 5) 回合停了"
+  # 现场：A 端此刻停在哪、等谁、屏上是什么
+  "$B" tab "$TA" >/dev/null 2>&1
+  "$B" js "(() => { const r = globalThis.__rich4, s = r.state; return JSON.stringify({ screen: r.screen, phase: s.phase, cur: s.currentPlayer, pending: s.pending, turn: s.turnCount, who: s.players.map((p) => [p.whoPlays, p.autopilot ?? null]), busy: r.stageBusy ? r.stageBusy() : null }); })()"
+  "$B" js "JSON.stringify((globalThis.__net && globalThis.__net.logTail) ? globalThis.__net.logTail() : null)"
+  grep -v 'ExperimentalWarning\|trace-warnings' "$OUT/server.log" | tail -15
+fi
 
 
 # ── 6) W-74 回合计时 ────────────────────────────────────────

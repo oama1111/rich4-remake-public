@@ -38,6 +38,7 @@
 
 import type { Action, GameState, MapTopology, Rich4Map } from '@rich4/core';
 import type { LoadedFlic, Sprite } from './assets.ts';
+import type { CursorWant } from './soft-cursor.ts';
 
 /** 交给每一屏的环境 —— 只读的现状 + 三个副作用出口 */
 export interface UiScreenEnv {
@@ -154,6 +155,14 @@ export interface UiScreen {
    */
   active(env: UiScreenEnv): boolean;
 
+  /**
+   * ★★ 第十六份（线上卡死）：本屏 `active()` 为真**只是因为有一段排着、还没起播**（在等起播闸）——
+   *   屏上什么都没画。这种屏不能抢走「接管整屏」的位置：先前老虎机排着等台词，而台词在等一扇
+   *   **正开着**的訊息框收掉，訊息框却因为不是「第一屏」而收不到 `tick`，永远收不掉 ⇒ 三方互等。
+   *   见 `overlay.ts` 的 `selectOverlay` / `pendingScreens`。不给 = 从不处于这种状态。
+   */
+  pendingOnly?(env: UiScreenEnv): boolean;
+
   /** 画整屏（`windowed` 的屏则是画那一扇浮窗）。只在 `active` 为真时调用 */
   draw(env: UiScreenEnv): void;
 
@@ -172,6 +181,32 @@ export interface UiScreen {
    *   没声明的屏不受影响（照旧落到下面那些分支）。
    */
   contextmenu?(x: number, y: number, env: UiScreenEnv): void;
+
+  /**
+   * 这一拍收右键**会不会有反应**（纯查询，不许改状态）。只给触屏的「取消」钮定显隐用
+   * （见 `touch-input.ts` 的 `rightClickMeaningful`）—— 不影响 `contextmenu` 本身。
+   * 不给 = 声明了 `contextmenu` 就当一直有反应。
+   */
+  contextmenuLive?(env: UiScreenEnv): boolean;
+
+  /**
+   * 这一屏此刻是不是在**填金额**（金额条 / 数字键盘 / 加价钮）—— 纯查询，不许改状态。
+   * 只给触屏手势用：为真时长按**不算**右键（见 `touch-input.ts` 的 `longPressAllowed`，
+   * 需求方 2026-09-24「在金额条界面就不要用长按取消逻辑了，反正还有按钮」）。
+   * 不给 = 不在填金额。
+   */
+  amountEntry?(env: UiScreenEnv): boolean;
+
+  /**
+   * 这一屏接管期间要哪一支**软件指针**（`soft-cursor.ts`）；`null` = 藏起 —— 纯查询，不许改状态。
+   *
+   * ★ 不给 = 一直藏着：原版的**演出类**窗口（分紅 / 開獎 / 月結 / 新聞命運框 / 轉盤 / 神明老虎机 /
+   *   訊息框）一处都不调 `fcn_00402460(1)`，按过 GO 收起的指针就一直收着。
+   *   要人作答的屏在自己的 `WM_CREATE` 里放出来（出处见 `soft-cursor.ts` 文件头），
+   *   就在这里返回那一支 —— 联机旁观 / 电脑的回合记得返回 `null`（`localTurn`）；
+   *   联机旁观端再由 `resolveCursor` 统一换成默认箭头（D-CURSOR-ONLINE-1），各屏不用管。
+   */
+  cursor?(env: UiScreenEnv): CursorWant;
 
   /**
    * 键盘按下（原版 `WM_KEYDOWN` = **0x101**）。
@@ -198,6 +233,26 @@ export interface UiScreen {
    * ② 察觉刚刚发生的状态变化（想干净一点就用下面的 `event`）。
    */
   tick?(env: UiScreenEnv): void;
+
+  /**
+   * **联机旁观：跟着行动者收场**（第十二份試玩回報续，需求方拍板：
+   * 「所有点得掉的整屏提示 —— 訊息框 / 事件框 / 转盘 / 老虎机 … —— 在旁观端要跟着行动的那位一起关」）。
+   *
+   * 由 `main.ts` 的 `pumpNetInbox` 在「收件箱队首是**别的真人座位**派的下一条」时调用
+   * （判据见 `follow-presenter.ts` 的 `presenterMovedOn`）：那一台的回合驱动要等自己的演出
+   * 全部收场才会派下一条 ⇒ 本台此刻还在演的、属于**已施加** action 的演出，他那边早演完了。
+   *
+   * 语义 = **直接落到终态**（与本屏自己演完那一刻一样：`active()` 变假、排队的也清掉），
+   * 不是「点一下」那一步 —— 行动者那台已经整段收场了。要做的只有表现层的收尾：
+   * 停掉本屏起的**循环音**（转盘 52 / 老虎机那一路）。背景曲不用管 —— 没有整屏在接管时
+   * `main.ts` 的 `boardBgmDue()` 自己把棋盘曲接回来。
+   *
+   * ⚠️ 本屏若此刻是**待决交互**（魔法屋状态 7 等本机点选、本机还没交出去的答复）
+   *   必须**不动**并返回 false —— 那不是演出，关掉就吞了一个 action。
+   *
+   * @returns 真的收掉了什么（没在播 / 不该动 ⇒ false）
+   */
+  fastForward?(env: UiScreenEnv): boolean;
 
   /** 一次 action 让状态变了 —— 演出类屏幕（開獎 / 月結 / 魔法屋）靠它起播 */
   event?(before: GameState, after: GameState, env: UiScreenEnv): void;

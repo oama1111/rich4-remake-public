@@ -6,8 +6,8 @@
  * **版式、命中、门槛**按 exe 复刻好了；这里补三块**会动**的东西：
  *
  * 1. **貸款屏进屏的两块滑入面板** —— `fcn_00433d6e`（玩家：头像 + 名字 + 現金/存款/貸款）
- *    与 `fcn_00433f24`（日期 + 星期 + 距還款日），贴法 `(0,y)` / `(280,y)`，
- *    `y` = `[0x48c3d5]`（640 = 全藏屏下 → 440 = 到位）。
+ *    与 `fcn_00433f24`（日期 + 星期 + 距還款日），贴法 `(x,0)` / `(x,280)`，
+ *    `x` = `[0x48c3d5]`（640 = 全藏在屏幕**右**外 → 440 = 到位，贴满右侧 200 宽那一栏）。
  * 2. **貸款屏的状态机** —— `fcn_00435062` 的 `0x401/0x405/0x409/0x40a` 自定义消息
  *    + `0x113` 定时器（`SetTimer(hwnd, 深度, 50ms)`）+ `fcn_00434492` 特別融資子对话框。
  * 3. **ATM 的另外两块** —— `fcn_00436d3a` 开头那条**进度条**（按 `[0x48c3ec]` 换算）、
@@ -33,11 +33,12 @@ import { sceneOfMonth } from '@rich4/core';
 import { FINANCE_BORROW, FINANCE_BYE, FINANCE_REPAY } from './bank-loan.ts';
 import { appendDigitKey, backspaceKey } from './amount-keys.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { clerkTextStyle, drawGdiText, gdiFont, gdiPasses, type GdiTextStyle } from './font.ts';
 import { alignFor } from './hud.ts';
 // ★ 店員那几句话的**语音出口**（`#0075` 那一句就在里面）——
 //   见 `loanBubbleVoice` 的取证块。
 import { playVoiceCode } from './voice-sink.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名）*/
 export type BankSprite = (
@@ -68,7 +69,7 @@ export const BANK_RES = {
  * |---|---|---|---|---|
  * | 24 ATM | 0 面板底 | `fcn_00456418` | ✓ | 0x436f9d |
  * | 24 ATM | 29 禁止章 | `fcn_00456418` | ✓ | 0x437045 |
- * | 24 ATM | 1/2 存款·提款（选中态）| `fcn_004563f5` | ✗ | 0x437047 / 0x4373b0 |
+ * | 24 ATM | 1/2 提款·存款（选中态）| `fcn_004563f5` | ✗ | 0x437047 / 0x4373b0 |
  * | 24 ATM | 3..18 钮 / 19..28 数字 | `fcn_004563f5` | ✗ | 0x437457 / 0x436dad |
  * | 24 ATM | 4 进度条填充 | `fcn_0045643d`（矩形拷贝）| ✗ | 0x436e1a |
  * | 23 貸款 | 0 店員室 / 2 董事長室 / 15 玩家面板 | 是**目标 surface**；贴屏走 `fcn_004563f5` | ✗ | 0x434403 / 0x4351?? |
@@ -231,7 +232,7 @@ export function atmSeekAmount(barX: number, limit: number): number {
  *
  * | code | 钮 | 做什么 |
  * |---|---|---|
- * | 1 / 2 | 存款 / 提款 | 抬手什么都不做（模式在**按下**时就换了）|
+ * | 1 / 2 | 提款 / 存款 | 抬手什么都不做（模式在**按下**时就换了）|
  * | 3 | EXIT | 不在这里处理（调用方关屏）|
  * | 4 | 金额栏 | 不在这里处理（拖动由 `atmSeekAmount` 算）|
  * | 5..13 / 15 | 数字 7 8 9 4 5 6 1 2 3 / 0 | 接上去（到上限就截到上限）|
@@ -332,13 +333,18 @@ export function atmPressedButton(code: number | null): number | null {
 export const LOAN_INFO_PANEL = {
   resource: BANK_RES.loan,
   image: 15,
-  x: 0,
+  /** 贴屏时的**顶边 y**（x 由滑入状态给）@source 0x4352c0 `fcn_004563f5(屏, [0x48c3b8], x, 0)` */
+  y: 0,
   w: 200,
   h: 280,
 } as const;
 
-/** 日期面板落点与尺寸 @source `fcn_00433f24`（贴屏时 x = 0x118 = 280）*/
-export const LOAN_DATE_PANEL = { x: 0x118, w: 200, h: 200 } as const;
+/**
+ * 日期面板落点与尺寸 @source `fcn_00433f24`；贴屏时**顶边 y = 0x118 = 280**
+ * （0x4352e5 `add eax, 0x118` 加的是 y 那个参数 —— 正好接在 280 高的玩家面板下面，
+ * 与主画面右栏日曆 `(440, 280)` 同一处，见 `assets.ts` 的 `readHolidayArt`）。
+ */
+export const LOAN_DATE_PANEL = { y: 0x118, w: 200, h: 200 } as const;
 
 /**
  * 月份 → 季节底图（资源 2 图 0..3）@source 表 `0x475218`：
@@ -370,7 +376,7 @@ export const LOAN_INFO_TEXT = {
  * | 是什么 | 落点 | 字号 | flag | 对齐 |
  * |---|---|---|---|---|
  * | 日 | (0x3c,0x60) | 0x3c = 60 | 2 | 正中 |
- * | 星期 | (0x0e,0x48) | 0x10 = 16 | 3 | 正中 |
+ * | 星期 | (0x0e,0x48) | 0x10 = 16 | 3 | **竖排**·墨迹框正中（`fcn_0044f7c7` + `0x44f70c`）|
  * | 年 | (0x8c,0x08) | 0x18 = 24 | 0 | 左上 |
  * | 月 | (0x3c,0x30) | 0x1c = 28 | 2 | 正中（`sprintf("%d月")`）|
  * | 距還款日 | (0x14,0xb0) | 0x14 = 20 | 5 | 左·垂直居中 |
@@ -420,29 +426,47 @@ export function loanAvatar(sprite: BankSprite, character: number): Sprite | null
 // ============================================================
 
 /**
- * @source
+ * `[0x48c3d5]` 是两块面板贴屏时的**左边 x**（不是顶边 y）。
+ *
+ * @source 写入点：
  * ```asm
- * 00435116  mov dword [0x48c3d5], 0x280     ; 进屏：y = 640（整块在屏下）
- * 00435d48  mov dword [0x48c3d5], 0x280     ; 点「申請貸款」：再来一次
- * 00435d4c  mov dword [0x48c3d9], 0xffffffd8 ; dy = −40（每拍往上 40）
- * 00435da4  mov dword [0x48c3d9], 0xffffffd8 ; 点「償還貸款」同上
- * 004357a7  mov dword [0x48c3d9], 0x28      ; 收尾：dy = +40
- * 004357ab  mov dword [0x48c3d5], 0x1b8     ; 从 440 往下退
- * 004355e3  cmp dword [0x48c3d5], 0x1b8     ; 到位（y == 440）→ dy = 0
- * 00435601  cmp dword [0x48c3d5], 0x280     ; 退净（y == 640）→ dy = 0
+ * 0043513c  mov dword [0x48c3d5], 0x280       ; 进屏（0x401）：x = 640（整块在屏幕右外）
+ * 00435d5c  mov dword [0x48c3d5], 0x280       ; 点「申請貸款」：从右外再滑一次
+ * 00435d66  mov dword [0x48c3d9], 0xffffffd8  ; dx = −40（每拍往左 40）
+ * 00435dbf/00435dc9                           ; 点「償還貸款」同上
+ * 004357a7  mov dword [0x48c3d9], 0x28        ; 收尾（st 8 到点）：dx = +40
+ * 004357b1  mov dword [0x48c3d5], 0x1b8       ; 从 440 往右退
  * ```
- * ⚠️ **到位是 y = 440，不是 0** —— 200×280 的面板从屏下升上来，
- *   露出的是它**下面**那 40 行？不：面板是贴在 `(0, y)`、即 y 是**顶边**，
- *   所以静止时只在屏底露出 40 像素…… 这正是原版的数：面板是**滑出来一半**
- *   贴在屏幕下缘的（`y = 440` 时 200×280 的顶边在 440）。
- *   ★ 本引擎照抄这个数，不做「看起来更合理」的调整。
+ * @source 用法（`fcn_00435062` 的 `0x113` 分支，每拍）：
+ * ```asm
+ * 004354e5  mov edx, [0x48c3d5] / add edx, ebp / mov [0x48c3d5], edx   ; x += dx
+ * 004354f3  mov [esp+0xc0], edx            ; RECT.left   = x
+ * 004354fc  mov [esp+0xc4], 0              ; RECT.top    = 0
+ * 00435503  mov [esp+0xc8], 0x280          ; RECT.right  = 640
+ * 0043550e  mov [esp+0xcc], 0x1e0          ; RECT.bottom = 480   ← 右侧一整条竖栏
+ * 0043553b  push [RECT.top]=0 / push [RECT.left]=x / push [0x48c3b8] / push 屏
+ * 00435552  call fcn_004563f5              ; ★ 玩家面板（200×280）贴 (x, 0)
+ * 0043555a  eax = RECT.top + 0x118 / push eax / push [RECT.left]=x / push [0x48c3b4] / push 屏
+ * 0043557c  call fcn_004563f5              ; ★ 日期面板（200×200）贴 (x, 280)
+ * 0043559c  （dx > 0 且 x > 440 时）fcn_0045643d(屏, 底图, x−dx, 0, x−dx, 0, dx, 480)
+ *                                          ; 往右退时把刚让出来的 40×480 竖条从底图补回
+ * 004355e3  cmp [0x48c3d5], 0x1b8 → dx = 0 ; 到位（x == 440）
+ * 004355f7  cmp [0x48c3d5], 0x280 → dx = 0 ; 退净（x == 640）；[0x48c3e2] 置过则 st = 0xb
+ * ```
+ * `fcn_004563f5(dst, src, x, y)` 的参数次序由别处定死：主画面右栏日曆
+ * `00416bfb push 0x118 / push 0x1b8 / … / call 0x4563f5` 画在 **(440, 280)**
+ * （`assets.ts` `readHolidayArt`）；还款提醒窗 `004360e1 push 0 / push 0x1b8` 同理是 (440, 0)。
+ *
+ * ⇒ 两块面板从屏幕**右边**横着滑进来，到位后贴满 x 440..640 的整条右栏
+ *   （玩家面板 0..280、日期面板 280..480）—— 与棋盘画面右侧那一栏同一处、同一个尺寸。
+ *   先前本引擎把它读成「顶边 y」，于是面板只从屏幕底边露出 40 行（playtest-15 回报）。
  */
 export const LOAN_SLIDE = {
-  /** 藏起来时的 y（也是退净的终点）*/
+  /** 藏起来时的 x（也是退净的终点）*/
   hidden: 0x280,
-  /** 到位时的 y */
+  /** 到位时的 x */
   shown: 0x1b8,
-  /** 每一拍走的像素（方向由 `dy` 的符号决定）*/
+  /** 每一拍走的像素（方向由 `dx` 的符号决定）*/
   step: 0x28,
 } as const;
 
@@ -457,20 +481,20 @@ export const LOAN_SLIDE = {
  */
 export const LOAN_TICK_MS = 50;
 
-/** 滑入状态：面板顶边 y 与每拍步长 */
+/** 滑入状态：两块面板的左边 x（`[0x48c3d5]`）与每拍步长（`[0x48c3d9]`）*/
 export interface LoanSlide {
-  y: number;
-  dy: number;
+  x: number;
+  dx: number;
 }
 
 /** 进屏 → 点「申請/償還」时滑出来 @source `loc_00435d48` */
 export function loanSlideIn(): LoanSlide {
-  return { y: LOAN_SLIDE.hidden, dy: -LOAN_SLIDE.step };
+  return { x: LOAN_SLIDE.hidden, dx: -LOAN_SLIDE.step };
 }
 
 /** 收尾 → 滑回去 @source `loc_004357a7` */
 export function loanSlideOut(): LoanSlide {
-  return { y: LOAN_SLIDE.shown, dy: LOAN_SLIDE.step };
+  return { x: LOAN_SLIDE.shown, dx: LOAN_SLIDE.step };
 }
 
 /**
@@ -481,20 +505,20 @@ export function loanSlideOut(): LoanSlide {
  */
 export function loanSlideStep(s: LoanSlide): LoanSlide {
   if (loanSlideDone(s)) return s;
-  const y = s.y + s.dy;
-  if (s.dy < 0 && y <= LOAN_SLIDE.shown) return { y: LOAN_SLIDE.shown, dy: 0 };
-  if (s.dy > 0 && y >= LOAN_SLIDE.hidden) return { y: LOAN_SLIDE.hidden, dy: 0 };
-  return { y, dy: s.dy };
+  const x = s.x + s.dx;
+  if (s.dx < 0 && x <= LOAN_SLIDE.shown) return { x: LOAN_SLIDE.shown, dx: 0 };
+  if (s.dx > 0 && x >= LOAN_SLIDE.hidden) return { x: LOAN_SLIDE.hidden, dx: 0 };
+  return { x, dx: s.dx };
 }
 
-/** 停住了吗（`dy == 0`）*/
+/** 停住了吗（`dx == 0`）*/
 export function loanSlideDone(s: LoanSlide): boolean {
-  return s.dy === 0;
+  return s.dx === 0;
 }
 
-/** 面板贴到屏上了吗（y 还没到 640 就有东西露出来）*/
+/** 面板贴到屏上了吗（x 还没到 640 就有东西从右边露出来）*/
 export function loanPanelsVisible(s: LoanSlide): boolean {
-  return s.y < LOAN_SLIDE.hidden;
+  return s.x < LOAN_SLIDE.hidden;
 }
 
 // ============================================================
@@ -666,8 +690,26 @@ export interface LoanUi {
   slide: LoanSlide;
   /** `[0x48c3e1]`：正被按住的钮（1 基；0 = 没按）*/
   pressed: number;
-  /** `[0x48c3e2]`：特別融資子对话框确认过没有（= 那一下的返回标志 `[0x48c3d0]`）*/
-  financeOk: boolean;
+  /**
+   * `[0x48c3e2]`：这一趟**办成了一笔**（办完、面板退净就关屏）。
+   *
+   * @source 写入三处：`00435136` 进屏清 0；`00435348` 一般貸款**借到手**（额 > 0，st = 7）置 1；
+   *   `00435e08` = 特別融資子对话框的返回标志 `[0x48c3d0]`。
+   * @source 读一处：`0043560b` —— 面板往右**退净**（`x == 0x280`）的那一拍若它非 0，
+   *   `00435614` 置 st = 0xb；同一拍 `0x44ee18` 没有气泡返回 1 → `loc_0043586e` 关屏。
+   *   ⇒ 借到钱后「請於三個月內還清貸款」说完 → 面板滑出去 → 银行屏自己关掉（还款不会）。
+   */
+  dealDone: boolean;
+  /**
+   * 气泡与两块面板**谁后画**（原版是一整块帧缓冲，后画的盖住先画的）。
+   *
+   * @source 气泡：换句那一拍 `fcn_0044ecb6` 画一次（如 `00435d8c`、`00435340`）；
+   *   面板：`0x113` 每拍滑动时 `00435552`/`0043557c` 贴一次（以及填数页回来时
+   *   `004352dd`/`00435443` 重贴，紧跟着就换句）。
+   * ⇒ 换了一句 → 气泡在上；面板挪了一拍 → 面板在上。
+   * （资源 23 图 21 宽 195、落在 x 240 → 右缘 434，与 x ≥ 440 的面板栏其实不相交；照抄次序只为不走样。）
+   */
+  bubbleOnTop: boolean;
   /**
    * 这一刻填数页要开哪一支（`borrowIn`/`repayIn` 那两格共用一段代码，
    * 光看 `st` 分不出「一般貸款」还是「特別融資」）。
@@ -707,12 +749,28 @@ export function loanStart(showGreeting: boolean): LoanUi {
   return {
     st: showGreeting ? LOAN_ST.greet : LOAN_ST.menu,
     bubble: showGreeting ? LOAN_MSG.greet : null,
-    slide: { y: LOAN_SLIDE.hidden, dy: 0 },
+    slide: { x: LOAN_SLIDE.hidden, dx: 0 },
     pressed: 0,
-    financeOk: false,
+    dealDone: false,
+    bubbleOnTop: true,
     financeOpen: false,
     formOp: null,
   };
+}
+
+/**
+ * 定时器那一拍里**滑入那一段**（`fcn_00435062` 的 `0x113`，`004354d7`..`00435614`）：
+ * `dx != 0` 才动；到位（440）/ 退净（640）那一拍把 `dx` 归零；退净且 `dealDone` → st = 0xb。
+ * 随后同一拍才轮到气泡到点那张表（`loc_00435667`）—— 调用方按这个次序喂 `bubbleEnd`。
+ */
+export function loanTickSlide(ui: LoanUi): LoanUi {
+  if (loanSlideDone(ui.slide)) return ui;
+  const slide = loanSlideStep(ui.slide);
+  // 挪了一拍 = 面板刚贴过 ⇒ 盖在气泡上面
+  if (loanSlideDone(slide) && slide.x === LOAN_SLIDE.hidden && ui.dealDone) {
+    return { ...ui, slide, st: LOAN_ST.bye, bubble: null, bubbleOnTop: false };
+  }
+  return { ...ui, slide, bubbleOnTop: false };
 }
 
 /** 状态机发出的**副作用**（纯函数只描述，不执行）*/
@@ -773,12 +831,21 @@ export interface LoanStepResult {
  * 3  → st=4
  * 5  → st=6 + PostMessage(0x409)          ; 借款表单滑入完 → 开填数页
  * 7  → st=8 + #0080
- * 8  → [0x48c3d9]=+40, [0x48c3d5]=440, st=4   ; ★ 收尾＝滑回去
+ * 8  → [0x48c3d9]=+40, [0x48c3d5]=440, st=4   ; ★ 收尾＝往右滑回去
  * 9  → st=0xa + PostMessage(0x40a)
  * 0xb → KillTimer + Post_0402_Message      ; 关屏
  * ```
  */
 export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
+  const r = loanStepInner(ui, ev);
+  // 换了一句 = `fcn_0044ecb6` 刚画过气泡 ⇒ 气泡盖在面板上面（见 `LoanUi.bubbleOnTop`）
+  if (r.ui.bubble !== null && r.ui.bubble !== ui.bubble && !r.ui.bubbleOnTop) {
+    return { ...r, ui: { ...r.ui, bubbleOnTop: true } };
+  }
+  return r;
+}
+
+function loanStepInner(ui: LoanUi, ev: LoanEvent): LoanStepResult {
   const same = (): LoanStepResult => ({ ui, effect: null });
   switch (ev.kind) {
     case 'bubbleEnd': {
@@ -939,7 +1006,7 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
           };
         }
         return {
-          ui: { ...ui, financeOk: true, financeOpen: false, formOp: null, st: LOAN_ST.bye },
+          ui: { ...ui, dealDone: true, financeOpen: false, formOp: null, st: LOAN_ST.bye },
           effect: null,
         };
       }
@@ -951,7 +1018,10 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
       //   `st=8` 挂不挂气泡由这里决定，`bubbleEnd` 分支对两者一视同仁。
       if (ui.st === LOAN_ST.borrowAsk) {
         return ev.amount > 0
-          ? { ui: { ...ui, formOp: null, st: LOAN_ST.borrowDone, pressed: 0, bubble: LOAN_MSG.borrowDone }, effect: null }
+          ? {
+              ui: { ...ui, formOp: null, st: LOAN_ST.borrowDone, pressed: 0, bubble: LOAN_MSG.borrowDone, dealDone: true },
+              effect: null,
+            }
           : { ui: { ...ui, formOp: null, st: LOAN_ST.settle, pressed: 0, bubble: null }, effect: null };
       }
       // ── @source `0x40a`（还款）──
@@ -972,7 +1042,7 @@ export function loanStep(ui: LoanUi, ev: LoanEvent): LoanStepResult {
     }
     case 'financeClosed': {
       // `[0x48c3e2] = 返回标志`：1 ⇒ 主屏状态 0xb（收场）；0 ⇒ 回状态 4
-      if (ev.ok) return { ui: { ...ui, financeOk: true, financeOpen: false, st: LOAN_ST.bye }, effect: null };
+      if (ev.ok) return { ui: { ...ui, dealDone: true, financeOpen: false, st: LOAN_ST.bye }, effect: null };
       return { ui: { ...ui, financeOpen: false, st: LOAN_ST.ready }, effect: null };
     }
     default:
@@ -1002,30 +1072,122 @@ export interface LoanPanelsView {
   dueDays: number | null;
 }
 
-const FONT = FONT_FAMILY;
+/**
+ * 两块面板上的 `create_font(字号, 正文色, 第二色, 字效, 字距)` —— 逐条抄自 exe：
+ *
+ * | 哪些字 | @source | 参数 |
+ * |---|---|---|
+ * | 玩家面板 三行标签 | `00433dba` | `(0xc, 0xffffff, 0x101010, 4, 0)` 白字深描边 |
+ * | 玩家面板 名字 + 三个数值 | `00433e26` | `(0x16, 0xffffff, 0x101010, 6, 0)` 白字深描边**粗体** |
+ * | 日期面板 日/星期/年/月/距還款日 | `00433fc0` `0043400c` `00434067` `004340b4` `00434116` | `(字号, 0x101010, 0xffffff, 6, 1)` **深色**字白描边粗体 |
+ *
+ * ⚠️ 日期面板那组与棋盘右栏日曆（`00416ca0..00416d96`）**逐字节同参、同落点** ——
+ *   它就是同一张日曆面（只是没画太阳月亮、也没有節日红字那一支）。
+ */
+export const LOAN_TEXT_STYLE = {
+  label: { size: 0x0c, color: '#ffffff', color2: '#101010', flags: 4, spacing: 0 },
+  info: { size: 0x16, color: '#ffffff', color2: '#101010', flags: 6, spacing: 0 },
+  date: (size: number): GdiTextStyle => ({ size, color: '#101010', color2: '#ffffff', flags: 6, spacing: 1 }),
+} as const;
 
-/** 带描边的字（`create_font` 的第 4 个 arg 是**标志位**：bit0 = 投影、bit1 = 粗体）*/
-function bankText(
+/**
+ * 竖排（`draw_text` 的 flag 3）一个字往下走多少 @source `fcn_0044f7c7`：
+ * `advance = [0x4762d4](字号) + [0x4762dc](字距) + (字效 & 6 ? 1 : 0)`（`0044f7de..0044f7f2`）。
+ */
+export function verticalAdvance(s: GdiTextStyle): number {
+  return s.size + (s.spacing ?? 1) + ((s.flags & 6) !== 0 ? 1 : 0);
+}
+
+/** 一个字的墨迹（`measureText` 在 `textBaseline = 'top'`、`textAlign = 'left'` 下量的四个量）*/
+export interface GlyphInk {
+  left: number;
+  right: number;
+  ascent: number;
+  descent: number;
+}
+
+/**
+ * 竖排（flag 3）整块的**落点** —— 照 `rich4_draw_text`（VA 0x0044fabc）逐步算：
+ *
+ * ```asm
+ * 0044fe53  call fcn_0044f7c7(dc, 正文偏移, 正文偏移, 串)   ; 离屏面上逐字 TextOut(左上对齐)，
+ *                                                          ;   第 k 个字的顶 = k × advance
+ * 0044fc76 / 0044fccc..0044fddd                            ; 阴影 / 描边那几遍同样画进离屏面
+ * 0044feef  call 0x44f70c                                  ; 扫非 0 像素 → 墨迹框 [x0,y0,x1,y1]
+ * 0044fef7  宽 = x1 − x0 + 1   0044ff00  高 = y1 − y0 + 1
+ * 0044ff2a  x −= 宽 >> 1       0044ff35  y −= 高 >> 1       ; 墨迹框左上角落在这里
+ * ```
+ * 返回：第 0 个字的字格左上角该落在屏上哪里（之后第 k 个字 = `oy + k × advance`）。
+ * 墨迹框 = 各字墨迹（按字格原点）∪ 各遍偏移（`gdiPasses`）。
+ */
+export function verticalInkOrigin(
+  inks: readonly GlyphInk[],
+  advance: number,
+  flags: number,
+  x: number,
+  y: number,
+): { ox: number; oy: number } {
+  const passes = gdiPasses(flags);
+  const pdx = passes.map((p) => p.dx);
+  const pdy = passes.map((p) => p.dy);
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  inks.forEach((g, k) => {
+    x0 = Math.min(x0, -g.left);
+    x1 = Math.max(x1, g.right);
+    y0 = Math.min(y0, k * advance - g.ascent);
+    y1 = Math.max(y1, k * advance + g.descent);
+  });
+  if (inks.length === 0) return { ox: x, oy: y };
+  // 像素化：墨迹覆盖的像素列 [floor(x0), ceil(x1) − 1]
+  const px0 = Math.floor(x0 + Math.min(...pdx));
+  const px1 = Math.ceil(x1 + Math.max(...pdx)) - 1;
+  const py0 = Math.floor(y0 + Math.min(...pdy));
+  const py1 = Math.ceil(y1 + Math.max(...pdy)) - 1;
+  const w = px1 - px0 + 1;
+  const h = py1 - py0 + 1;
+  return { ox: x - (w >> 1) - px0, oy: y - (h >> 1) - py0 };
+}
+
+/**
+ * 按 `draw_text` 的对齐 flag 画一条（`alignFor`）。
+ *
+ * flag 3 = **竖排**、墨迹框正中：`0044fbf2 cmp ebp, 3` 把外框宽高对调，`0044fe53`
+ * 走逐字竖写的 `fcn_0044f7c7`；落点按墨迹框正中对齐（见 `verticalInkOrigin`）。
+ */
+function panelText(
   ctx: CanvasRenderingContext2D,
   s: string,
   x: number,
   y: number,
-  size: number,
   flag: number,
-  fill: string,
-  shadow: boolean,
+  style: GdiTextStyle,
 ): void {
+  if (flag === 3) {
+    const chars = [...s];
+    const adv = verticalAdvance(style);
+    ctx.font = gdiFont(style);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const inks = chars.map((ch): GlyphInk => {
+      const m = ctx.measureText(ch);
+      return {
+        left: m.actualBoundingBoxLeft,
+        right: m.actualBoundingBoxRight,
+        ascent: m.actualBoundingBoxAscent,
+        descent: m.actualBoundingBoxDescent,
+      };
+    });
+    const { ox, oy } = verticalInkOrigin(inks, adv, style.flags, x, y);
+    chars.forEach((ch, k) => drawGdiText(ctx, ch, ox, oy + k * adv, style));
+    return;
+  }
   const a = alignFor(flag);
-  ctx.font = `${size}px ${FONT}`;
   ctx.textAlign = a.align;
   ctx.textBaseline = a.baseline;
-  if (shadow) {
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#101010';
-    ctx.strokeText(s, x, y);
-  }
-  ctx.fillStyle = fill;
-  ctx.fillText(s, x, y);
+  drawGdiText(ctx, s, x, y, style);
 }
 
 /** 带 $ 千分位 —— 与 `bank-loan.ts` 的 `money()` 同口径（串 `0x452793`）*/
@@ -1036,16 +1198,17 @@ function bankMoney(n: number): string {
 /** 锚点落点绘制（`fcn_004562a5` / `fcn_00456418` 内部都减锚点）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
+  drawSprite(ctx, s, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
 }
 
 /**
  * 画两块滑入面板（`fcn_00433d6e` + `fcn_00433f24`）。
  *
- * 原版是先把两块面板画进各自的 surface，再由窗口过程
- * `fcn_004563f5(screen, 面板, 0, y)` / `(screen, 日期面板, 280, y)` 贴出来；
- * 本引擎每帧重画、没有离屏 surface，所以直接把内容画在 `(0,y)` 与 `(280,y)` 上，
- * 并**裁到面板矩形**（等价于原版 surface 的边界 + `0x455b3a` 的屏幕裁切）。
+ * 原版是先把两块面板画进各自的 surface（字、头像都用**面板局部**坐标），再由窗口过程
+ * `fcn_004563f5(screen, 玩家面板, x, 0)` / `(screen, 日期面板, x, 280)` 贴出来
+ * （x = `[0x48c3d5]`，见 `LOAN_SLIDE` 的取证块）；本引擎每帧重画、没有离屏 surface，
+ * 所以直接把内容画在 `(x,0)` 与 `(x,280)` 上，并**裁到面板矩形**
+ * （等价于原版 surface 的边界 + `0x455b3a` 的屏幕裁切）。
  *
  * 调色/字号/落点逐条照 `fcn_00433d6e` / `fcn_00433f24`，见上面的常量表。
  */
@@ -1054,82 +1217,56 @@ export function drawLoanPanels(
   sprite: BankSprite,
   v: LoanPanelsView,
 ): void {
-  const y = v.slide.y;
+  const x = v.slide.x;
   if (!loanPanelsVisible(v.slide)) return;
 
-  // ── ① 玩家面板：200×280，资源 23 图 15 + 头像 + 名字 + 三行 ──
+  // ── ① 玩家面板：200×280，资源 23 图 15 + 头像 + 名字 + 三行，贴 (x, 0) ──
+  const iy = LOAN_INFO_PANEL.y;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(LOAN_INFO_PANEL.x, y, LOAN_INFO_PANEL.w, LOAN_INFO_PANEL.h);
+  ctx.rect(x, iy, LOAN_INFO_PANEL.w, LOAN_INFO_PANEL.h);
   ctx.clip();
   const bg = bankSprite(sprite, 'Panel.mkf', LOAN_INFO_PANEL.resource, LOAN_INFO_PANEL.image);
-  if (bg !== null) ctx.drawImage(bg.bitmap, LOAN_INFO_PANEL.x, y);
+  if (bg !== null) drawSprite(ctx, bg, x, iy);
   // 头像 = map.mkf 资源 `角色 + 0x1b` 图 0，锚点落 (0x2a, 0x28) @source `fcn_004562a5`
   drawAnchored(
     ctx,
     loanAvatar(sprite, v.character),
-    LOAN_INFO_TEXT.avatar.x,
-    y + LOAN_INFO_TEXT.avatar.y,
+    x + LOAN_INFO_TEXT.avatar.x,
+    iy + LOAN_INFO_TEXT.avatar.y,
   );
   // 名字（22 号，flag 0 = 左上）@source `draw_text(name, 0x52, 0x1c, 0)`
-  bankText(ctx, v.name, LOAN_INFO_TEXT.name.x, y + LOAN_INFO_TEXT.name.y, LOAN_INFO_TEXT.name.size, 0, '#ffffff', true);
+  panelText(ctx, v.name, x + LOAN_INFO_TEXT.name.x, iy + LOAN_INFO_TEXT.name.y, 0, LOAN_TEXT_STYLE.info);
   // 三行：标签（12 号 flag 0）、数值（22 号 flag 1 = 右上）
   for (let i = 0; i < LOAN_INFO_TEXT.rows.length; i++) {
     const row = LOAN_INFO_TEXT.rows[i]!;
-    bankText(ctx, row.label, LOAN_INFO_TEXT.labelX, y + row.labelY, LOAN_INFO_TEXT.labelSize, 0, '#ffffff', true);
-    bankText(
-      ctx,
-      bankMoney(v.money[i] ?? 0),
-      LOAN_INFO_TEXT.valueX,
-      y + row.valueY,
-      LOAN_INFO_TEXT.valueSize,
-      1,
-      '#ffffff',
-      true,
-    );
+    panelText(ctx, row.label, x + LOAN_INFO_TEXT.labelX, iy + row.labelY, 0, LOAN_TEXT_STYLE.label);
+    panelText(ctx, bankMoney(v.money[i] ?? 0), x + LOAN_INFO_TEXT.valueX, iy + row.valueY, 1, LOAN_TEXT_STYLE.info);
   }
   ctx.restore();
 
-  // ── ② 日期面板：200×200，贴 (280, y) ──
-  const dx = LOAN_DATE_PANEL.x;
+  // ── ② 日期面板：200×200，贴 (x, 280) ──
+  const y = LOAN_DATE_PANEL.y;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(dx, y, LOAN_DATE_PANEL.w, LOAN_DATE_PANEL.h);
+  ctx.rect(x, y, LOAN_DATE_PANEL.w, LOAN_DATE_PANEL.h);
   ctx.clip();
   if (v.holidayArt !== null) {
     // 節日那天整张盖掉季节底图 @source `fcn_00433f24` 的 `!= -1` 分支
-    ctx.drawImage(v.holidayArt, dx, y, LOAN_DATE_PANEL.w, LOAN_DATE_PANEL.h);
+    ctx.drawImage(v.holidayArt, x, y, LOAN_DATE_PANEL.w, LOAN_DATE_PANEL.h);
   } else {
     // 季节底图 = 资源 2 图 `sceneOfMonth(月)` @source 表 0x475218（在 `@rich4/core` 里）
     const scene = bankSprite(sprite, 'Panel.mkf', BANK_RES.date, sceneOfMonth(v.date.month));
-    if (scene !== null) ctx.drawImage(scene.bitmap, dx, y);
+    if (scene !== null) drawSprite(ctx, scene, x, y);
   }
   const t = LOAN_DATE_TEXT;
-  bankText(ctx, String(v.date.day), dx + t.day.x, y + t.day.y, t.day.size, t.day.flag, '#ffffff', true);
-  bankText(
-    ctx,
-    LOAN_WEEKDAY[v.weekday] ?? '',
-    dx + t.week.x,
-    y + t.week.y,
-    t.week.size,
-    t.week.flag,
-    '#ffffff',
-    true,
-  );
-  bankText(ctx, String(v.date.year), dx + t.year.x, y + t.year.y, t.year.size, t.year.flag, '#ffffff', true);
-  bankText(ctx, `${v.date.month}月`, dx + t.month.x, y + t.month.y, t.month.size, t.month.flag, '#ffffff', true);
-  if (v.dueDays !== null) {
-    bankText(
-      ctx,
-      LOAN_DUE_TEXT.replace('%d', String(v.dueDays)),
-      dx + t.due.x,
-      y + t.due.y,
-      t.due.size,
-      t.due.flag,
-      '#ffffff',
-      true,
-    );
-  }
+  const dt = (str: string, at: { x: number; y: number; size: number; flag: number }): void =>
+    panelText(ctx, str, x + at.x, y + at.y, at.flag, LOAN_TEXT_STYLE.date(at.size));
+  dt(String(v.date.day), t.day);
+  dt(LOAN_WEEKDAY[v.weekday] ?? '', t.week); // flag 3 = 竖排
+  dt(String(v.date.year), t.year);
+  dt(`${v.date.month}月`, t.month);
+  if (v.dueDays !== null) dt(LOAN_DUE_TEXT.replace('%d', String(v.dueDays)), t.due);
   ctx.restore();
 }
 
@@ -1187,11 +1324,10 @@ export function drawLoanBubble(
   const cy = LOAN_BUBBLE.y + img.height / 2 + LOAN_BUBBLE.dy;
   const lines = text.split('\n').filter((l) => l !== '');
   const lh = LOAN_BUBBLE.size + 6;
-  ctx.font = `${LOAN_BUBBLE.size}px ${FONT}`;
+  // ★ 2026-09-23：字效照 `fcn_0044ecb6` 的 `create_font(0x14, 正文色, 第二色=0, 2, 1)` —— 20 号深色**粗体**（`font.ts` 的 `clerkTextStyle`）
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = LOAN_BUBBLE.color;
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, cy + (i - (lines.length - 1) / 2) * lh);
+    drawGdiText(ctx, line, cx, cy + (i - (lines.length - 1) / 2) * lh, clerkTextStyle(LOAN_BUBBLE.color));
   });
 }

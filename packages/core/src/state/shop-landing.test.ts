@@ -11,9 +11,12 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 import { toolCount } from '../rules/tools.ts';
 import { CARDS, TOOLS } from '@rich4/data';
 import { STORE_INDUSTRY } from '../places/shop.ts';
+import { SPEECH_SITE } from '../rules/speech-rand.ts';
 import { TRAFFIC_WALK } from '../rules/tool-effects.ts';
 import { initialCardAmounts } from '../rules/new-game.ts';
 import { initialToolStock } from '../rules/tools.ts';
+import { deserializeGame, serializeGame } from '../loaders/savegame.ts';
+import { decidePending } from '../ai/policy.ts';
 
 const node = makeNode({ id: 1, adjacent: [1], flags: SPECIAL_KIND.DEPARTMENT_STORE, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
 const topo = { nodes: [node] };
@@ -66,19 +69,31 @@ describe('★ 百貨公司落点', () => {
     expect(s.players[0]!.cards).toContain(onShelf);
   });
 
-  it('★ 买一件少一件 —— 卡片与道具**两页都**如此', () => {
-    // @source 原版两页各清自己那一格：卡片 `mov byte [edi+0x48c31c],0`、
-    //   道具 `mov byte [ebx+0x48c2f8],0`（rich4_shop.asm 0x42e1eb / 0x42e466 尾）
+  it('★ 买过的那一行本次进店不能再买（原版变灰）—— 卡片与道具**两页都**如此', () => {
+    // @source 原版两页各清自己那一格：卡片 `mov byte [ebx+0x48c31c],0`（0x0042e379）、
+    //   道具 `mov byte [ebx+0x48c2f8],0`（0x0042e5f6）；之前先用灰字 0xa0a0a0 把那一行重画进货架栏
     let s = landed(500);
     if (s.pending?.kind !== 'shop') throw new Error('商店没开');
-    const shelfTool = s.pending.tools.find((t) => t.id === 6)!.id;
+    const toolRow = s.pending.tools.findIndex((t) => t.id === 6);
+    const shelfTool = s.pending.tools[toolRow]!.id;
     const shelfCard = s.pending.cards[0]!.id;
-    s = reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo);
-    expect(s.pending?.kind === 'shop' && s.pending.tools.some((t) => t.id === shelfTool)).toBe(false);
-    s = reduce(s, { type: 'shop', op: 'buyCard', id: shelfCard }, topo);
-    expect(s.pending?.kind === 'shop' && s.pending.cards.some((c) => c.id === shelfCard)).toBe(false);
-    // ★ 买过的再买一次：reducer 拒绝（返回同一个 state），而不是凭空再来一件
+    const toolIds = s.pending.tools.map((t) => t.id);
+    s = reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo);
+    if (s.pending?.kind !== 'shop') throw new Error('商店该还开着');
+    // 行不删、位置不动，只是记 sold
+    expect(s.pending.tools.map((t) => t.id)).toEqual(toolIds);
+    expect(s.pending.tools[toolRow]!.sold).toBe(true);
+    s = reduce(s, { type: 'shop', op: 'buyCard', id: shelfCard, row: 0 }, topo);
+    if (s.pending?.kind !== 'shop') throw new Error('商店该还开着');
+    expect(s.pending.cards[0]!.sold).toBe(true);
+    // ★ 买过的再买一次：reducer 拒绝（返回同一个 state），而不是凭空再来一件 —— 带不带行号都一样
     expect(reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool }, topo)).toBe(s);
+    expect(reduce(s, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo)).toBe(s);
+    expect(toolCount(s.tools, 0, shelfTool)).toBe(1);
+    // 卖掉再买也不行：货架那一格已经清 0（原版卖只动自己那 5×3 格，不碰货架）
+    const sold = reduce(s, { type: 'shop', op: 'sellTool', id: shelfTool, count: 1 }, topo);
+    expect(toolCount(sold.tools, 0, shelfTool)).toBe(0);
+    expect(reduce(sold, { type: 'shop', op: 'buyTool', id: shelfTool, row: toolRow }, topo)).toBe(sold);
   });
 
   it('點數不够时什么都不发生', () => {
@@ -104,11 +119,15 @@ describe('★ 百貨公司落点', () => {
  *
  * @source `_rich4_ui_shop_entry` `0x0042e97d..0x0042ea28`：
  *   ① `rand() & 1` 决定送道具（`0x445ada`）还是送卡（`0x441e12`）；
- *   ② 真的送成了才 `sprintf(buf, 0x464378(=「歡迎董事長光臨\n\n送您%s！」), 名字)`
+ *   ② `sprintf(buf, 0x464378(=「歡迎董事長光臨\n\n送您%s！」), 名字)`
  *      → `push 0x5dc / call 0x440cac`（棕色訊息框 1500 ms，**在商店窗打开之前**）
  *      → `call 0x44f230(玩家, 那件的**點數价**)`（「好消息」台词阶梯）。
  *   ⇒ core 侧的交接口 = `notices` 新出现 `shop.chairmanGift`（`args[0]` = 名字）
  *     与瞬态 `lastShopGift`（`{kind, id, points}`）。
+ *
+ * ★★ 2026-09-25（本轮订正）：第 ② 步是**无条件**的 —— 框与台词不看「送成没送成」，
+ *   两支 `je`/`jmp` 只挑送什么。空袋（`0x445ada` 返回 0）也弹框（名字/價别名到卡 30，
+ *   见下面那两条用例），只有「牌堆空」那一支（原版 `strcpy(NULL)` 崩）在本引擎里不弹。
  */
 describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
   /**
@@ -165,18 +184,195 @@ describe('★★ W-67-a 董事長蒞臨的贈禮', () => {
     );
   });
 
-  it('★ 库存与牌堆都空 ⇒ 不弹框、也不写 `lastShopGift`', () => {
-    const s = chairmanLanded({
-      cardAmount: new Array<number>(30).fill(0),
-      toolStock: new Array<number>(14).fill(0),
-    });
+  it('★★ 贈禮**真的落到手牌**上（查 `state.tools` / `players[].cards`，不是已废弃的 `players[].tools`）', () => {
+    // 回报 `20260925-134801926`（Charles、单机、P0 = 阿土伯）现场就是这么走的：
+    // 買下大宇百貨 ⇒ 当上董事長 ⇒ 用遙控骰子走 1 格踩到節點 8 百貨公司 ⇒ `shop.chairmanGift` 框。
+    // 该回报的 `finalState` 里 P0 的 `players[0].tools` 是 `[]` —— 那是**已废弃**字段
+    // （`newGame` 建局恒写 `[]`，见 types.ts 的 `Player.tools`），礼物其实在 `state.tools` 里：
+    // 回报基态 `{1,3,4,8,9}` → 终态 `{1,3,4,5,9}`（8 = 遙控骰子被那一步走子用掉，多出来的 5 = 機車）。
+    const s = chairmanLanded();
+    const notice = s.notices.find((n) => n.key === 'shop.chairmanGift');
+    const gift = s.lastShopGift ?? null;
+    expect(notice, '董事長赠礼框应当出现').toBeDefined();
+    expect(gift, '这个夹具下应当真的送出了一件').not.toBeNull();
+    // ★ 框里说的那一件必须**真的在手上**：送道具 ⇒ `state.tools` 里 +1；送卡 ⇒ 手牌里多一张
+    if (gift!.kind === 'tool') {
+      expect(toolCount(s.tools, 0, gift!.id)).toBe(1);
+    } else {
+      expect(s.players[0]!.cards.filter((c) => c === gift!.id)).toHaveLength(1);
+    }
+    // ★ 反例钉：真手牌在 `GameState.tools` 那张扁平表里（见 types.ts 的 `Player.tools`）——
+    //   过一层序列化 / 反序列化它还在原处，而那个已废弃的 `Player.tools` 里一件都没有。
+    const round = deserializeGame(serializeGame(s));
+    if (gift!.kind === 'tool') expect(toolCount(round.tools, 0, gift!.id)).toBe(1);
+    expect(round.players[0]!.tools.filter((n) => n !== 0)).toEqual([]);
+  });
+
+  it('★★ 空袋（道具 1..8 全 0）＋ `rand()&1 == 1` ⇒ 照弹框、照说台词，手里一件不多', () => {
+    // @source `0x0042e99a mov ebp,[ebx + 0x47feda]` / `0x0042e9b1 mov bl,[ebx + 0x47fedf]`，ebx = id*8。
+    //   道具名表本体是 `0x47fee2 + (id−1)*8`（取证见 `packages/data/src/tools.ts`），
+    //   故 id = 0 读到的 `0x47feda` **不在道具表里** —— 两张名表在 DGROUP 里首尾相接，
+    //   卡片名表（30 项 + 0 号空位）正好占 `0x47fdea..0x47fee2` ⇒ id 0 别名到**卡片表末项**：
+    //   `dump 0x47feda` = {name 0x00466b89「烏龜卡」, init 3, price 70} = 卡 30
+    //   （`@rich4/data` 的 `{id:30, name:'烏龜卡', initAmount:3, price:70}` 逐项对上）。
+    //   ⇒ 原版那一拍弹「送您烏龜卡！」，台词按 70 走中档（50 < 70 ≤ 100 ⇒ **掷一次 rand**），手里一件不多。
+    // 夹具的 `rngState`（`2111915288`）恰好是 `rand()&1 == 1` 那一支；空袋时 `0x445ada` 内部
+    // 不掷 rand（`0x445b0e test ebx,ebx / je` 在 `call rand` 之前），所以礼物那一拍只多台词那一掷。
+    const s = chairmanLanded({ toolStock: new Array<number>(14).fill(0) });
+    const notice = s.notices.find((n) => n.key === 'shop.chairmanGift');
+    expect(notice, '空袋也照弹框（原版框是无条件走的）').toBeDefined();
+    expect(notice!.args).toEqual([CARDS.find((c) => c.id === 30)!.name]);
+    expect(s.lastShopGift ?? null).toEqual({ kind: 'tool', id: 0, points: 70 });
+    // 手里一件都没多
+    expect([1, 2, 3, 4, 5, 6, 7, 8].reduce((n, id) => n + toolCount(s.tools, 0, id), 0)).toBe(0);
+    expect(s.players[0]!.cards).toEqual([]);
+    // 台词那一掷真的掷了（`0x0044f280` 点入帳中档）—— 掷出来的值记在 `lastSpeechRolls` 里
+    expect((s.lastSpeechRolls ?? []).map((r) => r.site)).toEqual([SPEECH_SITE.smallGain]);
+  });
+
+  it('★ 牌袋空 ＋ `rand()&1 == 0` ⇒ 原版会 `strcpy(NULL)` 崩；本引擎按「不弹框、不送」收场', () => {
+    // 名字表 `0x47fdea + 0*8` 是 0 号空位里的 NULL，而 `0x457d96` 是逐字节 strcpy 循环
+    //（`mov cl,[edx] ... cmp cl,0 / jne`）⇒ 原版读地址 0。改不了「崩」，只能不送、不弹。
+    const s = chairmanLanded({ cardAmount: new Array<number>(30).fill(0), rngState: 1 });
     expect(s.notices.filter((n) => n.key === 'shop.chairmanGift')).toHaveLength(0);
     expect(s.lastShopGift ?? null).toBeNull();
+    expect(s.players[0]!.cards).toEqual([]);
+    // 商店照开（框只是那一拍的表现）
+    expect(s.pending?.kind).toBe('shop');
   });
 
   it('★ 瞬态：下一条 action 把它清成 null（只活一条 action）', () => {
     const s = chairmanLanded();
     const cleared = reduce(s, { type: 'rotateView', delta: 1 }, topo);
     expect(cleared.lastShopGift ?? null).toBeNull();
+  });
+});
+
+describe('★★ 第二十六份：电脑不再收到商店交互，托管的真人也不替他花點券', () => {
+  it('电脑落在百貨 ⇒ 当场买卖（`places/ai-shop.ts`）、不挂 pending、不抽货架', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: 2 }),
+      ),
+    });
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 货架那一段 `rand()%10+6` 只在真人那一支 ⇒ 电脑进店（非董事長）一个随机数都不耗
+    expect(r.rngState).toBe(s.rngState);
+    expect(toolCount(r.tools, 0, 5)).toBe(1);
+    expect(toolCount(r.tools, 0, 6)).toBe(1);
+  });
+
+  it('托管位（who_plays = 1|4）也走电脑那一支（`cmp byte [+0x15], 1` 是精确比较）', () => {
+    const s = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK, whoPlays: i === 0 ? 5 : 2 }),
+      ),
+    });
+    expect(reduce(s, { type: 'settle' }, topo).pending).toBeNull();
+  });
+
+  it('开着商店窗被托管的真人 ⇒ AI 只关窗（null），不自拟买车', () => {
+    const s = landed(500);
+    expect(s.pending?.kind).toBe('shop');
+    expect(decidePending(s)).toBeNull();
+  });
+});
+
+describe('★★ 第二十六份（pt26-car）：真人买卖动到牌堆 / 道具库存，与原版一致', () => {
+  it('买卡从牌堆扣一张（`0x0042d242 call 0x4412e4` → `0x0044133b dec`），卖卡放回一张（`0x0042d152 call 0x441343` → `0x004413a2 inc`）', () => {
+    let s = landed(500);
+    if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+    const id = s.pending.cards[0]!.id;
+    const pool0 = s.cardAmount[id - 1]!;
+    s = reduce(s, { type: 'shop', op: 'buyCard', id, row: 0 }, topo);
+    expect(s.players[0]!.cards).toContain(id);
+    expect(s.cardAmount[id - 1]).toBe(pool0 - 1);
+    // 其余各种一张不动
+    const others = s.cardAmount.filter((_, i) => i !== id - 1);
+    expect(others).toEqual(initialCardAmounts().filter((_, i) => i !== id - 1));
+    s = reduce(s, { type: 'shop', op: 'sellCard', id }, topo);
+    expect(s.players[0]!.cards).not.toContain(id);
+    expect(s.cardAmount[id - 1]).toBe(pool0);
+  });
+
+  it('卖开局就在手里的卡 ⇒ 牌堆比开局多一张（原版不管这张从哪来，一律 `inc`）', () => {
+    const s0 = landed(500);
+    const id = CARDS[0]!.id;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, cards: [id] } : p)) };
+    const after = reduce(s, { type: 'shop', op: 'sellCard', id }, topo);
+    expect(after.cardAmount[id - 1]).toBe(s.cardAmount[id - 1]! + 1);
+  });
+
+  it('买汽車库存 10 → 9（`receive_tool` 0x00445a81 `dec`），卖回 9 → 10（`sell_tool` 0x0042d229 `add`）', () => {
+    let s = landed(500);
+    expect(s.toolStock[6]).toBe(10);
+    s = reduce(s, { type: 'shop', op: 'buyTool', id: 6 }, topo);
+    expect(s.toolStock[6]).toBe(9);
+    s = reduce(s, { type: 'shop', op: 'sellTool', id: 6, count: 1 }, topo);
+    expect(s.toolStock[6]).toBe(10);
+    expect(toolCount(s.tools, 0, 6)).toBe(0);
+  });
+
+  it('货架从牌堆抽、不放回：每种上架张数 ≤ 牌堆剩余；只剩一种有货时货架上只有它', () => {
+    {
+      const s = landed(500);
+      if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+      const count = new Map<number, number>();
+      for (const c of s.pending.cards) count.set(c.id, (count.get(c.id) ?? 0) + 1);
+      for (const [id, n] of count) expect(n).toBeLessThanOrEqual(s.cardAmount[id - 1]!);
+    }
+    const only = new Array<number>(30).fill(0);
+    only[4] = 2;
+    const s = reduce(
+      makeGameState({
+        phase: 'settling',
+        cardAmount: only,
+        toolStock: initialToolStock(),
+        players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, character: i, nodeId: 1, points: 500 })),
+      }),
+      { type: 'settle' },
+      topo,
+    );
+    if (s.pending?.kind !== 'shop') throw new Error('商店没开');
+    expect(s.pending.cards.map((c) => c.id)).toEqual([5, 5]);
+    // 开门抽货架用的是局部副本（`0x0042eaf4` memcpy）⇒ 牌堆本身不动
+    expect(s.cardAmount).toEqual(only);
+  });
+});
+
+describe('★ 2026-09-24 审计：百貨格的营业额进百貨企業的盈餘（0x0042ed75 / 0x0042ed7e）', () => {
+  it('买道具记 標價×10、卖道具记 標價×个数；格值不是企業码时不记', () => {
+    // 百貨格的格值 = 百貨企業的实体码（0x1770 + 企業号），0001.bin 就是 6002
+    const storeNode = makeNode({ id: 1, adjacent: [1], type: 0x1770 + 2, specialKind: SPECIAL_KIND.DEPARTMENT_STORE });
+    const t = { nodes: [storeNode] };
+    const s0 = makeGameState({
+      phase: 'settling',
+      cardAmount: initialCardAmounts(),
+      toolStock: initialToolStock(),
+      companyFunds: [0, 0, 100, 0],
+      companyProfit: [0, 0, 7, 0],
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, character: i, nodeId: 1, points: 500, trafficMethod: TRAFFIC_WALK }),
+      ),
+    });
+    const s = reduce(s0, { type: 'settle' }, t);
+    expect(s.pending?.kind).toBe('shop');
+    const bought = reduce(s, { type: 'shop', op: 'buyTool', id: 6 }, t);
+    const carPrice = TOOLS.find((x) => x.id === 6)!.price;
+    expect(bought.companyFunds[2]).toBe(100 + carPrice * 10);
+    expect(bought.companyProfit[2]).toBe(7 + carPrice * 10);
+    const sold = reduce(bought, { type: 'shop', op: 'sellTool', id: 6, count: 1 }, t);
+    expect(sold.companyFunds[2]).toBe(100 + carPrice * 11);
+    // 格值 0 的百貨格（测试夹具那种）：不记
+    const plain = reduce(landed(500), { type: 'shop', op: 'buyTool', id: 6 }, topo);
+    expect(plain.companyFunds).toEqual(landed(500).companyFunds);
   });
 });

@@ -32,6 +32,9 @@ import {
   amountSlotOfId,
   amountWindowHit,
   amountKeyOfVk,
+  AMOUNT_KEY_SOUND,
+  amountButtonDownSound,
+  amountKeySound,
   amountKeyStep,
   appendDigitKey,
   backspaceKey,
@@ -544,5 +547,52 @@ describe('★★ 钮序号的语义：跳表 0x452bca + 字符表 0x47e714（B-5
     expect(amountSlotOfId(0xf)?.kind).toBe('digit');
     expect(amountSlotOfId(0x10)).toBeNull(); // H（金额栏）不是面板上的钮
     expect(amountSlotOfId(-1)).toBeNull();
+  });
+});
+
+describe('★ gap-audit #13：填数窗按键音 7 @source 0x00452f0e（键盘）/ 0x00452d95（鼠标按钮），表 0x48234a', () => {
+  it('数字 / 退格 / C / M / Enter 都放 7', () => {
+    expect(AMOUNT_KEY_SOUND).toBe(7);
+    const keys: AmountKey[] = [
+      { kind: 'digit', digit: 0 },
+      { kind: 'digit', digit: 9 },
+      { kind: 'backspace' },
+      { kind: 'clear' },
+      { kind: 'max' },
+      { kind: 'ok' },
+    ];
+    for (const k of keys) expect(amountKeySound(k), k.kind).toBe(7);
+  });
+  it('★ H（金额栏，序号 0x10）不放 —— `loc_00452f73` 直接跳 0x00452fb9，不经过 0x00452f0e', () => {
+    expect(amountKeySound({ kind: 'bar' })).toBeNull();
+  });
+  it('键盘上每一个认得的键都走得到这张表（VK → 键 → 音）', () => {
+    for (const vk of [0x30, 0x39, 0x08, 0x43, 0x4d, 0x0d]) {
+      const k = amountKeyOfVk(vk);
+      expect(k, `vk ${vk}`).not.toBeNull();
+      expect(amountKeySound(k!)).toBe(7);
+    }
+    expect(amountKeySound(amountKeyOfVk(0x48)!)).toBeNull();
+  });
+});
+
+describe('★ pt26 #3：鼠标按在填数窗上 —— 音在**按下**放 @source 0x00452d63..0x00452d95', () => {
+  it('2..0xf 号钮（数字 / C / 退格 / M / Enter）按下放 7', () => {
+    for (let id = 2; id <= 0xf; id++) expect(amountButtonDownSound(id), `id ${id}`).toBe(7);
+  });
+  it('1 = 拖窗、0x10 = 金额栏：不放（`cmp al,1` / `cmp al,0x10` 两道先跳走）', () => {
+    expect(amountButtonDownSound(1)).toBeNull();
+    expect(amountButtonDownSound(0x10)).toBeNull();
+  });
+  it('★ 源码：main.ts 的三扇填数页走同一个「按下记账 + 放音 / 抬手动作」闩，click 先问它', async () => {
+    const { readFileSync } = await import('node:fs');
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const click = main.indexOf("canvas.addEventListener('click', (e) => {");
+    expect(main.indexOf('if (amountPress.click()) return;', click)).toBeGreaterThan(click);
+    expect(main.indexOf('if (amountPress.click()) return;', click)).toBeLessThan(main.indexOf('reclaimIfAutopiloted()', click));
+    expect(main).toContain('if (q !== null && amountWindowDown(q)) return;');
+    expect(main).toContain('if (e.button === 0 && amountWindowUp()) return;');
+    // 鼠标那一路进 onAmountKey 时不再放音（音已在按下放过）
+    expect(main).toContain("onAmountKey(ui, { kind: 'ok' }, false);");
   });
 });

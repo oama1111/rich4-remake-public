@@ -4,8 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  GAME_INITIAL_FUNDS,
   LOBBY_CHARACTER_COUNT,
+  LOBBY_DEFAULT_OPTIONS,
   LOBBY_MAP_COUNT,
+  LOBBY_MIN_SEATS,
+  roomOptions,
+  withLobbyDefaults,
+  type LobbyOptions,
   type RoomInfo,
   type SeatInfo,
 } from '@rich4/core';
@@ -18,11 +24,27 @@ import {
   drawLobby,
   hitLobby,
   isHostSeat,
+  lobbyIsHost,
   lobbySlots,
+  seatButtonOf,
+  seatButtonRect,
+  LOBBY_OPTION_ROWS,
   LOBBY_SEATS,
   MAX_SEATS,
+  OPTION_COL,
   mapPickAt,
+  optionIndexOf,
+  optionLabelOf,
+  optionValueOf,
 } from './lobby.ts';
+import {
+  CONFIG_TITLES,
+  MONEY_VALUES,
+  PLAYER_COUNT_LABELS,
+  TENURE_LABELS,
+  VEHICLE_LABELS,
+  VICTORY_FACTORS,
+} from './setup.ts';
 import type { Sprite } from './assets.ts';
 
 const seat = (over: Partial<SeatInfo> & { seat: number }): SeatInfo => ({
@@ -182,16 +204,23 @@ describe('isHostSeat', () => {
 //  绘制
 // ============================================================
 
-describe('drawLobby', () => {
-  /** 两字段假 ctx，与 options.test.ts 同规格；另记下画过的文字与图片数 */
-  function fakeCtx() {
+/** 两字段假 ctx，与 options.test.ts 同规格；另记下画过的文字与图片数 */
+function fakeCtx() {
     const texts: string[] = [];
+    /** 每个文字串连同它的落点 —— 「同一句串画在哪儿」是两块选择器的唯一区分办法 */
+    const marks: { t: string; x: number; y: number }[] = [];
     let images = 0;
+    let strokes = 0;
+    /** 每一条 `beginPath..stroke` 上的折线点 —— 用来钉箭头的**朝向**（尖端朝哪边）*/
+    const paths: { x: number; y: number }[][] = [];
+    /** 每条折线落笔时的 `strokeStyle` —— 用来钉「到头那一侧要压暗」*/
+    const pathColors: string[] = [];
     const ctx = {
       font: '',
       fillStyle: '',
       strokeStyle: '',
       lineWidth: 1,
+      textAlign: 'left' as CanvasTextAlign,
       textBaseline: 'top' as CanvasTextBaseline,
       save: () => undefined,
       restore: () => undefined,
@@ -200,21 +229,44 @@ describe('drawLobby', () => {
       drawImage: () => {
         images++;
       },
-      fillText: (t: string) => {
+      fillText: (t: string, x = 0, y = 0) => {
         texts.push(t);
+        marks.push({ t, x, y });
+      },
+      // ★ 「開局設定」的 ◀ / ▶ 是描出来的折线（`drawArrow`），假 ctx 也得有这条路
+      beginPath: () => {
+        paths.push([]);
+        pathColors.push(ctx.strokeStyle);
+      },
+      moveTo: (x: number, y: number) => {
+        paths[paths.length - 1]?.push({ x, y });
+      },
+      lineTo: (x: number, y: number) => {
+        paths[paths.length - 1]?.push({ x, y });
+      },
+      stroke: () => {
+        strokes++;
       },
       measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
     };
     return {
       ctx: ctx as unknown as CanvasRenderingContext2D,
       texts,
+      marks,
       get images() {
         return images;
       },
+      get strokes() {
+        return strokes;
+      },
+      paths,
+      pathColors,
     };
   }
 
-  const portrait = (): Sprite => ({ bitmap: {} as ImageBitmap, width: 48, height: 48, anchorX: 0, anchorY: 0 });
+const portrait = (): Sprite => ({ bitmap: {} as ImageBitmap, width: 48, height: 48, anchorX: 0, anchorY: 0 });
+
+describe('drawLobby', () => {
 
   it('★ 座位同步渲染：名字、在线状态、电脑/真人各画各的', () => {
     const f = fakeCtx();
@@ -293,7 +345,16 @@ describe('drawLobby', () => {
     const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
     drawLobby(f.ctx, slots, 0, true, false, null, () => null, (t) => t.length * 14, 0);
     expect(f.texts.filter((t) => t.startsWith('圖 '))).toHaveLength(LOBBY_MAP_COUNT);
-    expect(f.texts.filter((t) => /^\d+$/.test(t))).toHaveLength(LOBBY_CHARACTER_COUNT);
+    // ⚠️ 只数**角色格那块地上**的编号：開局設定那一栏也会画出纯数字的值（資金…），
+    //    连它一起数就会把「12 个头像格都退化成了编号」这句断言数成 13
+    const inCharGrid = f.marks.filter(
+      (m) =>
+        m.x >= CHAR_PICK.x &&
+        m.x < CHAR_PICK.x + (CHAR_PICK.cols - 1) * CHAR_PICK.pitch + CHAR_PICK.cell &&
+        m.y >= CHAR_PICK.y &&
+        m.y < CHAR_PICK.y + Math.ceil(LOBBY_CHARACTER_COUNT / CHAR_PICK.cols) * CHAR_PICK.pitch,
+    );
+    expect(inCharGrid.filter((m) => /^\d+$/.test(m.t))).toHaveLength(LOBBY_CHARACTER_COUNT);
   });
 });
 
@@ -409,6 +470,19 @@ describe('★ Q-NET-2 地圖挑選格（只有房主能改）', () => {
       });
     }
     rects.push({ name: 'start', ...BTN_START }, { name: 'leave', ...BTN_BACK });
+    // ★ 第十一份試玩回報 #1：「開局設定」六行的 ◀ / ▶ 也是可点控件，同样不许和谁叠
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const y = OPTION_COL.y + i * OPTION_COL.rowH;
+      const leftX = OPTION_COL.x + OPTION_COL.labelW;
+      rects.push({ name: `opt-${i}-left`, x: leftX, y, w: OPTION_COL.arrowW, h: OPTION_COL.rowH });
+      rects.push({
+        name: `opt-${i}-right`,
+        x: leftX + OPTION_COL.arrowW + OPTION_COL.valueW,
+        y,
+        w: OPTION_COL.arrowW,
+        h: OPTION_COL.rowH,
+      });
+    }
 
     for (let i = 0; i < rects.length; i++) {
       for (let j = i + 1; j < rects.length; j++) {
@@ -418,5 +492,268 @@ describe('★ Q-NET-2 地圖挑選格（只有房主能改）', () => {
         expect(overlap, `${a.name} × ${b.name}`).toBe(false);
       }
     }
+  });
+});
+
+// ============================================================
+//  ★★ 第十一份試玩回報 #1：「開局設定」六行（人数 = 总人数）
+// ============================================================
+
+/** 第 i 行 ◀ / ▶ 的中心（与 `lobby.ts` 的 `optionRowRect` 同一套算法）*/
+const optArrow = (i: number, dir: -1 | 1) => {
+  const y = OPTION_COL.y + i * OPTION_COL.rowH;
+  const leftX = OPTION_COL.x + OPTION_COL.labelW;
+  const x = dir === -1 ? leftX : leftX + OPTION_COL.arrowW + OPTION_COL.valueW;
+  return { x: x + Math.floor(OPTION_COL.arrowW / 2), y: y + Math.floor(OPTION_COL.rowH / 2) };
+};
+
+describe('★★ 大厅「開局設定」六行（第十一份試玩回報 #1）', () => {
+  it('★ 六行的标题就是单机开局设定屏那六项（同一批串，不另造一套）', () => {
+    expect(LOBBY_OPTION_ROWS.map((r) => r.title)).toEqual([...CONFIG_TITLES]);
+  });
+
+  it('★ 顯示用的資金表與規則層的資金表**逐項相等**（兩份漂了就會指紋失步）', () => {
+    // 大厅那一栏画的是 `setup.ts` 的 `MONEY_VALUES`，开局烧进局面的是 core 的
+    // `GAME_INITIAL_FUNDS` —— 同一個原版表（0x46cb94）的兩份抄本，必須一模一樣。
+    expect([...MONEY_VALUES]).toEqual([...GAME_INITIAL_FUNDS]);
+  });
+
+  it('★ 每一行的档数与该表项数一致（服务器按同一份数字校验）', () => {
+    const want: Record<string, number> = {
+      seatCount: PLAYER_COUNT_LABELS.length,
+      fundIndex: MONEY_VALUES.length,
+      vehicle: VEHICLE_LABELS.length,
+      landTenure: TENURE_LABELS.length,
+      timeIndex: TENURE_LABELS.length,
+      victoryIndex: VICTORY_FACTORS.length,
+    };
+    for (const row of LOBBY_OPTION_ROWS) expect(row.steps, row.field).toBe(want[row.field]);
+  });
+
+  it('★ 档位下标 ↔ 取值 在各档间来回都是同一个数（seatCount 偏 2，其余不移）', () => {
+    for (const row of LOBBY_OPTION_ROWS) {
+      for (let i = 0; i < row.steps; i++) {
+        const v = optionValueOf(row.field, i);
+        const o = withLobbyDefaults({ [row.field]: v } as Partial<LobbyOptions>);
+        expect(optionIndexOf(o, row.field), `${row.field}#${i}`).toBe(i);
+      }
+    }
+    // 人数这一项**唯一**偏置：档 0 = 二人，不是「零人」
+    expect(optionValueOf('seatCount', 0)).toBe(LOBBY_MIN_SEATS);
+    expect(LOBBY_DEFAULT_OPTIONS.seatCount).toBe(LOBBY_MIN_SEATS + PLAYER_COUNT_LABELS.length - 1);
+  });
+
+  it('★ 显示的值与单机那一屏逐档一致（不是各画各的）', () => {
+    expect(optionLabelOf(withLobbyDefaults({ seatCount: 2 }), 'seatCount')).toBe(PLAYER_COUNT_LABELS[0]);
+    expect(optionLabelOf(withLobbyDefaults({ seatCount: 4 }), 'seatCount')).toBe(PLAYER_COUNT_LABELS[2]);
+    MONEY_VALUES.forEach((v, i) => {
+      expect(optionLabelOf(withLobbyDefaults({ fundIndex: i }), 'fundIndex'), `資金#${i}`).toBe(String(v));
+    });
+    VEHICLE_LABELS.forEach((v, i) => {
+      expect(optionLabelOf(withLobbyDefaults({ vehicle: i }), 'vehicle'), `載具#${i}`).toBe(v);
+    });
+    TENURE_LABELS.forEach((v, i) => {
+      expect(optionLabelOf(withLobbyDefaults({ landTenure: i }), 'landTenure'), `權限#${i}`).toBe(v);
+      expect(optionLabelOf(withLobbyDefaults({ timeIndex: i }), 'timeIndex'), `時間#${i}`).toBe(v);
+    });
+    // ★ 勝利條件的文案**跟着總資金的档位走**（原版是「資金 × 倍率」），漏了这一点就全错
+    VICTORY_FACTORS.forEach((f, i) => {
+      const want = f === 0 ? '無限' : String(MONEY_VALUES[0]! * f);
+      expect(optionLabelOf(withLobbyDefaults({ fundIndex: 0, victoryIndex: i }), 'victoryIndex')).toBe(want);
+      const want2 = f === 0 ? '無限' : String(MONEY_VALUES[3]! * f);
+      expect(optionLabelOf(withLobbyDefaults({ fundIndex: 3, victoryIndex: i }), 'victoryIndex')).toBe(want2);
+    });
+  });
+
+  it('★ 房主 + 未开局：12 个箭头各命中自己那一项、那一档', () => {
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      for (const dir of [-1, 1] as const) {
+        const p = optArrow(i, dir);
+        expect(hitLobby(p.x, p.y, { isHost: true, me: 0 })).toEqual({
+          kind: 'option',
+          field: LOBBY_OPTION_ROWS[i]!.field,
+          delta: dir,
+        });
+      }
+    }
+  });
+
+  it('★ 非房主 / 已开局：一个箭头都点不动（只读，不是「点了没反应」）', () => {
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const p = optArrow(i, 1);
+      expect(hitLobby(p.x, p.y, { isHost: false, me: 1 })).toBeNull();
+      expect(hitLobby(p.x, p.y, { isHost: true, me: 0, started: true })).toBeNull();
+    }
+  });
+
+  it('★ 同一行的 ◀ 与 ▶ 不会互相抢（中心命中的是各自那一侧）', () => {
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const l = optArrow(i, -1);
+      const r = optArrow(i, 1);
+      const hl = hitLobby(l.x, l.y, { isHost: true, me: 0 });
+      const hr = hitLobby(r.x, r.y, { isHost: true, me: 0 });
+      expect(hl?.kind === 'option' ? hl.delta : null).toBe(-1);
+      expect(hr?.kind === 'option' ? hr.delta : null).toBe(1);
+      expect(l.x).toBeLessThan(r.x);
+    }
+  });
+
+  it('★ roomOptions：服务器没给就补全成缺省（旧快照不炸）', () => {
+    expect(roomOptions(null)).toEqual(LOBBY_DEFAULT_OPTIONS);
+    expect(roomOptions({ id: 'r', seats: [], started: false })).toEqual(LOBBY_DEFAULT_OPTIONS);
+    const half = { id: 'r', seats: [], started: false, options: { seatCount: 2 } } as unknown as RoomInfo;
+    expect(roomOptions(half)).toEqual({ ...LOBBY_DEFAULT_OPTIONS, seatCount: 2 });
+  });
+
+  it('★ 只读时**不画箭头**（画了就是骗玩家能点）', () => {
+    const host = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    drawLobby(host.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+    // 六行 × 两个箭头 = 12 条折线
+    expect(host.strokes).toBe(LOBBY_OPTION_ROWS.length * 2);
+
+    const guest = fakeCtx();
+    drawLobby(guest.ctx, slots, 1, false, false, null, () => portrait(), (t) => t.length * 14, 0);
+    expect(guest.strokes).toBe(0);
+  });
+
+  it('★★ 箭头的**尖端朝着它代表的方向**（把「◀」画成「>」是实际踩过的坑）', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+
+    // `drawOptionColumn` 逐行画「左、右」，所以偶数条 = ◀、奇数条 = ▶
+    expect(f.paths).toHaveLength(LOBBY_OPTION_ROWS.length * 2);
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const [left, right] = [f.paths[i * 2]!, f.paths[i * 2 + 1]!];
+      for (const [name, path, want] of [
+        ['◀', left, -1],
+        ['▶', right, 1],
+      ] as const) {
+        expect(path, name).toHaveLength(3);
+        const tip = path[1]!; // moveTo(尾) → lineTo(尖) → lineTo(尾)
+        const tails = [path[0]!, path[2]!];
+        for (const t of tails) {
+          // 尖端必须在两个尾点的**同一侧**，且那一侧就是 `want`
+          expect(Math.sign(tip.x - t.x), `${name} row ${i}`).toBe(want);
+        }
+        // 形状是一个「V」：两个尾点同 x 同高、尖端在两尾点中间那一条水平线上
+        expect(tails[0]!.x, `${name} row ${i}`).toBe(tails[1]!.x);
+        expect(tails[0]!.y, `${name} row ${i}`).not.toBe(tails[1]!.y);
+        expect(tip.y, `${name} row ${i}`).toBe((tails[0]!.y + tails[1]!.y) / 2);
+      }
+    }
+  });
+
+  it('★ 到端点的那一侧要**压暗**（默认：人數到顶、其余五项都在最低档）', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    // 缺省值：seatCount=4（最高档）、其余五项都是 0（最低档）
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+    const [max, min] = ['#a8b6c8', '#3c4c60'];
+    for (let i = 0; i < LOBBY_OPTION_ROWS.length; i++) {
+      const row = LOBBY_OPTION_ROWS[i]!;
+      const idx = optionIndexOf(LOBBY_DEFAULT_OPTIONS, row.field);
+      const left = f.pathColors[i * 2]!;
+      const right = f.pathColors[i * 2 + 1]!;
+      expect(left, `${row.field} ◀`).toBe(idx <= 0 ? min : max);
+      expect(right, `${row.field} ▶`).toBe(idx >= row.steps - 1 ? min : max);
+    }
+    // 六行里恰好有 5 个「◀ 到头」和 1 个「▶ 到头」
+    expect(f.pathColors.filter((c) => c === min)).toHaveLength(6);
+  });
+
+  it('★ 六行的标题与当前值都画出来，且值来自传进来的那份选项', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0);
+    drawLobby(
+      f.ctx,
+      slots,
+      0,
+      true,
+      false,
+      null,
+      () => portrait(),
+      (t) => t.length * 14,
+      0,
+      withLobbyDefaults({ seatCount: 3, fundIndex: 5, vehicle: 2, victoryIndex: 5 }),
+    );
+    for (const t of CONFIG_TITLES) expect(f.texts, t).toContain(t);
+    expect(f.texts).toContain(PLAYER_COUNT_LABELS[1]); // 三人
+    expect(f.texts).toContain(String(MONEY_VALUES[5])); // 資金档 5
+    expect(f.texts).toContain(VEHICLE_LABELS[2]); // 汽車
+    expect(f.texts).toContain(String(MONEY_VALUES[5]! * VICTORY_FACTORS[5]!));
+    // 房主/非房主的提示语都要说清「空位由电脑补上」
+    expect(f.texts.some((t) => t.includes('由電腦補上'))).toBe(true);
+    expect(f.texts.some((t) => t.includes('共 3 人'))).toBe(false); // 这句是非房主那条
+  });
+
+  it('座位格数跟着房间总人数走（设 3 人就只画 3 格）', () => {
+    const f = fakeCtx();
+    const slots = lobbySlots(room([seat({ seat: 0 })]), 0, 3);
+    drawLobby(f.ctx, slots, 0, true, false, null, () => portrait(), (t) => t.length * 14, 0);
+    expect(f.texts.filter((t) => t === '等待加入…')).toHaveLength(2); // 3 格里的另外两格
+    expect(hitLobby(center({ ...LOBBY_SEATS, x: LOBBY_SEATS.x + 3 * LOBBY_SEATS.pitch }).x, LOBBY_SEATS.y + 10, {
+      isHost: true,
+      me: 0,
+      seats: 3,
+    })).toBeNull();
+  });
+});
+
+describe('★ 聯機存檔（v6）：存檔房的大廳', () => {
+  const saveRoom = (over: Partial<RoomInfo> = {}): RoomInfo => ({
+    id: 'ABCDEF',
+    started: false,
+    fromSave: { name: '週末' },
+    hostSeat: 1,
+    seats: [
+      { seat: 0, name: 'A', character: 4, kind: 'human', connected: false, vacant: true },
+      { seat: 1, name: 'H', character: 2, kind: 'human', connected: true },
+      { seat: 2, name: 'X', character: 7, kind: 'human', connected: true },
+      { seat: 3, name: '電腦4', character: 0, kind: 'computer' },
+    ],
+    ...over,
+  });
+
+  it('房主看 hostSeat（不一定是 0 號座）；-1 = 還沒入座，不是房主', () => {
+    expect(lobbyIsHost(saveRoom(), 1)).toBe(true);
+    expect(lobbyIsHost(saveRoom(), 0)).toBe(false);
+    expect(lobbyIsHost(saveRoom({ hostSeat: -1 }), -1)).toBe(false);
+    // 一般房間：沒帶 hostSeat ⇒ 0 號座
+    expect(lobbyIsHost({ id: 'X', started: false, seats: [] }, 0)).toBe(true);
+  });
+
+  it('座位小鈕：沒入座的人在空座上看到「這是我」；自己的座位「離座」；房主對別人「請離座」；開局後都沒有', () => {
+    const r = saveRoom();
+    const slotsGuest = lobbySlots(r, -1, 4);
+    expect(slotsGuest.some((s) => s.isMe)).toBe(false);
+    expect(slotsGuest.map((s) => seatButtonOf(s, -1, false, r)?.label ?? null)).toEqual(['這是我', null, null, null]);
+    const slotsHost = lobbySlots(r, 1, 4);
+    expect(slotsHost.map((s) => seatButtonOf(s, 1, true, r)?.label ?? null)).toEqual([null, '離座', '請離座', null]);
+    const slotsX = lobbySlots(r, 2, 4);
+    expect(slotsX.map((s) => seatButtonOf(s, 2, false, r)?.label ?? null)).toEqual([null, null, '離座', null]);
+    const started = saveRoom({ started: true });
+    expect(lobbySlots(started, -1, 4).map((s) => seatButtonOf(s, -1, false, started))).toEqual([null, null, null, null]);
+    // 一般房間永遠沒有
+    const plain: RoomInfo = { id: 'P', started: false, seats: r.seats.map((s) => {
+      const c = { ...s };
+      delete c.vacant;
+      return c;
+    }) };
+    expect(lobbySlots(plain, 0, 4).map((s) => seatButtonOf(s, 0, true, plain))).toEqual([null, null, null, null]);
+  });
+
+  it('命中：小鈕先於座位卡；存檔房的角色 / 地圖 / 設定一律點不動（鎖定）', () => {
+    const r = saveRoom();
+    const b = seatButtonRect(0);
+    expect(hitLobby(b.x + 5, b.y + 5, { isHost: false, me: -1, room: r, seats: 4 })).toEqual({ kind: 'claim', seat: 0 });
+    const u = seatButtonRect(2);
+    expect(hitLobby(u.x + 5, u.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toEqual({ kind: 'unclaim', seat: 2 });
+    // 鎖定：房主點角色格 / 地圖格都是 null
+    expect(hitLobby(CHAR_PICK.x + 5, CHAR_PICK.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toBeNull();
+    expect(hitLobby(MAP_PICK.x + 5, MAP_PICK.y + 5, { isHost: true, me: 1, room: r, seats: 4 })).toBeNull();
+    // 空座卡片本身仍只是「落在座位上」
+    expect(hitLobby(LOBBY_SEATS.x + 100, LOBBY_SEATS.y + 10, { isHost: false, me: -1, room: r, seats: 4 })).toEqual({ kind: 'seat', index: 0 });
   });
 });

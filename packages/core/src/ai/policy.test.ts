@@ -21,6 +21,7 @@ import {
   auctionNextBid,
   decideAction,
   decideAtLanding,
+  decidePending,
   isAiTurn,
   toCardTarget,
 } from './policy.ts';
@@ -29,6 +30,7 @@ import { useCard, type UseCardContext } from '../cards/registry.ts';
 import { initialSpecialActors } from '../rules/special-actors.ts';
 import { STOCK_COUNT } from '../rules/wealth.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -239,7 +241,12 @@ describe('★ 电脑回合掷骰前的调度步（aiStep）', () => {
       rngState: 12345,
     });
     const s1 = reduce(ai, { type: 'aiNext' }, { nodes: [] });
-    expect(s1.rngState).toBe(ai.rngState); // 0 → 1 不碰随机
+    // ★★ 审计订正：0 → 1 是买股（0x42bf03），入口 `0x0042bf14 rand()%3` **每回合必掷**一次；
+    //   这里股市没有一支有分 ⇒ 之后不再掷
+    const one = new WatcomRng();
+    one.setState(ai.rngState);
+    one.next();
+    expect(s1.rngState).toBe(one.getState());
     const s2 = reduce(s1, { type: 'aiNext' }, { nodes: [] });
     expect(s2.aiStep).toBe(2);
     expect(s2.rngState).not.toBe(s1.rngState);
@@ -563,6 +570,18 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
     expect(auctionNextBid(dead, p)).toBeNull();
   });
 
+  it('★ 审计（AUC-22/23）：真人支只认整字节 == 1；钱不够现价的真人由 core 替他放棄（0x0043b001 / 0x0043b06c）', () => {
+    const p = pendingAuction({ seat: 0, bidders: [0, 1], limits: [20_000, 20_000], price: 5000 });
+    const poorHuman = at(p, [{ whoPlays: WHO_PLAYS_HUMAN, cash: 4999 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(poorHuman, p)).toEqual({ type: 'auctionBid', bidder: 0, status: 'giveUp', step: 0 });
+    const richHuman = at(p, [{ whoPlays: WHO_PLAYS_HUMAN, cash: 5000 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(richHuman, p)).toBeNull();
+    // 走回棋盘位 0x10 的真人：走电脑支，限价 0（开拍时没给他算）⇒ 出得起也只 PASS
+    const noLimit = pendingAuction({ seat: 0, bidders: [0, 1], limits: [0, 20_000], price: 5000 });
+    const returning = at(noLimit, [{ whoPlays: WHO_PLAYS_HUMAN | 0x10, cash: 90_000 }, { whoPlays: WHO_PLAYS_COMPUTER }]);
+    expect(auctionNextBid(returning, noLimit)).toMatchObject({ bidder: 0, status: 'pass' });
+  });
+
   it('auctionNextBid：已 PASS / 已放棄的座位返回 null', () => {
     const p = pendingAuction({
       seat: 0,
@@ -580,5 +599,24 @@ describe('★ 拍賣：电脑那一手不再走 declineDecision', () => {
       { whoPlays: WHO_PLAYS_COMPUTER },
     ]), phase: 'turnEnd' as const };
     expect(decideAction({ state: s, map: topo })?.type).toBe('auctionBid');
+  });
+});
+
+describe('审计（ai-move）：开着保釋窗被托管的真人', () => {
+  it('★★ 不再自拟「挑最便宜的同伴」—— 按关窗处理（declineDecision，不花點券）', () => {
+    const s = makeGameState({
+      players: [
+        makePlayer({ index: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT, points: 500 }),
+        makePlayer({ index: 1 }),
+      ],
+      phase: 'turnEnd',
+      pending: {
+        kind: 'bail',
+        place: 'prison',
+        candidates: [{ slot: 1, player: 1, name: '沙隆巴斯', cost: 30, affordable: true }],
+        points: 500,
+      },
+    });
+    expect(decidePending(s)).toEqual({ type: 'declineDecision' });
   });
 });

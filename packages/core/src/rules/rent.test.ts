@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { makeLand, makePlayer } from '../testing/factories.ts';
-import { allianceShareOf, collectRent } from './rent.ts';
+import { allianceShareOf, collectRent, rentHostility } from './rent.ts';
 import { LAND_TYPE_HOUSE } from './toll.ts';
 import { truncTowardZero } from './rounding.ts';
 
@@ -118,8 +118,16 @@ describe('★ 分账比例走 float32，保留原版的精度损失', () => {
     for (const [own, ally] of [[1, 1], [3, 1], [7, 11], [1000, 333], [123457, 98765]]) {
       const total = own! + ally!;
       const ratio = Math.fround(ally! / total);
-      expect(allianceShareOf(own!, ally!)).toBe(truncTowardZero(Math.fround(total * ratio)));
+      // ★ 审计订正：乘回去那一步是扩展精度（`fmul dword` 只把比例当单精度读进来），**不再**压回 float32
+      expect(allianceShareOf(own!, ally!)).toBe(truncTowardZero(total * ratio));
     }
+  });
+
+  it('★ 审计订正：比例是 float32、乘积不是 —— 总额 10、同盟 7 ⇒ 同盟得 6（不是 7）', () => {
+    // fround(0.7) = 0.699999988…；10 × 它 = 6.99999988 → 向零 6。旧式把乘积再 fround 成 7.0 → 7
+    expect(allianceShareOf(3, 7)).toBe(6);
+    // [7, 11]：fround(11/18) × 18 = 10.9999998 → 10
+    expect(allianceShareOf(7, 11)).toBe(10);
   });
 
   it('★ 分账后两份之和恒等于总额（地主得 = 总额 - 同盟得）', () => {
@@ -144,14 +152,18 @@ describe('★ 付租金会动用存款（与买地不同）', () => {
     expect(r.bankrupted).toBe(false);
   });
 
-  it('两个口袋都空则破产，地主只收到实付部分', () => {
+  it('两个口袋都空则破产，地主只收到实付部分（★ PAY-05：那一笔等清算拍卖打完才入账）', () => {
     const ps = players(false);
     ps[0] = makePlayer({ index: 0, cash: 300, moneyInBank: 200 });
     const lands = scene();
     const r = collectRent(ps, lands, 0, lands[0]!, 1);
     expect(r.bankrupted).toBe(true);
     expect(r.shares[0]!.amount).toBe(500); // 不是 1000
-    expect(r.players[1]!.moneyInBank).toBe(500);
+    // ★★ PAY-05（`0x0041d376 call 0x40cd87` 早于 `0x0041d387` 的收款分支）：
+    //   付款人破产时这一笔**不当场入账** —— 原版清算里的拍卖是阻塞调用，
+    //   收款人拿钱排在拍卖之后 ⇒ 由调用方（`finishToll`）挂进 `pendingQueue`。
+    expect(r.players[1]!.moneyInBank, '清算拍卖期间地主还没拿到钱').toBe(0);
+    expect(r.credits).toEqual([{ payee: 1, amount: 500, toCash: false }]);
   });
 });
 
@@ -324,5 +336,41 @@ describe('★★ counted —— 「同一条街的连号地块」到底算了几
     const r = collectRent(ps, lands, 0, lands[0]!, 1);
     expect(r.total).toBe(0);
     expect(r.counted).toEqual([11, 12, 13, 14]);
+  });
+});
+
+describe('★ 2026-09-24 审计：rentHostility / 涨价地的分账分母', () => {
+  it('rentHostility：无同盟 → (付款人, 地主, 总额/100)；有同盟 → (总额 − 同盟份)/100 与 同盟份/100，向零', () => {
+    const ps = [0, 1, 2].map((i) => makePlayer({ index: i }));
+    const a = rentHostility(ps, 0, 1, 0, 1299, 0);
+    expect(a[0]!.hostility).toEqual([0, 12, 0, 0]);
+    const b = rentHostility(ps, 0, 1, 3, 3000, 1050);
+    expect(b[0]!.hostility).toEqual([0, 19, 10, 0]);
+    // 小財神减半后「总额 − 同盟份」为负 ⇒ 对地主的敌意下降（有下限 0）
+    const hated = ps.map((p, i) => (i === 0 ? { ...p, hostility: [0, 30, 0, 0] } : p));
+    const c = rentHostility(hated, 0, 1, 3, 500, 1050);
+    expect(c[0]!.hostility).toEqual([0, 25, 10, 0]);
+  });
+
+  it('★ 涨价地 + 有同盟：分母用**翻倍后**的地主份（0x00419b0f 在 0x00419cbd 之前）', () => {
+    // 地主 1 号（2 级 1200，涨价 ×2 = 2400）与同盟 2 号（同名 2 级 1200）
+    const lands = [
+      makeLand({ id: 1, owner: 2, level: 2, priceStatus: 0x50 }),
+      makeLand({ id: 2, owner: 3, level: 2 }),
+    ];
+    const ps = [
+      makePlayer({ index: 0, cash: 100_000 }),
+      makePlayer({ index: 1, alliedPlayer: 3 }),
+      makePlayer({ index: 2, alliedPlayer: 2 }),
+    ];
+    const r = collectRent(ps, lands, 0, lands[0]!, 1);
+    expect(r.total).toBe(3600);
+    expect(r.allyToll).toBe(1200);
+    // 比例 = fround(1200/3600)；同盟得 trunc(3600 × 比例) = 1200，地主得 2400（旧式按 1200/2400 算成 1800/1800）
+    const ally = r.shares.find((x) => x.payee === 2)!;
+    const owner = r.shares.find((x) => x.payee === 1)!;
+    expect(ally.amount).toBe(allianceShareOf(2400, 1200, 3600));
+    expect(ally.amount).toBe(1200);
+    expect(owner.amount).toBe(2400);
   });
 });

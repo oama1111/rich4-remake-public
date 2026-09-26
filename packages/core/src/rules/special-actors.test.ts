@@ -143,6 +143,7 @@ describe('走几步', () => {
 describe('上路', () => {
   it('機器娃娃从主人脚下起步，位置原样抄一份', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [makePlayer({ index: 0, nodeId: 12, lastNodeId: 11, direction: 5 })],
     });
     const doll = spawnDoll(s, 0);
@@ -159,7 +160,8 @@ describe('上路', () => {
   });
 
   it('主人不在地图上就放不出来', () => {
-    const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 0 })] });
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [makePlayer({ index: 0, nodeId: 0 })] });
     expect(spawnDoll(s, 0)).toBeNull();
     expect(spawnDoll(s, 3)).toBeNull();
   });
@@ -232,14 +234,55 @@ describe('★ 機器娃娃 —— 走九格，见物件就轰走', () => {
     expect(r.objects[0]?.nodeId).toBe(1);
   });
 
-  it('★ 附身状态一并清掉 —— 被请走的神明不该还挂在谁身上', () => {
-    const attached: MapObject[] = [{ type: 1, nodeId: 5, state: 3, attached: 2 }];
+  // ★★ 2026-09-24 订正（第 24 份试玩回报 `20260924-182247766`「我身上背的窮神莫名其妙消失了」）：
+  //   先前这一例断言「附身的神明也被扫掉」—— 与原版相反。娃娃找物件读的是**节点反向索引**
+  //   `node+0x24` 第 3 字节（@source 0x0041b4b4 `and eax,0xff0000 / shr eax,0x10`），附身时
+  //   那一字节被抹掉（`release_object` 0x40e14d 也只在 `attached == 0` 时清它）⇒ 附身的**不在路上**。
+  //   本引擎的附身物件 `nodeId` 跟着主人走（`syncEscortNodes`），光比 `nodeId` 才会误扫。
+  it('★★ 附身的神明**不扫** —— 它不在节点反向索引里（0x0041b4b4），主人照背着', () => {
+    const attached: MapObject[] = [{ type: 5, nodeId: 5, state: 3, attached: 2 }];
     const r = runDoll(
       { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
       attached,
       line,
     );
-    expect(r.objects[0]).toEqual({ type: 1, nodeId: 0, state: 0, attached: 0 });
+    expect(r.objects[0]).toEqual({ type: 5, nodeId: 5, state: 3, attached: 2 });
+    expect(r.cleared).toEqual([]);
+  });
+
+  it('★ 同格有附身的也有地上的：只扫地上那一件（附身的不在那一字节里，同 `objectHandleAt`）', () => {
+    const mixed: MapObject[] = [
+      { type: 5, nodeId: 4, state: 3, attached: 1 },
+      { type: 16, nodeId: 4, state: 0, attached: 0 },
+    ];
+    const r = runDoll(
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
+      mixed,
+      line,
+    );
+    expect(r.cleared).toEqual([{ index: 1, step: 3 }]);
+    expect(r.objects[0]).toEqual(mixed[0]);
+    expect(r.objects[1]!.nodeId).toBe(0);
+  });
+
+  // ★★ 2026-09-25（本分支）：那一字节是按位或（`0x0040e13c or [node+0x24],(槽+1)<<16`），
+  //   不是「取最大槽号」。OR 落到**第三个槽**时，原版扫掉的是那个槽的记录
+  //   （`0x0041b529 call 0x40e14d`），哪怕那一件在别的格子上。
+  it('★★ 同格两件取**按位或**：槽 0、槽 1 各一件 ⇒ 1|2 = 3 ⇒ 扫掉的是槽 2 那一件', () => {
+    const two: MapObject[] = [
+      { type: 1, nodeId: 4, state: 0, attached: 0 }, // handle 1
+      { type: 2, nodeId: 4, state: 0, attached: 0 }, // handle 2
+      { type: 3, nodeId: 6, state: 0, attached: 0 }, // handle 3 —— 站在别的格上
+    ];
+    const r = runDoll(
+      { nodeId: 1, lastNodeId: 0, direction: 0, owner: 0, stepsRemaining: DOLL_STEPS, halted: 0, singleStep: 0, place: ACTOR_PLACE.board },
+      two,
+      line,
+    );
+    expect(r.cleared).toEqual([{ index: 2, step: 3 }]);
+    expect(r.objects[0]).toEqual(two[0]);
+    expect(r.objects[1]).toEqual(two[1]);
+    expect(r.objects[2]!.nodeId).toBe(0);
   });
 
   it('走完就收场 —— 替身不留在场上', () => {
@@ -279,6 +322,7 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 
   function withDoll(objects: MapObject[]) {
     const base = makeGameState({
+    phase: 'awaitingRoll',
       players: [makePlayer({ index: 0, nodeId: 1, lastNodeId: 0 })],
       objects,
     });
@@ -295,12 +339,52 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
     expect(UNIMPLEMENTED_TOOLS).toEqual([]);
   });
 
-  it('用掉一件，把路上的物件扫光', () => {
-    const s = withDoll(objs(2, 3));
+  /**
+   * 物件表按**槽位**分种类（`OBJECT_TYPE_TABLE`：0..11 神明、16..25 路障…）—— 路障只能在 16 号槽起。
+   * ⚠️ 先前这里把路障摆在 0 / 1 号槽：扫物件改走 `release_object`（0x40e14d）之后，
+   *   `i < 12` 那一支会把「搭档」重新放回棋盘（神明才有的事），那种摆法就不成立了。
+   */
+  function roadblocksAt(...at: number[]): MapObject[] {
+    const out: MapObject[] = Array.from({ length: 16 }, (_, i) => ({ type: i + 1, nodeId: 0, state: 0, attached: 0 }));
+    for (const nodeId of at) out.push({ type: 16, nodeId, state: 0, attached: 0 });
+    return out;
+  }
+
+  it('用掉一件，把路上的物件扫光；路障回库存（`release_object` 0x40e14d：`inc [0x497321]`）', () => {
+    const s = withDoll(roadblocksAt(2, 3));
     const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
     expect(after).not.toBe(s);
     expect(toolCount(after.tools, 0, 1)).toBe(0);
     expect(after.objects.every((o) => o.nodeId === 0)).toBe(true);
+    // 路障 = 道具 2（`OBJECT_TO_TOOL`）：两件都回库存
+    expect(after.toolStock[2]).toBe((s.toolStock[2] ?? 0) + 2);
+  });
+
+  it('★ 地上的神明被扫走 = `release_object`：它离场、搭档另找地方登场（`i < 12` 那一支）', () => {
+    const objects = roadblocksAt();
+    objects[4] = { type: 5, nodeId: 2, state: 0, attached: 0 }; // 小窮神在 2 号格地上；5 号槽（大窮神）没出场
+    const s = withDoll(objects);
+    const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
+    // 这条 4 格小路上娃娃来回走（1→4→1→4），搭档一登场就又被踩到 —— 正是原版逐格 `0x40e14d` 的样子
+    const cleared = after.lastNpcWalks[0]!.cleared!;
+    expect(cleared[0]).toEqual({ index: 4, step: 1 });
+    // 小窮神离场后，大窮神（5 号槽）被放上棋盘，随后在第 2 步被扫
+    expect(cleared[1]).toEqual({ index: 5, step: 2 });
+  });
+
+  it('★★ 路上站着一个**背着神明**的玩家：神明不被扫、玩家照背着（第 24 份 `20260924-182247766`）', () => {
+    const objects = roadblocksAt();
+    objects[4] = { type: 5, nodeId: 3, state: 7, attached: 2 }; // 小窮神附在 1 号玩家身上
+    const base = withDoll(objects);
+    const s = {
+      ...base,
+      players: [base.players[0]!, makePlayer({ index: 1, nodeId: 3, lastNodeId: 2, godInfo: 5 })],
+    };
+    const after = reduce(s, { type: 'useTool', toolId: 1 }, topo);
+    expect(toolCount(after.tools, 0, 1)).toBe(0);
+    expect(after.objects[4]).toEqual({ type: 5, nodeId: 3, state: 7, attached: 2 });
+    expect(after.players[1]!.godInfo).toBe(5);
+    expect(after.lastNpcWalks[0]!.cleared).toEqual([]);
   });
 
   it('★ 主人不动 —— 走的是替身，不是他自己', () => {
@@ -316,7 +400,8 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
   });
 
   it('没有这件道具就什么都不发生', () => {
-    const s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1 })], objects: objs(2) });
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [makePlayer({ index: 0, nodeId: 1 })], objects: objs(2) });
     expect(reduce(s, { type: 'useTool', toolId: 1 }, topo)).toBe(s);
   });
 
@@ -342,7 +427,7 @@ describe('★ 道具 1 —— 用得出去，且真的清场', () => {
 //  保釋 → 上路
 // ============================================================
 
-describe('★ 保釋 NPC —— 他会当场上路', () => {
+describe('★ 保釋 NPC —— 摆到门口，等行动者游标轮到他才走（0x0043d7e0 / 0x0043ee8f）', () => {
   /**
    * 一条环线 1→2→3→4→1，**监狱在 2 号**（所以他绕一圈会自投罗网）。
    *
@@ -407,19 +492,37 @@ describe('★ 保釋 NPC —— 他会当场上路', () => {
     expect(after.specialActors[1]?.owner).toBe(2);
   });
 
-  it('★ 走完就收场 —— 替身不留在场上', () => {
+  it('★★ 只摆到门口：在盘上、站关押格、没掷步数（随机流不动）、没有走子提示、不换行动者', () => {
     const s = visiting(4);
     const after = reduce(s, { type: 'bail', slot: 4 }, away);
-    expect(actorActive(after.specialActors[0])).toBe(false);
-    expect(after.rngState).not.toBe(s.rngState);
+    expect(actorActive(after.specialActors[0])).toBe(true);
+    expect(after.specialActors[0]).toMatchObject({ nodeId: 2, lastNodeId: 0, owner: 0, stepsRemaining: 0, place: ACTOR_PLACE.board });
+    expect(after.rngState, '步数在他自己的回合 0x0040de50 才掷').toBe(s.rngState);
+    expect(after.lastNpcWalks).toBe(s.lastNpcWalks);
+    expect(after.lastNpcTurn ?? null).toBeNull();
+    expect(after.prisonOccupancy[4]).toBe(0);
+    expect(after.phase).toBe('turnEnd');
+    expect(after.pendingNpcSlots ?? []).toEqual([]);
   });
 
-  it('★★ 环线上绕回監獄格 → 他自投罗网，占用表又满上', () => {
-    const s = visiting(4);
-    const after = reduce(s, { type: 'bail', slot: 4 }, loop);
+  it('★★ 保釋者是最后一名 ⇒ 这一轮收回合时他按槽位顺序走那一趟（环线上绕回監獄格 → 自投罗网）', () => {
+    const s = { ...visiting(4), currentPlayer: 3 };
+    const bailed = reduce(s, { type: 'bail', slot: 4 }, loop);
+    expect(bailed.prisonOccupancy[4]).toBe(0);
+    const after = reduce(bailed, { type: 'endTurn' }, loop);
+    expect(after.lastNpcTurn).toEqual({ actor: 4 });
+    expect(after.lastNpcWalks[0]!.path[0]).toBe(2);
     // 这张四格环线怎么走都会踩回 2 号
     expect(after.prisonOccupancy[4]).toBe(1);
     expect(after.specialActors[0]?.place).toBe(ACTOR_PLACE.prison);
+  });
+
+  it('★ 保釋者不是最后一名 ⇒ 下一位玩家先走，他等游标到 4..7', () => {
+    const bailed = reduce(visiting(4), { type: 'bail', slot: 4 }, away);
+    const after = reduce(bailed, { type: 'endTurn' }, away);
+    expect(after.currentPlayer).toBe(1);
+    expect(after.specialActors[0]!.nodeId).toBe(2);
+    expect(after.lastNpcTurn ?? null).toBeNull();
   });
 
   it('★★★ 可证伪：出獄起点是**关押格**（`type` 0x1f42），不是落点特殊格', () => {
@@ -437,9 +540,9 @@ describe('★ 保釋 NPC —— 他会当场上路', () => {
       ],
     };
     const after = reduce(visiting(4), { type: 'bail', slot: 4 }, split);
-    // ★ 旧实现（`specialKind` 判据）会从 2 号起步 ⇒ 这两条当场红
-    expect(after.lastNpcWalks[0]!.path[0]).toBe(1);
-    expect(after.lastNpcWalks[0]!.path[0]).not.toBe(2);
+    // ★ 旧实现（`specialKind` 判据）会摆在 2 号 ⇒ 这两条当场红
+    expect(after.specialActors[0]!.nodeId).toBe(1);
+    expect(after.specialActors[0]!.nodeId).not.toBe(2);
   });
 
   it('保釋玩家（槽 0..3）不碰替身表', () => {

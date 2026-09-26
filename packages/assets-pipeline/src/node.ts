@@ -11,7 +11,8 @@
  * 任何一个函数都会把 zlib 一起拖进来 —— 这就是 b99b459 之后的实际状况。
  * 拆开之后，「能不能进前端」这件事由**出口**表达，而不是靠每个调用方自己记得。
  *
- * CLI（`cli-extract.ts` / `cli-upscale.ts`）与 `assemble.ts` 都在这条线内。
+ * CLI（`cli-extract.ts` / `cli-upscale.ts`）与 `assemble.ts`、`tier.ts` 都在这条线内。
  */
 export * from './png.ts';
 export * from './assemble.ts';
+export * from './tier.ts';

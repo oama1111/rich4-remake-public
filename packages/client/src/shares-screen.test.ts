@@ -32,6 +32,7 @@ import {
   SHARES_IMAGE,
   SHARES_INK_COLOR,
   SHARES_KEYED,
+  SHARES_OPEN_SOUND,
   SHARES_RESOURCE,
   SHARES_ROWS,
   SHARES_SIZE,
@@ -575,4 +576,70 @@ describe('★★ 分紅屏的自动收屏（试玩 4 回归）', () => {
     sharesScreen.tick!(envAt(after, SHARES_AUTO_CLOSE_MS));
     expect(sharesScreen.active(envAt(after, 0))).toBe(false);
   });
+});
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  const env = (state: GameState, logs: string[] = []): UiScreenEnv =>
+    ({
+      screen: 'game',
+      state,
+      topo: TOPO,
+      now: 0,
+      stage: {} as unknown as CanvasRenderingContext2D,
+      sprite: () => null,
+      dispatch: () => {},
+      requestRender: () => {},
+      log: (m: string) => logs.push(m),
+      playEffect: () => {},
+      stopEffect: () => {},
+    }) as unknown as UiScreenEnv;
+
+  it('在演 ⇒ 与抬手同一个 `dismiss`；没在演 ⇒ false', () => {
+    resetSharesScreen();
+    const before: GameState = { ...marketWithTwo(), day: 14, totalDays: 100 };
+    const after: GameState = { ...before, day: DIVIDEND_DAY, totalDays: 101 };
+    const logs: string[] = [];
+    sharesScreen.event!(before, after, env(after, logs));
+    expect(sharesScreen.fastForward!(env(after, logs))).toBe(true);
+    expect(sharesScreen.active(env(after))).toBe(false);
+    expect(logs).toContain('上市公司分紅：收屏');
+    expect(sharesScreen.fastForward!(env(after))).toBe(false);
+  });
+});
+
+describe('★ gap-audit #13：分紅屏开屏放 61 @source 0x0042b4c8..0x0042b4ce（表 0x4755a8 只有一项）', () => {
+  const env = (state: GameState, now: number, effects: number[], localSeat?: number): UiScreenEnv =>
+    ({
+      screen: 'game',
+      state,
+      topo: TOPO,
+      now,
+      stage: {} as unknown as CanvasRenderingContext2D,
+      sprite: () => null,
+      dispatch: () => {},
+      requestRender: () => {},
+      log: () => {},
+      playEffect: (id: number) => effects.push(id),
+      stopEffect: () => {},
+      ...(localSeat === undefined ? {} : { localSeat }),
+    }) as unknown as UiScreenEnv;
+
+  // 这一屏每一台都开（15 日跨日，与谁的回合无关）⇒ 单机、联机的行动者、联机的旁观者都放一次
+  for (const seat of [undefined, 0, 1]) {
+    it(`上屏那一刻放一次，之后不重放${seat === undefined ? '（单机）' : seat === 0 ? '（联机·回合主人）' : '（联机·旁观）'}`, () => {
+      resetSharesScreen();
+      const before: GameState = { ...marketWithTwo(), day: 14, totalDays: 100 };
+      const after: GameState = { ...before, day: DIVIDEND_DAY, totalDays: 101 };
+      const effects: number[] = [];
+      sharesScreen.event!(before, after, env(after, 0, effects, seat));
+      // 起播只是登记，还没上屏 —— 不放
+      expect(effects).toEqual([]);
+      sharesScreen.tick!(env(after, 5, effects, seat));
+      expect(SHARES_OPEN_SOUND).toBe(61);
+      expect(effects).toEqual([61]);
+      sharesScreen.tick!(env(after, 500, effects, seat));
+      sharesScreen.tick!(env(after, 1000, effects, seat));
+      expect(effects).toEqual([61]);
+    });
+  }
 });

@@ -15,6 +15,7 @@
  *      右键能关」。
  */
 import { readFileSync } from 'node:fs';
+import { makeGameState } from '@rich4/core';
 import { describe, expect, it } from 'vitest';
 import {
   CANCEL_LADDER,
@@ -73,6 +74,7 @@ const CASES: readonly { layer: CancelLayer; snap: CancelSnapshot }[] = [
   { layer: 'shop', snap: snap({ shop: true, dialog: true }) },
   { layer: 'bail', snap: snap({ bail: true, dialog: true }) },
   { layer: 'loan', snap: snap({ loan: true, dialog: true }) },
+  { layer: 'loanReminder', snap: snap({ loanReminder: true }) },
 ];
 
 describe('★ 取消梯子：一层一条', () => {
@@ -215,8 +217,11 @@ function mkEnv(): { env: UiScreenEnv; effects: number[] } {
   const effects: number[] = [];
   const env = {
     screen: 'game',
-    // 公佈欄那两条要用到 `state.currentPlayer`（开屏时记下是哪一位的回合）
-    state: { currentPlayer: 0 },
+    // 公佈欄那两条要用到 `state.currentPlayer`（开屏时记下是哪一位的回合）；开 / 关窗还会拿局面问一次 core
+    //   「清理 / 收回有没有事可做」（`noticeBoard` 的 open / close），故给一个真局面
+    state: makeGameState({ currentPlayer: 0 }),
+    topo: { nodes: [] },
+    dispatch: () => undefined,
     now: 0,
     requestRender: () => undefined,
     log: () => undefined,
@@ -248,9 +253,18 @@ describe('★ 登记的整屏：声明了右键的那几屏', () => {
     //   `0x00440de7 push 0x5dc / call 0x4528b9`，而 `0x00452901/00452909/00452911`
     //   的 `PeekMessage` 收 `0x202` / `0x205` / `0x101` 三种 ⇒ 见
     //   `notice-box-screen.ts` 的 `contextmenu`。
+    // ★ 魔法屋女巫窗口（第十二份回报那一轮接上）：窗口过程 `fcn_004325c2` 的
+    //   `cmp eax, 0x205 / jbe loc_00432e64` —— 开场白那几拍（状态 < 3）右键 = 跳过，
+    //   见 `magic-screen.ts` 的 `contextmenu`。
+    // ★ 第十四份：嫁禍卡选人窗（`fcn_0043ff56` 的 `0x205` 那一支 `0x00440255` = −1，卡留着），
+    //   见 `scapegoat-picker.ts` 的 `contextmenu`。
+    // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd80 call 0x4528b9`，`0x00452909 cmp edx, 0x205`），
+    //   见 `event-box-screen.ts` 的 `eventTailScreen`。
+    // ★ 第二十一份：月結 / 頒獎窗口过程 `fcn_00437e61` 的 `0x00437e9f cmp eax, 0x205 / je 0x439b62`
+    //   —— 右键与左键抬手同一支（收字框 + 停语音 + 跳过），见 `monthly-screen.ts` 的 `contextmenu`。
     expect(withCtx).toEqual([
-      'big-map', 'eventBox', 'facility-picker', 'help', 'lottery', 'notice', 'notice-board',
-      'research', 'steal-picker',
+      'big-map', 'eventBox', 'eventTail', 'facility-picker', 'help', 'lottery', 'magic', 'monthly', 'notice', 'notice-board',
+      'research', 'scapegoat-picker', 'steal-picker',
     ]);
   });
 

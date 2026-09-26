@@ -15,15 +15,16 @@
  * 金额一律是 `物价指数 × factor`，系数见 `@rich4/data` 的 FORTUNE_EVENTS。
  */
 
-import type { Player } from '../state/types.ts';
+import type { NoticeHint, NoticeKey, Player } from '../state/types.ts';
 import type { MapNode, LandscapeInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
 import { isAiControlled, isAlive } from '../state/types.ts';
 import { FORTUNE_EVENTS, eventAmount, fortuneEvent } from '@rich4/data';
-import { PARTY_POOL, receiveMoney, transferMoney } from '../rules/payment.ts';
-import { giveCard } from '../cards/rob.ts';
+import { PARTY_POOL, PAY_FLAG_DEBIT_FROM_BANK, receiveMoney, transferMoney } from '../rules/payment.ts';
+import { receiveCard } from '../rules/receive-card.ts';
 import { pickCardToSteal } from '../rules/npc-actions.ts';
 import { sendToConfinement } from '../rules/confinement.ts';
+import { wreckVehicle } from '../rules/object-landing.ts';
 import { addMisfortuneDays } from '../rules/monthly.ts';
 import { BLESSING_DOUBLE, BLESSING_VOID, blessingMultiplier } from '../rules/blessing.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
@@ -38,6 +39,7 @@ import type { StockMarketState } from '../places/stock-market.ts';
 //    与新聞 29 共用（见 `news-effects.ts` 的 `secondaryJudgement` 的 @source 块）。
 //    不 import `rules/toll-flow.ts` 的 `aiScapegoat`：那个镜像的是 mode 1。
 import { secondaryJudgement } from './news-effects.ts';
+import { SPEECH_SITE, speechDraw } from '../rules/speech-rand.ts';
 
 /**
  * 本模块要的随机出口：`below(n)`（挑人）+ `next()`（事件 5 抽牌）。
@@ -45,6 +47,91 @@ import { secondaryJudgement } from './news-effects.ts';
  * 故这里自己声明一个更宽的（避免为了一个 `next()` 去改共享类型）。
  */
 type EventRng = { below(n: number): number; next(): number };
+
+/**
+ * 命運「付錢」那一族：施加阶段都落到同一条尾巴 `0x0044cec2`：
+ * ```asm
+ * 0044cec2  call 0x41d2c6            ; pay_money(当前玩家, -1, [0x48c5b4], 0) —— 进公库
+ * 0044ced1  cmp byte [cur+0x15], 0 / je 收尾     ; 付完破產出局 ⇒ 后两步都跳过
+ * 0044cede  cmp byte [0x46caf8], 0 / jne 收尾    ; 终局码非 0 ⇒ 同上
+ * 0044cef9  call 0x44f42d            ; ★ 付錢台词 9/10/11（`player_say`）
+ * 0044cf11  call 0x44ba63            ; ★ 保險理賠（保險期内赔回同一笔）
+ * ```
+ *
+ * @source 各事件的施加入口（`[esp+0x94] != 0` 那一跳），`python3 tools/disasm.py va <入口> 16`：
+ *   - 14 `0x0044cdab jne 0x44ce35` → `0x0044ce5d jne 0x44ce8b` → 顺落 `0x0044cec2`；
+ *   - 15 `0x0044cf55` / 16 `0x0044d0a4` `jne 0x44cfdf` → `0x0044d007 jne 0x44d032`
+ *     → `0x0044d057 … 0x0044d068 jmp 0x44cec2`；
+ *   - 17 `0x0044d0e8` / 18 `0x0044d1b7` / 19 `0x0044d1f2` / 23 `0x0044d430` /
+ *     24 `0x0044d474` / 26 `0x0044d4f9` / 30 `0x0044d606` `jne 0x44d172`
+ *     → `0x0044d19a jne 0x44ce8b` → 顺落 `0x0044cec2`。
+ *   神明加持返回 1（免付罰金）那一支（`0x0044ce5f` / `0x0044d009`）不付钱、改调 `0x44f567`，
+ *   不在这条尾巴上。
+ *
+ * ★★ 第十四份試玩回報 #1 查出来的：先前 Q-INS-1 只把 `0x0044cf11` 记成「行人闖越馬路罰款（14）」
+ *   一条的理赔，**漏了**另外 9 条也经过同一处 —— 保險期内抽到「付保險金 / 亂丟垃圾 / 遺失錢包…」
+ *   原版同样赔回来。
+ */
+export const FORTUNE_PAY_TAIL_IDS: ReadonlySet<number> = new Set([14, 15, 16, 17, 18, 19, 23, 24, 26, 30]);
+
+/** 命運 2「人頭被盜用冒貸」—— 施加完 `0x0044c218 call 0x44ba63`（保險理賠），**没有**台词 */
+export const FORTUNE_FAKE_LOAN_ID = 2;
+
+/**
+ * ★ 第十四份：命運「進帳」那一族：施加阶段都落到 `0x0044d2a9`（`fcn_0044b896(0,0)` 獎金域）——
+ *   返回 1 ⇒ 弹「獎金作廢」框、`0x0044d2e5 jmp 0x44d3d1` 一分不给；否则（2 则先 ×2，`0x0044d309`）
+ *   `0x0044d31f call 0x41d3f4` 进现金 → **`0x0044d334 call 0x44f354`**（進帳台词 6/7/8）。
+ * @source 各自的施加入口 `jne 0x44d2a9`：20 `0x0044d235` / 21 `0x0044d34c` / 22 `0x0044d3ec` /
+ *   25 `0x0044d4b7` / 27 `0x0044d53c` / 28 `0x0044d57f` / 29 `0x0044d5c2` / 31 `0x0044d647`。
+ */
+export const FORTUNE_GIVE_TAIL_IDS: ReadonlySet<number> = new Set([20, 21, 22, 25, 27, 28, 29, 31]);
+
+/**
+ * ★ 第十四份：神明加持返回 **2** 时**也弹框**的那几条（其余几条的调用方只在返回 1 时弹）。
+ *
+ * @source 逐个调用方（`python3 tools/disasm.py va <地址> 40`）：
+ *   - 弹：2 `0x0044c1cb`、6 `0x0044c6a3`、7 `0x0044c7b5`、12/13 `0x0044cd1f`（13 是跳板进 12）、
+ *     14 `0x0044ce95`、15/16 `0x0044d03c`、17/18/19/23/24/26/30 `0x0044ce95`（经 `0x44d172`）、
+ *     20/21/22/25/27/28/29/31 `0x0044d2f4`、33..36 `0x0044d887`（34..36 是跳板进 33）；
+ *   - 不弹（调用方只 `cmp eax,1`）：3 `0x0044c28d`、8 `0x0044c881`、9 `0x0044c997`、
+ *     10 `0x0044cab0`、11 `0x0044cbcb`、32 `0x0044d6ef`。
+ *   返回 1 时**每一条**都弹。
+ */
+const BLESSING_DOUBLE_NOTICE_SILENT: ReadonlySet<number> = new Set([3, 8, 9, 10, 11, 32]);
+
+/** 命運坐牢那一族（33 与跳板 34/35/36）：被神明挡掉时说事件 0 @source `0x0044d862 mov ecx,[… + 0x48084a]` / `0x0044d873` */
+const FORTUNE_PRISON_IDS: ReadonlySet<number> = new Set([33, 34, 35, 36]);
+
+/**
+ * ★ 第十四份：命運施加阶段那一扇**神明加持**框（`fcn_0044b896` 写 `[0x48c5b8]`，调用方 `0x440cac(…, 0x5dc)`）。
+ *   不弹返回 null。`say` 是框之后紧跟的那一句：
+ *   - 罰款尾巴那一族免付（返回 1）⇒ `0x0044ce7e` / `0x0044d028 call 0x44f567(当前玩家, 原额)`（12/13/14）；
+ *   - 坐牢那一族逃过（返回 1）⇒ `0x0044d873 player_say(当前玩家, 0, 事件 0)`。
+ *   `godName` = `[0x47ed76 + god_info*4]`。
+ */
+export function fortuneBlessingNotice(
+  id: number,
+  kind: 'reward' | 'penalty' | 'misfortune',
+  level: number,
+  godName: string,
+  player: number,
+  baseAmount: number,
+): NoticeHint | null {
+  if (level !== BLESSING_VOID && level !== BLESSING_DOUBLE) return null;
+  if (level === BLESSING_DOUBLE && BLESSING_DOUBLE_NOTICE_SILENT.has(id)) return null;
+  const voided = level === BLESSING_VOID;
+  const key: NoticeKey =
+    kind === 'reward'
+      ? voided ? 'blessing.rewardVoid' : 'blessing.rewardDouble'
+      : kind === 'penalty'
+        ? voided ? 'blessing.penaltyVoid' : 'blessing.penaltyDouble'
+        : voided ? 'blessing.misfortuneVoid' : 'blessing.misfortuneDouble';
+  // ★ 框在影片（入獄 / 住院）之前：`0x0044d88c call 0x440cac` 之后才 `0x441210` → `send_to_prison`
+  const notice: NoticeHint = { key, args: [godName], beforeFilms: true };
+  if (voided && FORTUNE_PAY_TAIL_IDS.has(id)) return { ...notice, say: { player, reliefAmount: baseAmount } };
+  if (voided && FORTUNE_PRISON_IDS.has(id)) return { ...notice, say: { player, event: 0 } };
+  return notice;
+}
 
 /**
  * 金额倍率档位 —— 转发 `rules/blessing.ts` 的定义。
@@ -85,6 +172,21 @@ export const FORTUNE_MOTORCYCLE_STOLEN = 10;
 export const FORTUNE_CAR_WRECKED = 11;
 /** 事件 32「變賣所有卡片道具」 */
 export const FORTUNE_SELL_ALL_ITEMS = 32;
+/**
+ * 事件 0「強制拆除房屋一棟」 / 事件 1「強制徵收土地一處」。
+ *
+ * @source `0x0044be16` / `0x0044bfb1`，规格见
+ *   `rich4-spec/docs/systems/fortune.md:363-443`（含 asm 与「精确规则」）。
+ *   两条都属于 `factor: null` 那一族 ⇒ 先前在 `applyFortuneEffect` 里**直接早退成
+ *   `unimplemented`**，一格地都没动过（第九份试玩回报 #6 的「完全没看到拆了哪里的房子」
+ *   就是这个：不是表现层看不见，而是**根本没拆**）。
+ */
+export const FORTUNE_DEMOLISH_HOUSE = 0;
+/** 事件 1「強制徵收土地一處」（未开发的那一块，同一条族） */
+export const FORTUNE_CONFISCATE_LAND = 1;
+/** 事件 4「侵入銀行電腦」@source 0x0044c2d4 `mov ecx, 0xa` → `[0x48c5b0]` */
+export const FORTUNE_BANK_HACK = 4;
+export const FORTUNE_BANK_HACK_PCT = 10;
 /** 事件 8 的百分比字面量 @source 事件表 `literal: 10` */
 export const FORTUNE_STOCK_DEFAULT_PCT = 10;
 /** 事件 8 的除数 @source `fdiv dword [0x465a24]` = 100.0 */
@@ -165,6 +267,18 @@ export interface FortuneEffectResult {
   /** 未实现的事件在此标记，便于上层降级处理 */
   unimplemented: boolean;
   /**
+   * ★ 本次被拆 / 被征收的那一块地 —— 表现层要用它**把镜头移过去**并说那句倒霉台词。
+   *
+   * @source 原版 `0x0044bee8 call 0x41d476`（`update_player_info_window(x, y, 2)`，
+   *   镜头移到这块地）→ `0x0044bf51 call 0x41d476(0,0,1)`（复位）→
+   *   `0x0044bf5e call 0x4528b9`（sleep 300）→
+   *   `0x0044bf9f call 0x44ef41`（`player_say(cur, 2, 台词[rand()&1])`）。
+   *
+   * 调用方据此把 `landLevel[landId]` / `landType[landId]` 清 0（**owner 不变**）。
+   * `null` = 本次没拆任何东西。
+   */
+  demolished: { landId: number; x: number; y: number; payout: number; kind: 'demolish' | 'confiscate' } | null;
+  /**
    * ★ 命運 5「生日收卡」**寿星是真人**时要挂出去的分帧信息：还没处理的座位
    *   （升序）。非 `null` 表示「这次一位都没收，等上层把这些人逐个问完」
    *   —— 见 `docs/deviations/T-055.md` 与 `state/reduce.ts` 的 `answerBirthdayCard`。
@@ -186,6 +300,37 @@ export interface FortuneEffectResult {
    *   **函数体内**）关谁赔谁，与新聞 29 的 `chairmanPrison.victim` 同一口径。
    */
   fortuneVictim: number | null;
+  /**
+   * ★ 2026-09-23：命運 5「生日收卡」**电脑寿星**当场收的每一张（按收的顺序）——
+   *   `fcn_0044192a` 电脑支每收一张弹一扇「搶得%s的\n\n%s」（`0x00441ab1`，1500 ms），调用方据此弹框。
+   *   其余事件为 `undefined`。
+   */
+  robbed?: { victim: number; card: number }[];
+}
+
+/**
+ * 事件 0/1 需要的那几个地块字段。
+ *
+ * 取 `MapTopology.lands` 即可（`loaders/map.ts` 的 `LandInfo` 是它的超集）；
+ * 单独列一条接口是为了让**这个模块**不必知道地图的类型，也方便单测直接造。
+ */
+export interface FortuneEffectLand {
+  /** 0 基地块下标（= 原版 `land_index`） */
+  id: number;
+  /** 1 基所有权（0 = 无主）；原版 `+0x19` */
+  owner: number;
+  /** 已开发等级；原版 `+0x1a`。0 = 空地 */
+  level: number;
+  /** 房屋单价；原版 `+0x1e`（uint16），赔款 = level × 它，**不乘物價指數** */
+  housePrice: number;
+  /**
+   * 地价；原版 `+0x1c`（uint16）—— 事件 1「強制徵收」的补偿额（`0x0044c0ba mov ax, word [ebx+0x1c]`），
+   * **不乘物價指數**。缺省按 0 算（老单测）。
+   */
+  landPrice?: number;
+  /** 屏幕坐标 —— 表现层要把镜头移过去（`0x41d476` 收的就是这两个） */
+  x: number;
+  y: number;
 }
 
 export interface FortuneEffectContext {
@@ -237,6 +382,15 @@ export interface FortuneEffectContext {
   nodes?: readonly MapNode[];
   /** 特殊景观表（首次关押的屏幕坐标取它）—— 见 `rules/confinement.ts` */
   landscapes?: readonly LandscapeInfo[] | undefined;
+  /**
+   * ★ 地块表 —— **只在事件 0/1（強制拆除 / 強制徵收）用**。
+   *
+   * 事件 0/1 要按「owner == 当前玩家 且 level != 0」逐块筛候选，再 `rand() % 候选数`
+   * 抽一块出来（@source `0x0044be49..0x0044be7a`）。缺省（不传）时这两条报
+   * `unimplemented` —— 那是给不关心盘面的单元测试用的；引擎调用点（`reduce.ts`）
+   * **必须**传。
+   */
+  lands?: readonly FortuneEffectLand[] | undefined;
   /**
    * `0x44b896` 返回的**倍率档位**：2 加倍、1 归零、0 不变。
    * 由玩家的神明加持值决定，见 rules/blessing.ts 的 blessingLevel()。
@@ -322,6 +476,8 @@ export function applyFortuneEffect(
     amount: 0,
     bankrupted: false,
     unimplemented: false,
+    // ★ 事件 0/1 才填（`null` = 本次没拆任何东西）
+    demolished: null,
     birthdaySeats: null,
     // ★ 缺省 null = 本次没走「免罪 21 → 嫁禍 19」的二级判定
     //   （或免罪卡命中、整条作废）—— 只有坐牢/住院/出國·綁架那三条会填。
@@ -370,8 +526,24 @@ export function applyFortuneEffect(
     //   **也**没传另一张。
     const occ = kind === 'prison' ? prisonOccupancy : hospitalOccupancy;
     const other = kind === 'prison' ? hospitalOccupancy : prisonOccupancy;
+    // ★★ 2026-09-24（provenance 审计）：住院那两条（12/13）在送醫院**之前**先毁车：
+    //   `0x0044cd54 push eax / call 0x40cd07`（替死鬼 / 本人）→ `0x0044cd65 call 0x43ec3f`。
+    //   坐牢（33..36，`0x44d8a9 → 0x44d8c2`）没有这一句。先前漏了 ⇒「騎機車摔傷」住完院车还在。
+    let toolStock: number[] | null = null;
+    let playersIn = players2;
+    if (kind === 'hospital') {
+      const v = players2[victim];
+      if (v !== undefined && isAlive(v)) {
+        const stock = [...(ctx.toolStock ?? [])];
+        const w = { ...v };
+        if (wreckVehicle(w, stock)) {
+          toolStock = stock;
+          playersIn = players2.map((q, i) => (i === victim ? w : q));
+        }
+      }
+    }
     const out = sendToConfinement(
-      players2,
+      playersIn,
       objects,
       ctx.nodes ?? [],
       occ,
@@ -380,6 +552,9 @@ export function applyFortuneEffect(
       days,
       other,
       ctx.landscapes,
+      // ★ 首次关押的倒霉台词 4..6 天掷一次 rand（`0x0043d5f9` / `0x0043eca5 call 0x44f2c2`）——
+      //   在二级判定（`0x441210`）之后、同一条随机流（cards 审计 cross-area (a)）
+      ctx.rng,
     );
     objects = out.objects;
     return {
@@ -390,6 +565,7 @@ export function applyFortuneEffect(
       hospitalOccupancy: kind === 'hospital' ? out.occupancy : (out.otherOccupancy ?? hospitalOccupancy),
       amount: days,
       fortuneVictim: victim,
+      ...(toolStock === null ? {} : { toolStock }),
     };
   }
 
@@ -397,7 +573,7 @@ export function applyFortuneEffect(
   //   @source `fcn_0044c3b7`：逐人筛（不是自己 / 没出局 / 手上有牌）；
   //   电脑当寿星时 `player_drop_random_card(对方)`（0x441e77 —— 与本引擎
   //   `pickCardToSteal` 是**同一个 exe 函数**）→ `receive_card(自己)`（0x4412e4，
-  //   满手先弃最便宜的一张 —— 复用 `giveCard`）。
+  //   满手先弃最便宜的一张、弃牌回牌堆 —— `rules/receive-card.ts`）。
   //   ★ 真人那条原版弹**选牌窗**（`fcn_0044192a` 模式 0）—— 那一窗本引擎已经有了
   //     （`client/src/steal-picker.ts`，T-053）；因为它是**模态、逐个问**的，
   //     这里对真人寿星**分帧**（见下），电脑寿星照旧当场收完。
@@ -426,7 +602,9 @@ export function applyFortuneEffect(
     const rng = ctx.rng;
     if (rng === undefined) return { ...base, unimplemented: true };
     const next = [...players];
+    const deck = [...(ctx.cardAmount ?? new Array<number>(30).fill(0))];
     let taken = 0;
+    const robbed: { victim: number; card: number }[] = [];
     for (let i = 0; i < next.length; i++) {
       if (i === ctx.currentPlayer) continue;
       const other = next[i];
@@ -436,11 +614,23 @@ export function applyFortuneEffect(
       const hand = [...other.cards];
       hand.splice(hand.indexOf(card), 1);
       next[i] = { ...other, cards: hand };
+      // ★★ 2026-09-24（provenance 审计）：牌堆计数 —— `0x441e77` 移除用的是 `0x441343`
+      //   （尾 `0x004413a2 inc byte [卡+0x499197]`：**这张先回牌堆**），`0x4412e4` 收下时再 −1，
+      //   满手弃掉的那张也回牌堆。先前只动手牌 ⇒ 寿星满手时弃牌凭空消失。
+      deck[card - 1] = ((deck[card - 1] ?? 0) + 1) & 0xff;
       const me = next[ctx.currentPlayer];
-      if (me !== undefined) next[ctx.currentPlayer] = giveCard(me, card);
+      if (me !== undefined) {
+        const got = receiveCard(me, card, deck);
+        deck.splice(0, deck.length, ...got.cardAmount);
+        next[ctx.currentPlayer] = got.player;
+      }
+      robbed.push({ victim: i, card });
       taken++;
     }
-    return { ...base, players: next, amount: taken };
+    // ★★ FU-1：`0x0044c57b test edi,edi / je` → `0x0044c5ad call rand / and eax,1` —— 寿星那一句（事件 0 | 1）
+    //   的二选一与规则共用同一个发生器 ⇒ 这里掷（合格的人都有牌 ⇒ `edi` = `taken`）。
+    if (taken > 0) speechDraw(rng, SPEECH_SITE.birthday, ctx.currentPlayer);
+    return { ...base, players: next, amount: taken, robbed, cardAmount: deck };
   }
 
   // ── 命運 6/7：強迫出國觀光 / 被外星人綁架 ───────────────────────
@@ -448,7 +638,7 @@ export function applyFortuneEffect(
   //   `fcn_0040d375(玩家, 天数, 原因)` ⇒ `blocking.disappearing = 天数 | (原因 << 6)`；
   //   调用前两处各有一次 `fcn_00441210(玩家)`（6 在 `0x44c6c5`、
   //   7 在 `0x44c7d7`，两者共用 `0x44c6d8` 起的同一段尾巴）。
-  //   ★ 已经在外的人原版直接跳过（`cmp byte [+0x33], 0 / jne 出去`）。
+  //   ★ 已经在外的人是**续期**（`0x0040d4c5`：`(旧 & 0x3f) + 打包值`），见下。
   //   ★ 神明加持与坐牢同一支：档位 1 → 逃過此劫（整条作废）、档位 2 → 天数翻倍。
   if (entry.effects.includes('disappear')) {
     const raw = ctx.days ?? entry.literal;
@@ -475,13 +665,26 @@ export function applyFortuneEffect(
     const victim = judged === null ? ctx.currentPlayer : judged.victim;
     const target = players2[victim];
     if (target === undefined) return { ...base, players: players2, unimplemented: true };
-    if (target.blocking.disappearing !== 0) {
-      // 原版 `cmp byte [player+0x33], 0 / jne 出去`：不动天数、不放第二句
-      return { ...base, players: players2, amount: 0, fortuneVictim: victim };
-    }
     const days = raw * mult;
     const reason =
       eventId === FORTUNE_ABDUCTED ? DISAPPEAR_REASON_ABDUCTED : DISAPPEAR_REASON_ABROAD;
+    if (target.blocking.disappearing !== 0) {
+      // ★★ 2026-09-24（provenance 审计）：已经在外的人是**续期**，不是跳过：
+      // ```asm
+      // 0040d38e  al = 原因 << 6 / ah = 天数 | al / [esp] = ah      ; 打包值（字节）
+      // 0040d39e  ah = [+0x33] / test ah,ah / jne 0x40d4c5
+      // 0040d4c5  dl = ah & 0x3f / dh = dl + [esp] / [+0x33] = dh    ; ★ (旧 & 0x3f) + 打包值
+      // ```
+      //   这一支**只写这一个字节**：不清别的计数、不说台词、不理赔、不加倒楣天数 ⇒ `amount: 0`
+      //   让调用方跳过台词与理赔。嫁禍的替死鬼可能正在国外（最恨的人 `0x40d2d3` 只看 `+0x15`）。
+      const packed = ((days & 0xff) | (reason << 6)) & 0xff;
+      const next = players2.map((q, i) =>
+        i === victim
+          ? { ...q, blocking: { ...q.blocking, disappearing: ((q.blocking.disappearing & 0x3f) + packed) & 0xff } }
+          : q,
+      );
+      return { ...base, players: next, amount: 0, fortuneVictim: victim };
+    }
     // ★★ 首次「消失」时原版会先 `call 0x40d761(player)`（@source 0x0040d3ad，
     //   在 `cmp byte [+0x33],0 / jne 出去` 之后）—— 也就是与坐牢/住院首次同一段收尾：
     //     · `[+0x34] != 0` ⇒ 清**监狱**占用表那一格
@@ -649,13 +852,102 @@ export function applyFortuneEffect(
 
   // ★ 支票跳票：银行拒绝往来 30 天
   // @source add byte [player + 0x3b], 0x1e（VA 0x0044c2ba）
+  // ★★ 2026-09-24（provenance 审计）：
+  //   `0x0044c27c push 1 / push 0 / call 0x44b896`（罰金档）→ `0x0044c28d cmp eax,1 / jne` ——
+  //   档位 1 弹「免付」框后 `ret`，**不加天数**；档位 2 不加倍（只有 1 被判）。
+  //   `add byte` ⇒ 8 位回绕。先前两样都没有。
   if (entry.effects.includes('bankBan')) {
+    if (cancelledByBlessing(ctx)) return { ...base, cancelled: true };
     const next = players.map((q, i) =>
       i === ctx.currentPlayer
-        ? { ...q, daysRejectedByBank: q.daysRejectedByBank + BANK_BAN_DAYS }
+        ? { ...q, daysRejectedByBank: (q.daysRejectedByBank + BANK_BAN_DAYS) & 0xff }
         : q,
     );
     return { ...base, players: next };
+  }
+
+  // ── 事件 4「侵入銀行電腦 挪用其他人存款10％」──────────────────────
+  // ★★ 2026-09-24（provenance 审计）：先前 `factor: null` ⇒ 落到下面的 unimplemented，**什么都不发生**。
+  // ```asm
+  // 0044c342  fild [0x48c5b0](=10) / fdiv dword [0x4659a0](100.0f) / fstp dword  ; ★ float32 0.1
+  // 0044c357  for (ebx = 0; ebx < 人数; ebx++)
+  // 0044c365    跳过自己；0044c36c who_plays == 0 跳过；0044c375 存款 == 0 跳过
+  // 0044c37e    amt = trunc(存款 × 0.1f)       ; fild / fmul dword / 0x457dbc 截断 / fistp
+  // 0044c397    pay_money(ebx → cur, amt, 4)    ; ★ flags 4：先扣**存款**；4&1==0 ⇒ 进收款方**存款**
+  // ```
+  //   没有神明加持、没有台词、没有理赔。
+  if (eventId === FORTUNE_BANK_HACK) {
+    const rate = Math.fround(Math.fround(FORTUNE_BANK_HACK_PCT) / Math.fround(100));
+    let cur = players;
+    let curPool = pool;
+    let total = 0;
+    let anyBankrupt = false;
+    for (let i = 0; i < cur.length; i++) {
+      if (i === ctx.currentPlayer) continue;
+      const q = cur[i];
+      if (q === undefined || !isAlive(q) || q.moneyInBank === 0) continue;
+      const amt = Math.trunc(q.moneyInBank * rate);
+      const r = transferMoney(cur, [], curPool, i, ctx.currentPlayer, amt, PAY_FLAG_DEBIT_FROM_BANK);
+      cur = r.players;
+      curPool = r.pool;
+      total += r.paid;
+      anyBankrupt = anyBankrupt || r.bankrupted;
+    }
+    return { ...base, players: [...cur], pool: curPool, amount: total, bankrupted: anyBankrupt };
+  }
+
+  // ── 事件 0/1：強制拆除房屋一棟 / 強制徵收土地一處 ──
+  //
+  // ★★ 第九份試玩回報 #6（Charles，2026-09-22）：
+  //   「强制拆除房屋一栋，完全没看到到底拆了哪里的房子，如果是真的拆了，
+  //     那房屋主人应该也会触发一个倒霉的台词」。
+  //   查證結果：**根本沒拆** —— 這兩條 `factor: null`，先前在下面那句
+  //   `if (entry.factor === null) return unimplemented` 直接早退（`effects:['give']`
+  //   也救不了，因為早退在它前面）。所以「沒看到拆哪裡」不是表現層的問題。
+  //
+  // @source `0x0044be16`（事件 0）/ `0x0044bfb1`（事件 1）；
+  //   规格与 asm 见 `rich4-spec/docs/systems/fortune.md:363-443`（「精确规则」）：
+  //     候选 = { land i | owner == current_player+1 且 level != 0 }   （事件 1 是 level == 0）
+  //     选中 = 候选[rand() % |候选|]
+  //     赔款 = level × house_price（uint16，**不乘物價指數**）
+  //     add_money(current_player, 赔款, 1)  → 进现金
+  //     sel.level = 0 ; sel.type = 0        → ★ owner **不动**（拆完还是自己的空地）
+  if (eventId === FORTUNE_DEMOLISH_HOUSE || eventId === FORTUNE_CONFISCATE_LAND) {
+    const lands = ctx.lands;
+    const rng = ctx.rng;
+    // 不给盘面或不给随机流 ⇒ 照旧报未实现（单测的缺省口径）
+    if (lands === undefined || rng === undefined) return { ...base, unimplemented: true };
+    // 只认**住宅**用地（原版 `0x498e84` 那一张表），不含设施。
+    const wantDeveloped = eventId === FORTUNE_DEMOLISH_HOUSE;
+    const candidates = lands.filter(
+      (l) => l.owner === ctx.currentPlayer + 1 && (l.level !== 0) === wantDeveloped,
+    );
+    // 候选空：原版这里是 `idiv 0`（除零）。调用点 `events/fortune.ts` 的可行性判定
+    //   已经保证非空 ⇒ 真走到这儿说明有人绕过了判定；按「不生效」收口，不崩。
+    if (candidates.length === 0) return { ...base, unimplemented: true };
+    // ★★ 消耗点的次序说明（C-DET-1/4）：
+    //   原版这一次 `rand()` 在 **pass 0**（`0x0044be65`，訊息框**之前**），
+    //   而写状态（赔款 / 清 level/type / 镜头）在 pass 1（`0x0044becf` 起）。
+    //   本模块是「一次算完」，把消耗点放在**选地这一刻**、且在本次事件任何其它
+    //   随机消耗之前 —— 与 pass 0 在同一位置上。若日后有人在它前面再加一条吃随机
+    //   的分支，必须重新核对次序。
+    //   ⚠️ 另有**第二处** `rand()`：台词二选一 `台词[rand()&1]`（`0x0044bf86`）在
+    //      `player_say` 的实参里。本引擎的台词不走 core（由客户端探测器选），
+    //      故那一次**没有**照抄 —— 这是有意偏离，登记在 PR 描述里。
+    const pick = candidates[rng.below(candidates.length)] ?? candidates[0]!;
+    // ★★ 2026-09-24（provenance 审计）：两条事件**写的东西不同**，先前按事件 0 一律处理：
+    //   事件 0 `0x0044bf1e..0x0044bf42`：`add_money(cur, level(u8) × word[+0x1e], 1)` → `+0x1a = 0`、`+0x18 = 0`
+    //   事件 1 `0x0044c0b6..0x0044c0d2`：`add_money(cur, word[+0x1c], 1)`（**地价**）→ `+0x19 = 0`（owner）、
+    //     `dword [+0x30] = 0`（地契到期日）；等级 / 种类一个字不碰。
+    //   ⇒ 先前事件 1 赔 `0 × 房价 = 0`、地还是自己的 —— 「徵收」什么都没收走。
+    const confiscate = eventId === FORTUNE_CONFISCATE_LAND;
+    const payout = confiscate ? (pick.landPrice ?? 0) & 0xffff : pick.level * pick.housePrice;
+    return {
+      ...base,
+      players: receiveMoney(players, ctx.currentPlayer, payout),
+      amount: payout,
+      demolished: { landId: pick.id, x: pick.x, y: pick.y, payout, kind: confiscate ? 'confiscate' : 'demolish' },
+    };
   }
 
   if (entry.factor === null) return { ...base, unimplemented: true };

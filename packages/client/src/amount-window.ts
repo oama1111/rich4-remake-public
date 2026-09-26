@@ -67,11 +67,13 @@ import {
   AMOUNT_DIGIT_MAX,
   amountFromBarX,
   amountWindowHit,
+  amountWindowPos,
   type AmountKey,
 } from './amount-keys.ts';
 // ★ W-62：画的位置与命中框必须**同源** —— 命中框走 `boardRect()`（见 `dialog.ts`），
 //   画这一半先前直接拿屏幕坐标往棋盘画布上画，于是整块面板低了 `LAYOUT.board.y`（40 px）。
 import { boardRect } from './gameui.ts';
+import { drawSprite, drawSpriteRegion } from './hd-stage.ts';
 
 /** 取图 —— 与 `UiScreenEnv.sprite` / `bank-screen.ts` 的 `BankSprite` 同一个签名 */
 /**
@@ -210,29 +212,30 @@ export function drawAmountWindow(
   // 底图还没解好时**什么都不画**：让调用方保留它自己的兜底（别画半扇窗）
   if (base === null) return false;
   // ★ W-62：屏幕坐标 → 棋盘画布坐标（与 `dialog.ts` 的命中框**同一处换算**）
+  //   落点是**此刻**的（可拖，`amountWindowPos`），不是开窗初值
   const o = boardRect({
-    x: AMOUNT_WINDOW.x,
-    y: AMOUNT_WINDOW.y,
+    x: amountWindowPos().x,
+    y: amountWindowPos().y,
     w: AMOUNT_WINDOW.w,
     h: AMOUNT_WINDOW.h,
   });
   const wx = o.x;
   const wy = o.y;
-  ctx.drawImage(base.bitmap, wx + plan.panel.x, wy + plan.panel.y);
+  drawSprite(ctx, base, wx + plan.panel.x, wy + plan.panel.y);
   // 比例条：先整条暗，再把左边那一截从面板图上原样盖回来（= 亮）
   const dim = sprite('Panel.mkf', AMOUNT_RESOURCE, plan.gaugeDim.image);
   if (dim !== null) {
-    ctx.drawImage(dim.bitmap, wx + plan.gaugeDim.x - dim.anchorX, wy + plan.gaugeDim.y - dim.anchorY);
+    drawSprite(ctx, dim, wx + plan.gaugeDim.x - dim.anchorX, wy + plan.gaugeDim.y - dim.anchorY);
     const lit = plan.gaugeLit;
     if (lit !== null && lit.w > 0) {
-      ctx.drawImage(base.bitmap, lit.x, lit.y, lit.w, lit.h, wx + lit.x, wy + lit.y, lit.w, lit.h);
+      drawSpriteRegion(ctx, base, lit.x, lit.y, lit.w, lit.h, wx + lit.x, wy + lit.y, lit.w, lit.h);
     }
   }
   for (const d of plan.digits) {
     const s = sprite('Panel.mkf', AMOUNT_RESOURCE, d.image);
     if (s === null) continue;
     // 字库的锚点全是 0 ⇒ 直接减锚点（`fcn_00456512` 的 `[esi+4]/[esi+6]`）
-    ctx.drawImage(s.bitmap, wx + d.x - s.anchorX, wy + d.y - s.anchorY);
+    drawSprite(ctx, s, wx + d.x - s.anchorX, wy + d.y - s.anchorY);
   }
   return true;
 }
@@ -274,7 +277,8 @@ export const AMOUNT_BAR_RECT = { x: 9, y: 41, w: 110, h: 14 } as const;
 export const AMOUNT_BAR_DRAG_SOUND = 9;
 
 /**
- * **鼠标在金额栏上滑动** → 新的值（桌上坐标：棋盘画布内）。
+ * **鼠标在金额栏上滑动** → 新的值（**舞台坐标** 640×480 —— 与 `AMOUNT_WINDOW` 同一套；
+ *   ★ 不是棋盘坐标：2026-09-24 以前 `main.ts` 传的是 `p − LAYOUT.board`，命中区比画出来的栏低 40px）。
  *
  * @source `loc_00453394`（`0x200` 那一支，`cmp dh, 0x10`）全文：
  *   先把窗内坐标夹进 `0 ≤ x ≤ 0x80`、`0 ≤ y ≤ 0xc0`，再查逐像素 id 图
@@ -284,8 +288,8 @@ export const AMOUNT_BAR_DRAG_SOUND = 9;
  * @returns 新值；`null` = 原版**什么都不做**（没落在栏上、或 `x ≥ 118` 那一列）
  */
 export function amountBarDragValue(sx: number, sy: number, max: number): number | null {
-  const lx = sx - AMOUNT_WINDOW.x;
-  const ly = sy - AMOUNT_WINDOW.y;
+  const lx = sx - amountWindowPos().x;
+  const ly = sy - amountWindowPos().y;
   if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
   if (lx < AMOUNT_BAR_RECT.x || lx >= AMOUNT_BAR_RECT.x + AMOUNT_BAR_RECT.w) return null;
   if (ly < AMOUNT_BAR_RECT.y || ly >= AMOUNT_BAR_RECT.y + AMOUNT_BAR_RECT.h) return null;
@@ -309,6 +313,45 @@ export function parseAmountHitMap(bytes: Uint8Array | null): Uint8Array | null {
 }
 
 /**
+ * 本局载到的那张 id 图（`main.ts` 开局 `readRawBytes(Panel.mkf, 0x16)` 交进来）；
+ * `null` = 没载到（无素材的单测 / 素材闸门没过）→ 各处退回矩形表。
+ */
+let amountHitMap: Uint8Array | null = null;
+
+/** `main.ts` 开局调：交上 `parseAmountHitMap(readRawBytes(archives, 'Panel.mkf', AMOUNT_WINDOW.hitResource))` */
+export function setAmountHitMap(map: Uint8Array | null): void {
+  amountHitMap = map;
+}
+
+/** `dialog.ts` 的 `hitDialog` 取这张图 */
+export function getAmountHitMap(): Uint8Array | null {
+  return amountHitMap;
+}
+
+/**
+ * **照 exe 取号**：舞台坐标 → 窗内坐标 → 查 id 图那一个字节。窗外返回 `null`。
+ *
+ * @source `fcn_00452c02` 的 0x201 / 0x203（`loc_00452d0e`）：
+ * ```asm
+ * 00452d13  sub eax, [0x48cab8]             ; lx = x − 窗 x
+ * 00452d38  test ebx,ebx / jl 走 · cmp ebx,0x80 / jg 走    ; 0 ≤ lx ≤ 0x80（★ 两端都含）
+ * 00452d44  test eax,eax / jl 走 · cmp eax,0xc0 / jg 走    ; 0 ≤ ly ≤ 0xc0
+ * 00452d4f  edi = (ly << 7) + lx
+ * 00452d5b  mov al, [edi + [0x48ca9c]]     ; ★ 就是这个字节，0 也照收
+ * ```
+ * ★ 闭区间：`lx = 0x80` 读到的是下一行第 0 格（同一个线性下标），这里照同一个式子算；
+ *   `ly = 0xc0` 那一行已在图外（原版读到图后面的内存），按 0 处理。
+ * ★ 实际素材（`assets-clean/Panel/0022.bin`）里**没有 0**：窗底整片是 1（拖窗把手），
+ *   钮是 2..0xf，金额栏是 0x10 —— 所以原版点窗里空白是**拖窗、不响**。
+ */
+export function amountPixelId(map: Uint8Array, sx: number, sy: number): number | null {
+  const lx = Math.floor(sx - amountWindowPos().x);
+  const ly = Math.floor(sy - amountWindowPos().y);
+  if (lx < 0 || lx > 0x80 || ly < 0 || ly > 0xc0) return null;
+  return map[(ly << 7) + lx] ?? 0;
+}
+
+/**
  * 用**逐像素 id 图**判命中 —— 与原版完全同一条路（鼠标 → 窗内坐标 → 取字节）。
  *
  * @param map `parseAmountHitMap` 的产物；`null` 时退回矩形表（`amountWindowHit`）
@@ -319,8 +362,8 @@ export function amountWindowHitMapped(
   sx: number,
   sy: number,
 ): number | null {
-  const lx = sx - AMOUNT_WINDOW.x;
-  const ly = sy - AMOUNT_WINDOW.y;
+  const lx = sx - amountWindowPos().x;
+  const ly = sy - amountWindowPos().y;
   if (lx < 0 || ly < 0 || lx >= AMOUNT_WINDOW.w || ly >= AMOUNT_WINDOW.h) return null;
   if (map === null) return amountWindowHit(sx, sy);
   const id = map[ly * AMOUNT_WINDOW.w + lx] ?? 0;

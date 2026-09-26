@@ -54,6 +54,7 @@
  */
 
 import type { CardTarget, GameState } from '@rich4/core';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 import {
   cardEntries,
@@ -243,8 +244,12 @@ export function drawStealPicker(
 ): void {
   // ★ 框与内容是同一函数画的：`drawInventory` 的底图就是这两张框
   //   （`INV_BASE` = 图 0 卡片 / 图 1 道具 = `STEAL_FRAME`），内容叠在框上。
+  // ★★ 第 24 份：交给它的是**框落点**（`fcn_004563f5(dst, 框, 0xe, 0x46 / 0x10e)`），不是格原点 ——
+  //   `fcn_00447c6e` / `fcn_00441b0a` 的 `dst == 0` ⇒ 图标 / 卡名直接画进**框那张图**的局部坐标
+  //   （0x00447ca2 / 0x00441b2a），框再整张贴到落点。先前传的是格原点（框 +5,+5）⇒ 框连内容整体右下偏 5px，
+  //   内容还因为 `drawInventory` 旧版再加一次格偏移而偏 10px。
   const draw = (kind: 'cards' | 'tools'): void => {
-    drawInventory(ctx, sprite, kind, stealEntries(state, st.target, kind), null, stealGridOrigin(kind));
+    drawInventory(ctx, sprite, kind, stealEntries(state, st.target, kind), null, STEAL_ORIGIN[kind]);
   };
   draw('cards');
   if (st.mode === 'steal') draw('tools');
@@ -304,6 +309,12 @@ function close(): void {
 
 export const stealPickerScreen: UiScreen = {
   id: 'steal-picker',
+
+  /**
+   * 软件指针：浮窗放出箭头 @source 0x00441461 / 0x00441752 `fcn_00402460(1)`；
+   * 只由本机真人的拾取流程打开（`openStealPicker`）。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /** ★ 浮窗（原版 `fcn_00451e7e` 存下中间那块再贴回）*/
   windowed: true,

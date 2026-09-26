@@ -238,3 +238,13 @@ describe('★ 起始日期', () => {
     expect(a.totalDays).toBe(b.totalDays);
   });
 });
+
+describe('★ 2026-09-24 审计：物价指数的身家合计是 32 位累加（0x00423af5 add esi, eax）', () => {
+  it('合计超过 2^31 时回绕 ⇒ 平均为负 ⇒ 指数不升', () => {
+    const ps = [0, 1].map((i) => makePlayer({ index: i }));
+    // 两人各 12 亿：合计 24 亿 > 2^31 ⇒ 原版回绕成负数
+    expect(updatePriceIndex(ps, () => 1_200_000_000, 300_000, 5)).toBe(5);
+    // 各 10 亿：合计 20 亿 < 2^31 ⇒ 平均 10 亿 / 30 万 = 3333
+    expect(updatePriceIndex(ps, () => 1_000_000_000, 300_000, 5)).toBe(3333);
+  });
+});

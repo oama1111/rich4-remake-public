@@ -3,7 +3,18 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { GOD_LINES, GOD_LINE_AT, GOD_LINE_MS, GOD_LINE_WRAP, godLineActive, godLineRows, godLineTrigger } from './god-line.ts';
+import {
+  GOD_LINES,
+  GOD_LINE_AT,
+  GOD_LINE_MS,
+  GOD_LINE_WRAP,
+  godFilmFrameHeld,
+  godLineActive,
+  godLineRows,
+  godLineShown,
+  godLineTrigger,
+} from './god-line.ts';
+import { GOD_FX_IDS, godFilmSpec } from './god-fx.ts';
 
 describe('常数 @source fcn_0040e2a2', () => {
   it('2400 ms（push 0x960）、底边中点 (220, 460−40)、换行宽 320', () => {
@@ -51,5 +62,24 @@ describe('godLineActive', () => {
   it('2399 ms 还在、2400 ms 收场', () => {
     expect(godLineActive(1000, 3399)).toBe(true);
     expect(godLineActive(1000, 3400)).toBe(false);
+  });
+});
+
+describe('第十八份：开场白与附身影片的最后一帧同屏 @source 0x0045144f flags=1 不重画 + 0x40e2a2 直接写屏', () => {
+  it('十二位有影片的神明：影片播完、开场白排着 ⇒ 钉住最后一帧', () => {
+    for (const id of GOD_FX_IDS) {
+      const spec = godFilmSpec(id)!;
+      expect(spec.flags).toBe(1); // bit3 = 0、第三字节 = 0 ⇒ 片尾不走 0x409b18
+      expect(godFilmFrameHeld(spec.id, true)).toBe(true);
+      expect(godFilmFrameHeld(spec.id, false)).toBe(false);
+    }
+  });
+  it('别的棋盘影片（救护车 / 入獄 / 老虎机…）不钉', () => {
+    expect(godFilmFrameHeld('hospital', true)).toBe(false);
+    expect(godFilmFrameHeld('god-slot', true)).toBe(false);
+  });
+  it('「動畫過程」关掉 ⇒ 没有开场白（十二支的 je 连 0x40e2a2 一起跳过）', () => {
+    expect(godLineShown(false)).toBe(false);
+    expect(godLineShown(true)).toBe(true);
   });
 });

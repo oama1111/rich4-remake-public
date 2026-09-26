@@ -267,14 +267,16 @@ describe('★ 神明加持：三条问法与档位语义 @source VA 0x0044b896',
    * `6a <arg1> 6a <arg0> e8 <rel32>` 自行判定用法，因此不会随表一起漂。
    * 这里只留「数量 + 几处易错点」的粗筛，避免出现第二份会漂的硬编码表。
    */
-  it('★ 事件表里的 `blessing`：28 条，且 19/20/22 的用法已订正', () => {
+  it('★ 事件表里的 `blessing`：33 条，且 19/20/22 的用法已订正', () => {
     const table: Record<number, string> = {};
     for (const e of FORTUNE_EVENTS) if (e.blessing !== undefined) table[e.id] = e.blessing;
-    expect(Object.keys(table)).toHaveLength(28);
+    expect(Object.keys(table)).toHaveLength(33);
     expect(table[19]).toBe('penalty'); // 罰款 → penalty 尾
     expect(table[20]).toBe('reward'); // 撿到錢 → reward 尾
     expect(table[22]).toBe('reward');
-    expect(table[16]).toBeUndefined(); // ★ 原版**没接**加持的那一个
+    // ★ 第十四份：16 与 15 同构（`0x0044d0a4 jne 0x44cfdf`）；13 / 34..36 是跳板进 12 / 33
+    expect(table[16]).toBe('penalty');
+    expect([13, 34, 35, 36].map((id) => table[id])).toEqual(['misfortune', 'misfortune', 'misfortune', 'misfortune']);
   });
 
   it('★ 档位 1 对罚款是「免付」——一分不付、公库也收不到', () => {
@@ -478,18 +480,21 @@ describe('★ 命運 6/7：強迫出國觀光 / 被外星人綁架 @source fcn_0
     expect(doubled.players[0]!.blocking.disappearing).toBe(6);
   });
 
-  it('★ 已经在外的人不再重写（原版 `cmp [+0x33], 0 / jne 出去`）', () => {
+  // ★★ 2026-09-24（provenance 审计）订正：原先断言「不再重写」是读错了分支方向 ——
+  //   `0x0040d3a6 jne 0x40d4c5` 跳去的是**续期**：`(旧 & 0x3f) + (天数 | 原因<<6)`。
+  it('★ 已经在外的人续期：(旧 & 0x3f) + 打包值（0x0040d4c5），不说台词、不理赔', () => {
     const players = [makePlayer({ index: 0 }), makePlayer({ index: 1 })];
-    players[0] = { ...players[0]!, blocking: { ...players[0]!.blocking, disappearing: 5 } };
+    players[0] = { ...players[0]!, blocking: { ...players[0]!.blocking, disappearing: 5 | (0 << 6) } };
     const r = applyFortuneEffect(FORTUNE_ABDUCTED, ctx({ players }));
-    expect(r.players[0]!.blocking.disappearing).toBe(5);
+    // 綁架原因 1 ⇒ 5 + (3 | 0x40) = 0x48
+    expect(r.players[0]!.blocking.disappearing).toBe(5 + (3 | 0x40));
+    expect(r.players[0]!.totalWinterSleepDays).toBe(players[0]!.totalWinterSleepDays);
     expect(r.amount).toBe(0);
   });
 
   // ★ 本次补（2026-09-18）：`fcn_0040d375` 除了写 `+0x33`，还在**首次**分支里
   //   `add byte ptr [ebx + 0x496baa], al`（VA 0x0040d431，al = 天數）——
-  //   即累加「本月倒楣天數」+0x42。加刑分支（0x40d4c5）**不加**，而命运这一支
-  //   本来就把「已在外」的人整个跳过，所以这里恒等于「首次」。
+  //   即累加「本月倒楣天數」+0x42。加刑分支（0x40d4c5）**不加**（见上一条）。
   it('★★ 首次消失同时累加「本月倒楣天數」+0x42（天数，非天数×2 之外的其它量）', () => {
     // @source 0x0040d431 `add byte ptr [ebx + 0x496baa], al`
     const players = [makePlayer({ index: 0, totalWinterSleepDays: 4 }), makePlayer({ index: 1 })];

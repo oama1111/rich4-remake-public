@@ -5,9 +5,12 @@
  * 含 rand() 的分支用钉死的 rngState 验证 D-004 确定性替身（取值由同式预先算出，注释写明）。
  */
 
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { GameState } from '../state/types.ts';
 import type { FacilityInfo, LandInfo, MapNode, Rich4Map } from '../loaders/map.ts';
+import { parseMap } from '../loaders/map.ts';
+import { inView } from './card-policy.ts';
 import type { MapTopology } from '../state/reduce.ts';
 import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { makeObjects } from '../cards/summon.ts';
@@ -15,10 +18,12 @@ import { OBJECT_COUNT } from '../rules/objects.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import { FACILITY_TYPE } from '../rules/facility.ts';
 import { TRAFFIC_ENGINEERING } from '../rules/tool-effects.ts';
+import { initialSpecialActors, releaseNpc } from '../rules/special-actors.ts';
 import { decideTool, type AiContext } from './policy.ts';
 import {
   AI_NEVER_USES,
   aiToolChoice,
+  screenScanOrder,
   toolsToConsider,
   type ToolAiView,
 } from './tool-policy.ts';
@@ -100,6 +105,48 @@ function ctxOf(f: Fixture & { tools?: Record<number, number> }): AiContext {
 //  共用机制
 // ============================================================
 
+/**
+ * 可见节点表的收集次序 @source 0x00409ef9（填 440×440 格表）/ 0x0040a050（行优先收集）。
+ *
+ * 期望值全部取自 `rich4-spec` 的 Unicorn 测试台**实跑原版 `0x409ef9`**：
+ * `0x409b18(1)` 那次精灵拾取图重建打桩成 `ret`，节点表 / 镜头 `[0x48b2ac]`·`[0x48b2b0]` /
+ * 视角 `[0x499088]` 由测试台直接铺（另注意 `emulate.MAX_INSN` 默认 40 万条不够跑完这支，
+ * 须调大 —— 指令钩子比的是模块常量）。下面每条都单独实跑过。
+ */
+describe('screenScanOrder —— 原版可见节点表的次序', () => {
+  const at = (id: number, x: number, y: number) => makeNode({ id, x, y });
+
+  it('同一块里 x 递增：视角 0 反序（画得越来越靠上），视角 4 正序', () => {
+    const nodes = [at(1, 0, 0), at(2, 10, 0), at(3, 20, 0), at(4, 30, 0)];
+    expect(screenScanOrder(nodes, { x: 0, y: 0 }, 0)).toEqual([4, 3, 2, 1]);
+    expect(screenScanOrder(nodes, { x: 0, y: 0 }, 4)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('同一像素两个节点：只剩节点表里靠后的那个（0x40a046 后写覆盖）', () => {
+    const nodes = [at(1, 320, 320), at(2, 300, 300), at(3, 300, 300)];
+    expect(screenScanOrder(nodes, { x: 320, y: 320 }, 0)).toEqual([3, 1]);
+  });
+
+  it('29×29 块窗口外不收（0x409fb0 `cmp ebx,0x1c`）', () => {
+    expect(screenScanOrder([at(1, 0, 0), at(2, 15 * 32, 0)], { x: 0, y: 0 }, 0)).toEqual([1]);
+  });
+
+  const MAP_DIR = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map';
+  const runMaps = existsSync(`${MAP_DIR}/0001.bin`) ? it : it.skip;
+  runMaps('八张原版地图 × 八个视角：画面里没有两个节点投到同一像素（去重只在人造盘面里生效）', () => {
+    for (let id = 0; id < 8; id++) {
+      // 地图文件 = globalMapId × 2 + 1（同 soak.test.ts）
+      const map = parseMap(new Uint8Array(readFileSync(`${MAP_DIR}/${String(id * 2 + 1).padStart(4, '0')}.bin`)));
+      for (const me of map.nodes) {
+        const visible = map.nodes.filter((n) => inView(me, n));
+        for (let v = 0; v < 8; v++) {
+          expect(screenScanOrder(visible, me, v).length, `地图 ${id} 节点 ${me.id} 视角 ${v}`).toBe(visible.length);
+        }
+      }
+    }
+  });
+});
+
 describe('共用机制', () => {
   it('一回合最多试 4 件：种类 > 4 时从 rand%种类 起环形取（0x00447fec）', () => {
     expect(toolsToConsider([1, 2, 3, 4, 5, 6], 4)).toEqual([5, 6, 1, 2]);
@@ -131,6 +178,20 @@ describe('1 機器娃娃（0x00420efa）', () => {
     expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
   });
 
+  it('★★ 前方站着一个**背着**小窮神的人 → 不算路上有坏神、不用（第 24 份 `20260924-182247766`）', () => {
+    // @source 0x00420efa 逐格取物件读的是节点反向索引 `node+0x24` 第 3 字节；附身的不在那里
+    //   （同 0x0041b4b4）。本引擎附身物件的 `nodeId` 跟着主人走，先前被当成地上的。
+    const objects = objectsWith(4, 3); // 槽 4 = 类型 5 小窮神
+    objects[4]!.attached = 2;
+    const players = meOnLine(1, 0);
+    players[1] = makePlayer({ index: 1, character: 1, nodeId: 3, lastNodeId: 2, godInfo: 5 });
+    const view = viewOf({ nodes: lineNodes(8), players, state: { objects } });
+    expect(aiToolChoice(1, view)).toBeNull();
+    // 同一只落在地上 ⇒ 照用
+    objects[4]!.attached = 0;
+    expect(aiToolChoice(1, viewOf({ nodes: lineNodes(8), players, state: { objects } }))).toEqual({ kind: 'plain' });
+  });
+
   it('前方有惡犬（类型 11）→ 用', () => {
     const view = viewOf({
       nodes: lineNodes(8),
@@ -138,6 +199,21 @@ describe('1 機器娃娃（0x00420efa）', () => {
       state: { objects: objectsWith(10, 4) },
     });
     expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
+  });
+
+  it('★★ 骑機車 / 开汽車（惡犬咬不到）前方有惡犬 → **照样用**（第二十一份「忍太郎骑着机车还浪费機器娃娃」）', () => {
+    // 原版判定 0x00420efa..0x00421078 **从不读** `player+0x11`（交通方式）：只有
+    //   `0x420f09 call 0x40b221` 前瞻 4 格 → 逐格取物件类型 `[idx*24 + 0x496d08]` →
+    //   `0x420f7a cmp eax, 0xb / 0x420f83 mov esi, 1`（惡犬 ⇒ 用）。主线 0x447d97..0x448085
+    //   与個性闸门 0x420e9a 也都不看交通方式 ⇒ 电脑骑着车也会把狗扫掉。照原版保留。
+    for (const trafficMethod of [1, 2]) {
+      const view = viewOf({
+        nodes: lineNodes(8),
+        players: meOnLine(1, 0, { trafficMethod, ndices: trafficMethod + 1 }),
+        state: { objects: objectsWith(10, 3) }, // 槽 10 = 类型 11 惡犬
+      });
+      expect(aiToolChoice(1, view)).toEqual({ kind: 'plain' });
+    }
   });
 
   it('前瞻遇岔路 → 不用（0x420f11 forked 即退）', () => {
@@ -230,6 +306,30 @@ describe('2 路障（0x0042107f）', () => {
     expect(aiToolChoice(2, poor)).toBeNull();
   });
 
+  // ★★ 审计（ai-move）：阶段一的「空格」是 `+0x24 & 0x3fff00` —— 玩家位只在他站在盘上时才置，
+  //   住店 / 关押 / 消失的人把自己那一位清掉了（0x0040d5d2 / 0x0043d61d / 0x0040d444）
+  it('★★ 阶段一：住店的人脚下那格照样算空（他的占用位已清）；站着的人才挡', () => {
+    const lands = [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })];
+    const standing = meOnLine(1, 0);
+    standing[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    expect(aiToolChoice(2, viewOf({ nodes: stageOneNodes(), lands, players: standing }))).toBeNull();
+    const inHotel = meOnLine(1, 0);
+    inHotel[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    inHotel[2]!.blocking.inHotel = 2;
+    expect(aiToolChoice(2, viewOf({ nodes: stageOneNodes(), lands, players: inHotel }))).toEqual({
+      kind: 'place',
+      nodeId: 3,
+    });
+  });
+
+  it('★★ 阶段一：格上有惡人（bits 12-15）→ 不算空', () => {
+    const lands = [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })];
+    const specialActors = initialSpecialActors();
+    specialActors[0] = releaseNpc(3, 1, 0);
+    const view = viewOf({ nodes: stageOneNodes(), lands, players: meOnLine(1, 0), state: { specialActors } });
+    expect(aiToolChoice(2, view)).toBeNull();
+  });
+
   it('阶段二：反瞻 6 格 ∩ 画面里我的地，取同區过路费最大的一格', () => {
     const nodes = lineNodes(8, new Map([
       [3, { kind: 'land', index: 1 }],
@@ -268,8 +368,11 @@ describe('3 地雷（0x004213c5）', () => {
     const lands = [makeLand({ id: 1, owner: 2 }), makeLand({ id: 2, owner: 2 })];
     const first = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState: 2 } });
     const second = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState: 1 } });
-    expect(aiToolChoice(3, first)).toEqual({ kind: 'place', nodeId: 2 });
-    expect(aiToolChoice(3, second)).toEqual({ kind: 'place', nodeId: 3 });
+    // 候选按原版屏幕行序收：视角 0 下 x=30 的 node3 画得比 x=20 的 node2 靠上 ⇒ 候选 [3, 2]
+    //   （`screenScanOrder` 实跑 0x409ef9：镜头 (40,0)、node4 置我这一位、视角 0 → 次序 [3,2,1]；
+    //   先前按 (y,x) 排成 [2,3]）
+    expect(aiToolChoice(3, first)).toEqual({ kind: 'place', nodeId: 3 });
+    expect(aiToolChoice(3, second)).toEqual({ kind: 'place', nodeId: 2 });
   });
 
   it('监狱格有人坐牢 → 立即直选（不等扫完，0x421451）', () => {
@@ -327,13 +430,46 @@ describe('3 地雷（0x004213c5）', () => {
     });
     expect(aiToolChoice(3, view)).toBeNull();
   });
+  // ★★ 需求方 2026-09-24「Npc把地雷重叠放置了」：0x409ef9 建「画面里的节点」清单时
+  //   `0x00409f7c test dword [node+0x24], 0xffff00 / jne 跳过` —— 有物件 / 有人的格子**不进清单**。
+  it('★★ 已经埋着地雷的格不进候选（0x409f7c）—— 两块别人的地、一块已有地雷 ⇒ 只剩另一块', () => {
+    const nodes = lineNodes(4, new Map([
+      [2, { kind: 'land', index: 1 }],
+      [3, { kind: 'land', index: 2 }],
+    ]));
+    const lands = [makeLand({ id: 1, owner: 2 }), makeLand({ id: 2, owner: 2 })];
+    // 先前 rngState 1 → 挑后者（3 号）；3 号上已有一件地雷（槽 26）⇒ 候选只剩 2 号
+    for (const rngState of [1, 2]) {
+      const view = viewOf({ nodes, lands, players: meOnLine(4, 3), state: { rngState, objects: objectsWith(26, 3) } });
+      expect(aiToolChoice(3, view)).toEqual({ kind: 'place', nodeId: 2 });
+      // 定時炸彈什么格都收（1 / 2 号都可能），但**决不**是已有地雷的 3 号
+      expect(aiToolChoice(4, view)).not.toEqual({ kind: 'place', nodeId: 3 });
+    }
+  });
+
+  it('★★ 唯一候选上已有地雷 / 有人站着 ⇒ 不用（不会叠上去）', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 1 }]]));
+    const lands = [makeLand({ id: 1, owner: 2 })];
+    const mined = viewOf({ nodes, lands, players: meOnLine(8, 7), state: { objects: objectsWith(26, 3) } });
+    expect(aiToolChoice(3, mined)).toBeNull();
+    const players = meOnLine(8, 7);
+    players[2] = makePlayer({ index: 2, character: 2, nodeId: 3 });
+    const stood = viewOf({ nodes, lands, players });
+    expect(aiToolChoice(3, stood)).toBeNull();
+  });
 });
 
 describe('4 定時炸彈（0x00421574）', () => {
-  it('不查归属：无主地所在的普通反瞻格也进候选（rngState 1 → 候选[1,2,3] 取第 2 个）', () => {
+  it('不查归属：无主地所在的普通反瞻格也进候选（候选按原版屏幕行序 [2,1]，rngState 1 → 取第 2 个）', () => {
     const nodes = lineNodes(3, new Map([[2, { kind: 'land', index: 1 }]]));
-    const view = viewOf({ nodes, lands: [makeLand({ id: 1, owner: 0 })], players: meOnLine(3, 2) });
-    expect(aiToolChoice(4, view)).toEqual({ kind: 'place', nodeId: 2 });
+    const lands = [makeLand({ id: 1, owner: 0 })];
+    // 候选 = 反瞻 ∩ 画面 = node2（x=20）、node1（x=10）；我在 node3 上，故它不进清单。
+    // 原版 0x409ef9 实跑（镜头 (30,0)、node3 置我这一位、视角 0）次序 = **[2, 1]** ——
+    //   x 越大画得越靠上；先前按 (y,x) 排成 [1, 2]。`rand()%候选数` 因此按下标取：
+    const second = viewOf({ nodes, lands, players: meOnLine(3, 2), state: { rngState: 1 } });
+    const first = viewOf({ nodes, lands, players: meOnLine(3, 2), state: { rngState: 0 } });
+    expect(aiToolChoice(4, second)).toEqual({ kind: 'place', nodeId: 1 });
+    expect(aiToolChoice(4, first)).toEqual({ kind: 'place', nodeId: 2 });
   });
 
   it('医院格有人住院 → 直选', () => {
@@ -359,6 +495,15 @@ describe('5 機車（0x00421644）/ 6 汽車（0x00421675）', () => {
   it('機車：已骑车（traffic & 3 ≠ 0）→ 不用', () => {
     const players = meOnLine(1, 0, { trafficMethod: 1 });
     expect(aiToolChoice(5, viewOf({ players, state: { rngState: 4 } }))).toBeNull();
+  });
+
+  it('★ 背着定時炸彈照样上车（0x00421675 只看 `+0x11` 与 rand%4，不读 `+0x40`）—— 骰子数另由 0x4221c0 压（dice-policy）', () => {
+    const objects = objectsWith(36, 0); // 槽 36 = 类型 18 定時炸彈
+    objects[36]!.attached = 1;
+    objects[36]!.state = 7;
+    const players = meOnLine(1, 0, { f64: 37 });
+    expect(aiToolChoice(6, viewOf({ players, state: { rngState: 1, objects } }))).toEqual({ kind: 'plain' });
+    expect(aiToolChoice(5, viewOf({ players, state: { rngState: 4, objects } }))).toEqual({ kind: 'plain' });
   });
 
   it('汽車：traffic < 2 且 rand%4==0 → 用（rngState 1 → 0）；已开汽車 → 不用', () => {
@@ -394,9 +539,26 @@ describe('7 飛彈（0x00421717）', () => {
     expect(aiToolChoice(7, view)).toBeNull();
   });
 
-  it('我的地在爆风内（±100）→ 放弃', () => {
-    const view = viewOf({ nodes, lands: [makeLand({ id: 1, owner: 1 })], players: playersAt(1, 2) });
+  it('我的地在爆风里（`0x40a0b1` 的屏幕窗）→ 放弃', () => {
+    // ★ Q-TOOL-1：地块的锚点是**地块记录自己的 x/y**，判据是 `0x40a0b1(目标x, 目标y, 0x64)`
+    //   那一张屏幕方窗。这里把这块地放到目标格（150,0）上：偏移 (0,0) ⇒ 必然在窗里。
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 1, x: 150, y: 20 })],
+      players: playersAt(1, 2),
+    });
     expect(aiToolChoice(7, view)).toBeNull();
+  });
+
+  it('★ 我的地世界距离 100、投影后却出窗（旧口径会误判）→ 照打', () => {
+    // 目标格 (150,0)，我的地在 (250,0)：世界距离 100，但视角 0 下投影偏移 px = 110 > 100
+    //   （`+x` 方向被等距投影拉长约 1.1 倍）⇒ 原版扫不到它 ⇒ 打。
+    const view = viewOf({
+      nodes,
+      lands: [makeLand({ id: 1, owner: 1, x: 250, y: 0 })],
+      players: playersAt(1, 2),
+    });
+    expect(aiToolChoice(7, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
   it('我在爆风内 → 放弃', () => {
@@ -536,6 +698,33 @@ describe('8 遙控骰子（0x00421827）', () => {
     expect(aiToolChoice(8, view)).toEqual({ kind: 'dice', steps: 3 }); // node4 = 第 3 步
   });
 
+  // ★★ 审计（ai-move）：`0x00421a12 and edx, 0xf000` 查的是 bits 12-15 = **惡人**（actor 4..7，
+  //   `0x100 << actor`），不是玩家（玩家在 bits 8-11）
+  it('★★ 格上站着玩家 → 照样可以定这格（原版不查玩家位）', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 5 }]]));
+    const players = meOnLine(1, 0);
+    players[1] = makePlayer({ index: 1, character: 1, nodeId: 3 });
+    const view = viewOf({
+      nodes,
+      lands: [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })],
+      players,
+    });
+    expect(aiToolChoice(8, view)).toEqual({ kind: 'dice', steps: 2 });
+  });
+
+  it('★★ 格上站着惡人 → 该格跳过', () => {
+    const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 5 }]]));
+    const specialActors = initialSpecialActors();
+    specialActors[1] = releaseNpc(3, 2, 0);
+    const view = viewOf({
+      nodes,
+      lands: [...myStreet, makeLand({ id: 5, owner: 0, name: 'A', landPrice: 1000 })],
+      players: meOnLine(1, 0),
+      state: { specialActors },
+    });
+    expect(aiToolChoice(8, view)).toBeNull();
+  });
+
   it('格上有坏物件（类型 16/17/18 等）→ 该格跳过', () => {
     const nodes = lineNodes(8, new Map([[3, { kind: 'land', index: 5 }]]));
     const view = viewOf({
@@ -641,8 +830,30 @@ describe('11 傳送機（0x00421cb6）——AI 用来搬自己', () => {
       ],
       players: meOnLine(1, 0),
     });
-    // 住宅与旅館同为 4 级：行序最先的 node2 胜出
-    expect(aiToolChoice(11, view)).toEqual({ kind: 'teleportSelf', nodeId: 2 });
+    // 住宅与旅館同为 4 级：画面行序最先的胜出。
+    // ★ 视角 0 下 x 越大画得越**靠上**（矩阵 0x474910 的 m1 = +11）⇒ 原版收集次序是
+    //   4,3,2,1（`0x409ef9` 实跑，本文件 `screenScanOrder` 那组同一条），旅館 node3 先到。
+    //   先前按 (y,x) 排、钉的是 node2。
+    expect(aiToolChoice(11, view)).toEqual({ kind: 'teleportSelf', nodeId: 3 });
+  });
+
+  /**
+   * ★ §7.139(6) 第 2 条「并列次序」：两块同为 3 级的无主住宅，一左一右各隔一格、世界 y 相同。
+   * 期望值取自 Unicorn 测试台**实跑原版 `0x409ef9`**
+   * （节点表 3 项、镜头 = 我脚下 (320,320)、`[0x499088]` = 视角档位，`0x409b18` 打桩成 ret）：
+   *   视角 0/5/6/7 → 收集次序 [3,1,2]；视角 1/2/3/4 → [2,1,3]。
+   * 旧实现按 (y,x) 排，恒取左边的 node2 —— 视角 0（开局默认）下与原版相反。
+   */
+  it('★ 并列等级取原版屏幕行序：随视角档位变（0x409ef9 / 0x40a050）', () => {
+    const nodes = [makeNode({ id: 1, x: 320, y: 320 }), landNode(2, 1, 256, 320), landNode(3, 2, 384, 320)];
+    const lands = [
+      makeLand({ id: 1, owner: 0, level: 3, housePrice: 100 }),
+      makeLand({ id: 2, owner: 0, level: 3, housePrice: 100 }),
+    ];
+    const pick = (viewRotation: number) =>
+      aiToolChoice(11, viewOf({ nodes, lands, players: meOnLine(1, 0), state: { viewRotation } }));
+    for (const v of [0, 5, 6, 7]) expect(pick(v), `视角 ${v}`).toEqual({ kind: 'teleportSelf', nodeId: 3 });
+    for (const v of [1, 2, 3, 4]) expect(pick(v), `视角 ${v}`).toEqual({ kind: 'teleportSelf', nodeId: 2 });
   });
 });
 
@@ -712,19 +923,30 @@ describe('13 核子飛彈（0x00421e62）—— Q-TOOL-3 已结案：原版 AI �
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
-  // ── ① / ② 中止判据 = 我的棋子落在候选 ±14 格（原版像素 448px）内 ──
-  it('① 候选恰在 14 格（448px）→ 我的棋子进窗 → 放弃本候选 ⇒ 不用', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 0 })] });
+  // ── ① / ② 中止判据 = 我的棋子落在**以候选为心的那幅画面**里（`0x40a0b1` 的建图口径）
+  //    ★★ Q-TOOL-1 订正：先前这里按「格距 ≤ 14 格」判（448px），那是把建图的前置筛子
+  //      当成了判据。真正的判据是投影后的屏幕点落在 440×440 棋盘区内（±220），
+  //      视角 0 的实测边界是**行 ±8 格、列 ±6 格**（`rules/board-window.test.ts` 的预言机）。
+  it('① 候选在 +y 8 格（256px）→ 我的棋子进窗（投影 py = 203 < 220）⇒ 放弃本候选 ⇒ 不用', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 0, y: 8 * TILE })] });
     expect(aiToolChoice(13, view)).toBeNull();
   });
 
-  it('② 候选在 15 格（480px）外 → 不中止 ⇒ 出牌（★ 把 14 改成 13 即变红）', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 15 * TILE, y: 0 })] });
+  it('② 候选在 +y 9 格（288px）→ 投影 py = 229 出窗 ⇒ 不中止 ⇒ 出牌（★ 改成 8 格即变红）', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 0, y: 9 * TILE })] });
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 
-  it('① 两轴都要在 ±14 内：x 差 14 格、y 差 15 格 ⇒ 不中止 ⇒ 出牌', () => {
-    const view = nukeView({ lands: [foeLand({ id: 1, x: 14 * TILE, y: 15 * TILE })] });
+  it('★ x 方向另有边界：+x 6 格（192px）在窗里（px = 215）、7 格（224px）出窗（px = 251）', () => {
+    expect(aiToolChoice(13, nukeView({ lands: [foeLand({ id: 1, x: 6 * TILE, y: 0 })] }))).toBeNull();
+    expect(aiToolChoice(13, nukeView({ lands: [foeLand({ id: 1, x: 7 * TILE, y: 0 })] }))).toEqual({
+      kind: 'missile',
+      nodeId: 2,
+    });
+  });
+
+  it('★ 两轴各自判：x 差 6 格在窗内、y 差 9 格外 ⇒ 只要有一轴出窗就不中止 ⇒ 出牌', () => {
+    const view = nukeView({ lands: [foeLand({ id: 1, x: 6 * TILE, y: 9 * TILE })] });
     expect(aiToolChoice(13, view)).toEqual({ kind: 'missile', nodeId: 2 });
   });
 

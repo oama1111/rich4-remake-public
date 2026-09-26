@@ -16,19 +16,17 @@
  *   把性格留成 `AiPersonality` 接口，等那几个字段解出来再接。
  */
 
+import { cardPassiveHolder } from '../rules/interaction.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 import type { GameState } from '../state/types.ts';
-import type { LandInfo, Rich4Map } from '../loaders/map.ts';
+import type { LandInfo } from '../loaders/map.ts';
 import type { Action } from '../state/actions.ts';
 import { canPurchase, canUpgrade, facilityIndexOf, housingIndexOf } from '../rules/land.ts';
-import { purchaseBlockedBy } from '../rules/purchase.ts';
-import { buyTool } from '../places/shop.ts';
 import { isAiControlled } from '../state/types.ts';
 import { canUseCard } from '../state/preview.ts';
 import type { CardTarget } from '../cards/target.ts';
 import {
   PLACEMENT_TOOLS,
-  TRAFFIC_CAR,
-  TRAFFIC_MOTORCYCLE,
   VEHICLE_TOOLS,
   buildOneLevel,
   placeObject,
@@ -38,7 +36,8 @@ import { MAX_LAND_LEVEL } from '../loaders/map.ts';
 import { pickFacingAt } from '../rules/teleport.ts';
 import { canUpgradeFacility } from '../rules/facility.ts';
 import { aiShouldPurchase } from '../rules/purchase.ts';
-import { auctionActiveSeatCount, auctionAiChoice } from '../rules/auction.ts';
+import { aiCommercialShareCount, aiPickConstructionTarget } from '../places/company.ts';
+import { auctionActiveSeatCount, auctionAiChoice, auctionSeatWaitsForHuman } from '../rules/auction.ts';
 import { DEFAULT_INITIAL_FUND } from '../rules/setup.ts';
 
 /**
@@ -52,9 +51,17 @@ function initialFundOf(state: { initialFund?: number }): number {
   return state.initialFund ?? DEFAULT_INITIAL_FUND;
 }
 import { CARDS, TOOLS } from '@rich4/data';
-import { aiCanUseCards, aiCanUseTools, autoLoanAmount, personalityAllows } from './personality.ts';
-import { aiCardChoice, aiRoll, cardsToConsider, type AiCardChoice, type CardAiView } from './card-policy.ts';
+import { aiCanUseCards, aiCanUseTools, personalityAllowsLazy } from './personality.ts';
+import {
+  aiCardChoice,
+  type AiRoll,
+  cardLoopEsiAfterFill,
+  cardsToConsider,
+  type AiCardChoice,
+  type CardAiView,
+} from './card-policy.ts';
 import { aiToolChoice, toolsToConsider, TOOL_RING_SALT, type AiToolChoice } from './tool-policy.ts';
+import { aiRand } from './rand.ts';
 import {
   allEffectiveFacilities,
   allEffectiveLands,
@@ -65,7 +72,7 @@ import {
 } from '../state/reduce.ts';
 import { MAX_TOOL_ID, MIN_TOOL_ID, toolCount } from '../rules/tools.ts';
 import { autoAction } from '../state/reduce.ts';
-import { decideStockSell, decideStockTrade } from './stock-policy.ts';
+import { placementBlockedAt } from '../rules/object-landing.ts';
 
 /**
  * 性格参数。
@@ -90,8 +97,22 @@ export const DEFAULT_PERSONALITY: AiPersonality = { aggression: 0.6, cashReserve
 
 export interface AiContext {
   state: GameState;
-  map: Rich4Map;
+  /**
+   * 地图拓扑。策略层只读 `nodes` / `lands` / `facilities` / `commercials` / `landscapes`
+   * （`MapTopology` 那几项）—— 取 `MapTopology` 而不是 `Rich4Map`，是为了让 **reducer**
+   * 也能在同一局面复算这一手（FU-2：reducer 里补掷时手上只有 `topo`）。
+   */
+  map: MapTopology;
   personality?: AiPersonality;
+  /**
+   * ★★ FU-2（2026-09-25 审计）：这一次决策的**真随机流**（`WatcomRng` 的包装）。
+   *
+   * 原版电脑那一支的每一次 `rand()`（出牌起点、個性闸门 `%3`、卡/道具判定里的 `%4`/`%n`、
+   * 前瞻岔路、骰子数 `&1`）都走**全局序列**。生产路径（客户端 / 服务器 / reducer 的补掷）
+   * 必传它 —— 流从 `state.rngState` 播种，掷完由调用方把末态写回；直接单测某个判定函数时
+   * 才可以不给（那时退回 `aiRoll` 的确定性替身，见 `ai/rand.ts`）。
+   */
+  roll?: AiRoll;
 }
 
 /**
@@ -112,7 +133,12 @@ export function isAiTurn(state: GameState): boolean {
  * 返回 null 表示「此刻不该由 AI 动」（例如轮到人类）。
  */
 export function decideAction(ctx: AiContext): Action | null {
-  const { state, map } = ctx;
+  // ★★ FU-2（2026-09-25 审计）：没显式给流时**自己从 `state.rngState` 播种一条真随机流** ——
+  //   原版电脑那一支的每次 `rand()` 都走全局序列，单机 / 联机 / reducer 的补掷必须同一条。
+  //   流是本地的、用完即弃：掷掉的数由 `reduce` 的 `aiDecisionRollAdvance` 在**同一局面**
+  //   上复算并写回。（显式传 `roll` 只留给想钉住某一串掷数的测试。）
+  const ctx2: AiContext = ctx.roll === undefined ? { ...ctx, roll: localAiRoll(ctx.state) } : ctx;
+  const { state, map } = ctx2;
   // ⚠️ 落点那两支（買地/買設施/加蓋）**不读性格** —— 原版那层是
   //   `fcn_0041d7d4` 的一条线，见 `rules/purchase.ts`。性格在
   //   `decideCard`/`decideTool`（`personalityAllows`）与借贷比例里起作用。
@@ -138,22 +164,42 @@ export function decideAction(ctx: AiContext): Action | null {
     }
   }
 
+  // ★★ 卡片路径里持卡人那一问（免費卡 / 嫁禍卡）归**持卡人**答，与轮到谁无关（core `actingSeat`）：
+  //   持卡人是真人 ⇒ 交给他的屏（返回 null）；被託管了 ⇒ `null` 答复 = reducer 按电脑那一支判
+  //   （随机数不能进 AI）。
+  const holder = cardPassiveHolder(state.pending);
+  if (holder >= 0 && state.phase === 'awaitingDecision') {
+    const h = state.players[holder];
+    if (h === undefined || !isAiControlled(h)) return null;
+    return state.pending?.kind === 'freeCard'
+      ? { type: 'answerFreeCard', use: null }
+      : { type: 'answerScapegoat', target: null };
+  }
+
   if (!isAiTurn(state)) return null;
 
   switch (state.phase) {
     case 'turnStart':
+      // ★ 回合开始时挂着的还款提醒窗（真人开着窗被托管）先答掉，否则 `startTurn` 被原样退回、卡死
+      if (state.pending?.kind === 'loanReminder') return decidePending(state, map);
       return { type: 'startTurn' };
     case 'awaitingRoll':
       // ★ 掷骰前的顺序照 0x00418dc6：买股 → 卖股 → [特別融資收回 → 公佈欄 → rand&1] → 用卡 | 用道具 → 掷骰
-      //   中括号里三件在 reducer 的 aiAdvance 里做；这里按 aiStep 只答当前那一步
+      //   ★★ 审计（provenance-ai-econ）：买股、卖股两步也挪进 reducer 的 aiAdvance —— 原版这两段
+      //   都要掷全局 `rand()`（买股入口 `0x0042bf14` 每回合必掷），策略层碰不得随机数（C-DET-1）。
+      //   这里在第 0、1 步只发 `aiNext`，由 reducer 按原版买 / 卖；第 2 步起才是策略的活。
       switch (state.aiStep) {
         case 0:
-          return decideStockTrade(state, map) ?? { type: 'aiNext' };
         case 1:
-          return decideStockSell(state, map) ?? { type: 'aiNext' };
+          return { type: 'aiNext' };
         case 2:
-          return (state.aiBranch === 1 ? decideCard(ctx) : decideTool(ctx)) ?? { type: 'aiNext' };
+          return (state.aiBranch === 1 ? decideCard(ctx2) : decideTool(ctx2)) ?? { type: 'aiNext' };
         default:
+          // ★ 第二十一份：起步前按 `fcn_004221c0` 改骰子数（VA 0x00418e70，紧接着才
+          //   `0x00418e75 call 0x40dd1f` 起步）—— 背着定時炸彈、引信 < 15 只掷 1 颗等，见 `dice-policy.ts`。
+          //   ★★ FU-2（2026-09-25 审计）：这一步**在 reducer 的 `aiAdvance` 第 3 步里算**
+          //   （`0x4221c0` 一回合只算一次：前瞻岔路与 `rand()&1` 都掷全局流）；
+          //   策略层到这里只剩「掷骰」这一手。
           return { type: 'rollDice' };
       }
     case 'moving':
@@ -168,13 +214,13 @@ export function decideAction(ctx: AiContext): Action | null {
       // 落点可能留下一个待决交互（例如落在上市企业上），先把它答掉。
       // ★ 拍賣例外：轮到真人举牌时 core 不替他把竞价「答掉」（那会清空 pending、
       //   把屏顶掉）。返回 null 让表现层收那一手 —— 见下面 awaitingDecision。
-      if (state.pending?.kind === 'auction') return decidePending(state);
-      return decidePending(state) ?? { type: 'endTurn' };
+      if (state.pending?.kind === 'auction') return decidePending(state, map);
+      return decidePending(state, map) ?? { type: 'endTurn' };
 
     case 'awaitingDecision': {
       // ★ 設施那三种（買/首建/加蓋）是 pending 而不是地块决策，先让 decidePending 答；
       //   只有真正的買地/盖房才轮到 decideAtLanding。
-      const answered = decidePending(state);
+      const answered = decidePending(state, map);
       if (answered !== null) return answered;
       const kind = state.pending?.kind;
       // ★ 其余 pending（研究所面板、未实现的场所）**不能**掉进 decideAtLanding
@@ -239,14 +285,28 @@ export function decideCard(ctx: AiContext): Action | null {
     canUseCard(state, topo, cardId, target);
 
   // ★ 個性闸门（VA 0x0041e69e）：f7 − 個性 ≥ 2 从不、== 1 三分之一、≤ 0 照做
+  //   ★ FU-2：那次 `rand() % 3` **只在差一档时掷**（`0x0041e6c9 cmp edx,1 / jne`），
+  //   故用懒求值版本 —— 急切求值会多掷、与原版错位。
   const gated = (cardId: number): boolean => {
     const f7 = CARDS.find((c) => c.id === cardId)?.f7 ?? 0;
-    return personalityAllows(f7, me.personality, gateRoll(state, cardId));
+    return personalityAllowsLazy(f7, me.personality, () => gateRand(state, ctx.roll, cardId));
   };
 
-  const view: CardAiView = { state, topo, meIndex: state.currentPlayer, me, lands, facilities };
   // @source 0x00441d4a：手牌 > 8 时 `rand() % 张数` 当起点
-  const hand = cardsToConsider(me.cards, aiRoll(state, 0x441d4a, me.cards.length));
+  const roll = aiRand(state, ctx.roll, 0x441d4a, me.cards.length);
+  const hand = cardsToConsider(me.cards, roll);
+  // 填表之后 `esi` 的残值 —— 漲價卡的設施一支会读到它（见 card-policy.ts 的 `zhangjia`）
+  const cardLoopEsi = cardLoopEsiAfterFill(me.cards.length, me.cards.length > 8 ? roll % me.cards.length : 0);
+  const view: CardAiView = {
+    state,
+    topo,
+    meIndex: state.currentPlayer,
+    me,
+    lands,
+    facilities,
+    cardLoopEsi,
+    ...(ctx.roll === undefined ? {} : { roll: ctx.roll }),
+  };
   for (const cardId of hand) {
     if (!gated(cardId)) continue;
     const choice = aiCardChoice(cardId, view);
@@ -335,15 +395,17 @@ export function decideTool(ctx: AiContext): Action | null {
     me,
     lands: allEffectiveLands(state, topo),
     facilities: allEffectiveFacilities(state, topo),
+    ...(ctx.roll === undefined ? {} : { roll: ctx.roll }),
   };
 
   // ★ 同一道個性闸门也管道具（0x420e9a：f7 − 個性，≥2 从不、==1 时三分之一）
+  //   ★ FU-2：与卡片同一句 `0x420eca call rand / idiv 3`，同样只在差一档时掷。
   const gatedTool = (toolId: number): boolean => {
     const f7 = TOOLS.find((t) => t.id === toolId)?.f7 ?? 0;
-    return personalityAllows(f7, me.personality, gateRoll(state, 30 + toolId));
+    return personalityAllowsLazy(f7, me.personality, () => gateRand(state, ctx.roll, 30 + toolId));
   };
 
-  for (const toolId of toolsToConsider(owned, aiRoll(state, TOOL_RING_SALT, owned.length))) {
+  for (const toolId of toolsToConsider(owned, aiRand(state, ctx.roll, TOOL_RING_SALT, owned.length))) {
     if (!gatedTool(toolId)) continue;
     const choice = aiToolChoice(toolId, view);
     if (choice === null) continue;
@@ -377,6 +439,12 @@ function toToolAction(toolId: number, choice: AiToolChoice, ctx: AiContext): Act
       if (objectType === undefined) return null;
       // 没有空物件槽时 placeObject 拒收（槽按种类分区，见 rules/objects.ts）
       if (!placeObject(state.objects, choice.nodeId, objectType).ok) return null;
+      // ★★ 引擎拒收「有人 / 惡人 / 物件」的格子（`reduce.ts` → `placementBlockedAt`，
+      //   @source 0x00409f7c `test [node+0x24], 0xffff00`）。策略侧的候选本来就照原版
+      //   （0x409ef9）滤掉了这些格；这里是**保险丝**：同判据再挡一道，少了它 `reduce` 会原样退回、
+      //   AI 每次都重提同一个目标 ⇒ **活锁**（第九份 #4 那一轮实测 1..300 里 2 个种子卡死）。
+      //   ★ 放在这个**唯一收口**上：`toToolAction` 是三种放置类道具所有分支的必经之路。
+      if (placementBlockedAt(state, choice.nodeId)) return null;
       return { type: 'useTool', toolId, nodeId: choice.nodeId };
     }
     case 'missile':
@@ -418,15 +486,19 @@ function toToolAction(toolId: number, choice: AiToolChoice, ctx: AiContext): Act
   }
 }
 
+/** 从 `state.rngState` 播种一条本地真随机流（生产路径的默认值，见 `decideAction`） */
+function localAiRoll(state: GameState): AiRoll {
+  const rng = new WatcomRng();
+  rng.setState(state.rngState);
+  return () => rng.next();
+}
+
 /**
- * 闸门里那次 `rand() % 3` 的**确定性替身**。
- *
- * ⚠️ 策略层是纯函数、碰不得随机源（否则 reducer 拒一次它就原样重提）。这里用
- *   `(rngState ^ action) % 3` —— 同一状态下同一张牌的结论固定，重放一致（C-DET-4），
- *   分布上也是三分之一，但**不是**原版那次 `rand()` 的序列。记 D-004。
+ * 闸门里那次 `rand() % 3`（`0x0041e6ce call 0x456f2d / idiv 3`）——
+ * 有真随机流就掷它，没有才退回替身（`ai/rand.ts` 的 `aiRand`）。记 D-004 / FU-2。
  */
-function gateRoll(state: GameState, action: number): number {
-  return (((state.rngState >>> 0) ^ (action * 0x9e3779b1)) >>> 0) % 3;
+function gateRand(state: GameState, roll: AiRoll | undefined, action: number): number {
+  return aiRand(state, roll, action, 3);
 }
 
 /**
@@ -455,7 +527,15 @@ export function auctionNextBid(
   // @source `word [0x48c436 + 槽] == 0` —— 出过价 / 放弃过的座位不再轮到他
   if ((pending.status[bidder] ?? 'active') !== 'active') return null;
   const who = state.players[bidder];
-  if (who === undefined || !isAiControlled(who)) return null;
+  // 出局者没有座位（`0x0043c11f cmp byte [p+0x15],0`）
+  if (who === undefined || who.whoPlays === 0) return null;
+  // ★ 2026-09-25 审计订正（AUC-22 / AUC-23）：出价那一刻判真人用的是**整字节 == 1**
+  //   （`0x0043b001 cmp byte [p+0x15], 1 / jne 0x43b0a0`）—— 带走回棋盘 0x10 / 被挪 0x20 位的真人走**电脑支**
+  //   （开拍时没给他算心理价位 ⇒ 限价 0 ⇒ 出得起就 PASS）。
+  //   真人那一支还先看钱：`0x0043b06c mov edx,[现价] / cmp edx,[現金] / jle 0x43b08a`（等他点），
+  //   否则 `0x0043b07a..0x0043b085` 直接替他按「放棄」（钮 6）——先前会一直等一个只能 PASS 的穷真人。
+  if (auctionSeatWaitsForHuman(who, pending.price)) return null;
+  if (who.whoPlays === 1) return { type: 'auctionBid', bidder, status: 'giveUp', step: 0 };
   // @source `loc_0043b183` 的压价线：最高出价者现金 + 500（出价时记下的快照）
   const topWho = pending.top < 0 ? undefined : state.players[pending.top];
   const choice = auctionAiChoice({
@@ -482,38 +562,19 @@ export function auctionNextBid(
  * ⚠️ 只处理**已实现**的那几种；其余返回 null，由调用方继续推进回合——
  *   未实现的场所会以 `unimplemented` 留在 `pending` 里，上层看得见。
  */
-export function decidePending(state: GameState): Action | null {
+export function decidePending(state: GameState, map?: MapTopology): Action | null {
   const p = state.pending;
   if (p === null) return null;
-  if (p.kind === 'shop') {
-    // ★ 优先把交通工具买到手：骰子从 1 变 3，是全局最划算的一笔。
-    //   其次补放置类道具。都买不起就关门（由调用方发 declineDecision）。
-    const me = state.players[state.currentPlayer];
-    if (me === undefined) return null;
-    // ★ 不能只看「买得起 + 有货」——`buyTool` 还会因**每人每种上限 9**
-    //   而拒绝（`give_tool` 的 `toolLimit`）。AI 是纯函数，提一个 reducer
-    //   必拒的 action 就会被原样重提，卡死在 turnEnd/shop。
-    //   与卡片、买地两次事故同一类，处理办法也一样：**先预演一遍**。
-    // ★ **货架也在这条预演里**：reducer 要求「还在 `pending.tools` 上」才卖
-    //   （买一件少一件，@source rich4_shop.asm 0x42e466 尾
-    //   `mov byte [ebx + 0x48c2f8], 0`）。漏了它，AI 买走车之后再提一次
-    //   同一件，reducer 必拒 → 同样卡死在 turnEnd/shop。
-    const onShelf = (id: number): boolean => p.tools.some((t) => t.id === id);
-    const canBuy = (id: number): boolean =>
-      onShelf(id) && buyTool(me, state.tools, state.toolStock, id).ok;
-    // 已有更好的车就别买了
-    if (me.trafficMethod !== TRAFFIC_CAR && canBuy(6)) {
-      return { type: 'shop', op: 'buyTool', id: 6 };
-    }
-    if (
-      me.trafficMethod !== TRAFFIC_CAR &&
-      me.trafficMethod !== TRAFFIC_MOTORCYCLE &&
-      canBuy(5)
-    ) {
-      return { type: 'shop', op: 'buyTool', id: 5 };
-    }
-    return null;
-  }
+  // ★ 落点那台 ATM（`landing`，phase = turnEnd）只给**恰好** who_plays == 1 的真人开；走到这里说明他开着窗
+  //   被托管了 —— 与路过那台同样替他关窗（模态窗返回 0 = 不办），core 随即换成貸款屏再由下面那支答。
+  //   不答的话调用方会发 `endTurn`，把 ATM 连同后面的貸款屏一起跳掉。
+  if (p.kind === 'atm') return { type: 'declineDecision' };
+  // ★★ 第二十六份：电脑 / 托管**不会**再收到 `pending{shop}` —— 原版那一支当场买卖完就走
+  //   （`0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`，见 `places/ai-shop.ts`，reducer 的 `enterShop` 直接跑）。
+  //   走到这里的只会是**开着商店窗被托管的真人**：原版的窗口是模态的、托管位在窗里不会冒出来 ⇒
+  //   按「关窗」处理（返回 null，调用方发 `declineDecision`），不替他花點券。
+  //   （先前这里是自拟的「车优先、點券全花」—— 150 點就买汽車，原版要 ≥ 461 點才轮得到，已删。）
+  if (p.kind === 'shop') return null;
   // ★ 拍賣（Q-AUC-1）：竞价循环归 core —— 这一支按原版拍賣窗口的刷新循环
   //   （`loc_0043c4f5` 一带）决定**这一口**加价多少 / PASS。
   //   座位状态、心理价位、现价、轮到谁都在 `pending` 里（reduce 开拍时建好）。
@@ -521,28 +582,28 @@ export function decidePending(state: GameState): Action | null {
   // ★ 小游戏：AI 从来不玩（原版 `who_plays != 1` 直接走「不玩」出口）。
   //   真人被托管时也走这条——托管的意思就是让 AI 替你打，不该弹出玩法。
   if (p.kind === 'minigame') return { type: 'minigame', score: null };
-  // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（随机数不能进 AI），
-  //   走到这里的只会是**被托管的真人**。按 `personality` 的精神保守处理：
-  //   救得起同伴就救，不去放犯人。
-  if (p.kind === 'bail') {
-    const cheap = p.candidates
-      .filter((c) => c.affordable && c.player >= 0)
-      .sort((a, b) => a.cost - b.cost)[0];
-    return cheap === undefined ? null : { type: 'bail', slot: cheap.slot };
-  }
-  // ★ 银行：按角色的**借贷激进度**（f24）一次性借出身家的某个百分比。
-  // @source 银行落点的 AI 分支 VA 0x004368db，见 ai/personality.ts。
-  // ⚠️ 原版那一句是**赋值** `loan = trunc(身家 × f24 / 100)`，既不叠加
-  //   也不查额度上限；本引擎的 `bankBorrow` 会按额度拦，故这里先夹一次，
-  //   免得提一个必被拒的 action 把自己卡死。
-  if (p.kind === 'bank') {
-    const me = state.players[state.currentPlayer];
-    if (me === undefined) return null;
-    // @source 0x004368ce `cmp byte [+0x3c], 0` —— 銀行暫停放款期内電腦不借
-    if (me.bankFreezeDays !== 0) return null;
-    const want = Math.min(autoLoanAmount(p.wealth, me.loanRatio), p.loanCapacity);
-    return want > 0 ? { type: 'bank', op: 'borrow', amount: want } : null;
-  }
+  // ★ 魔法屋：电脑在原版里**不开女巫窗口**（`0x0043381b cmp [player+0x15],1 / jne 0x43390b`），
+  //   两个转盘都 rand() —— 走到这里的只会是**被託管的真人**（窗口已挂出）。
+  //   `option: null` = 让 reducer 按电脑那一支掷效果（随机数不能进 AI）。
+  if (p.kind === 'magicHouse') return { type: 'magicHouse', option: null };
+  // ★ 第十四份：收費那一段的被动卡 —— 走到这里的只会是**被託管的真人**（电脑那一支在 reducer 里当场判完）。
+  //   `null` = 让 reducer 按电脑那一支判（`aiUsesFreeCard` / `aiScapegoat`，随机数不能进 AI）。
+  if (p.kind === 'freeCard') return { type: 'answerFreeCard', use: null };
+  if (p.kind === 'scapegoat') return { type: 'answerScapegoat', target: null };
+  // ★ 保釋：电脑玩家那条路在 reducer 里就掷完了（`enterVisit`，`0x0043d3d8` 起 rand&1 / 個性 / rand%n），
+  //   走到这里的只会是**开着保釋窗被托管的真人**。
+  //   ★★ 审计（ai-move）：先前这里是自拟的「挑最便宜的、救得起的同伴」—— 原版没有这条规则。
+  //   原版保釋窗（`0x0043d33e..0x0043d3d3`）是模态的，托管位在窗里冒不出来；与商店 / ATM 同一口径
+  //   按「关窗 = 不保釋」处理（窗口的離開键，不花點券）。
+  if (p.kind === 'bail') return { type: 'declineDecision' };
+  // ★ 貸款屏：电脑（与托管）**收不到**这一扇 —— 原版 `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab`
+  //   让它们当场走电脑那一支（提前还贷 / `rand()%10` 放款，reducer 的 `aiBankRoom`），不开窗。
+  //   走到这里的只会是**开着貸款屏被托管的真人** —— 托管就是由电脑代打 ⇒ 按电脑那一支替他办完
+  //   （`op: 'auto'`，随机数在 reducer 里掷）。
+  if (p.kind === 'bank') return { type: 'bank', op: 'auto', amount: 0 };
+  // ★ 还款提醒窗（`0x436034`）：只有「恰好真人」才开，窗里没有任何选择 —— 被托管就替他关窗，
+  //   core 随即走完这一天的回合边界（`0x41c84f` 的其余部分）。
+  if (p.kind === 'loanReminder') return { type: 'declineDecision' };
   // 樂透**没有**分支：电脑在原版里根本没得挑（`rich4_ui_letou_bar_entry`
   // 的电脑那支一口气买完、不弹屏），所以它在落点当场就结掉了 —— 见
   // `state/reduce.ts` 的 `landOnLottery`，号码与是否出手都由 reducer 定
@@ -567,24 +628,34 @@ export function decidePending(state: GameState): Action | null {
     return { type: 'upgradeFacility' };
   }
   if (p.kind === 'chooseBuildTarget') {
-    // 电脑在 reducer 里已按 0x40b455 挑过；走到这里的是被托管的真人 —— 取第一个可选
-    const t = p.choices[0];
-    return t === undefined ? { type: 'declineDecision' } : { type: 'buildTarget', entityId: t };
+    // ★★ 审计（provenance-ai-econ）：走到这里的只会是**开着选地窗被托管的真人**（电脑在 reducer 里当场挑）。
+    //   原版那扇窗是模态的、托管位冒不出来，没有「窗开着被托管」这回事 ⇒ 按座位现在的身份走**电脑那一支**：
+    //   `0x0041ad12 call 0x40b455`（自家公司 `0x0041aa3c` 同一个函数）—— 自己的住宅地挑当前等级租金最高的、
+    //   設施挑地價最高的（`aiPickConstructionTarget`）。先前这里是自拟的「取第一个可选」。
+    //   挑不出（或不在可选里）就关窗。
+    if (map === undefined) return { type: 'declineDecision' };
+    const t = aiPickConstructionTarget(
+      state.currentPlayer, map.lands ?? [], state.landOwner, state.landLevel, state.landType,
+      map.facilities ?? [], state.facilityOwner, state.facilityLevel, state.facilityType,
+    );
+    return t !== 0 && p.choices.includes(t) ? { type: 'buildTarget', entityId: t } : { type: 'declineDecision' };
   }
   if (p.kind === 'buildFacility') {
-    // 走到这里的只会是被托管的真人（电脑在 reducer 里已抽完）：照电脑的口味，
-    // 不蓋公園，取可选里最小的非 0 种类 —— 确定性的
-    const t = p.choices.find((c) => c !== 0) ?? p.choices[0];
-    return t === undefined ? null : { type: 'buildFacility', facilityType: t };
+    // ★★ 审计（provenance-ai-econ）：同上，只会是**开着选种类窗被托管的真人**。按电脑那一支定种类
+    //   （付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5`：`rand()%4+1`）—— 随机数不能进 AI，交 `null` 由 reducer 掷。
+    //   先前这里是自拟的「不蓋公園、取最小的非 0 种类」（恒为旅館）。
+    return { type: 'buildFacility', facilityType: null };
   }
   if (p.kind === 'buyShares') {
-    // 简单策略：留够安全垫，剩下的钱买得起多少买多少，且不超过企业余量。
-    // ★ 这是**策略**不是规则——买不买、买多少原版由 AI 性格决定（M3），
-    //   这里先给一个不会把自己买破产的保守解。
-    if (p.unitPrice <= 0) return null;
-    const spendable = Math.trunc(p.cash / 2);
-    const want = Math.min(Math.trunc(spendable / p.unitPrice), p.available);
-    return want > 0 ? { type: 'buyShares', shares: want } : null;
+    // ★ 照原版电脑那支（pt27-stock「忍太郎怎么一下就买了3000股保险公司？」）：
+    //   `0x0041d267 push esi / push ecx / call 0x41d839` —— 上限 esi 就是真人填数窗那个
+    //   `min(1000, 現金 ÷ 單價, 企業餘量)`（`p.max`），再扣 30% 开局资金×物價 的安全垫。
+    //   先前这里是自拟的「现金一半能买多少买多少、只夹企業餘量」，一口气买下 3000 股。
+    const me = state.players[state.currentPlayer];
+    if (me === undefined) return null;
+    const n = aiCommercialShareCount(p.unitPrice, p.max, me.cash, initialFundOf(state), state.priceIndex);
+    // `0x0041d273 test edi, edi / je 0x41d2bb` —— 0 股 = 不买
+    return n > 0 ? { type: 'buyShares', shares: n } : { type: 'declineDecision' };
   }
   return null;
 }
@@ -603,7 +674,7 @@ export function decidePending(state: GameState): Action | null {
  *   ⚠️ 原版这一层**没有性格、没有"值不值得"**（`fcn_0041d7d4` 只收一个价），
  *   早先那套 `landAttractiveness` + `reserveFloor` 是自造的，已去掉。
  */
-export function decideAtLanding(state: GameState, map: Rich4Map): Action {
+export function decideAtLanding(state: GameState, map: MapTopology): Action {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return { type: 'declineDecision' };
   const node = map.nodes[me.nodeId - 1];
@@ -612,7 +683,7 @@ export function decideAtLanding(state: GameState, map: Rich4Map): Action {
   const idx = housingIndexOf(node.type);
   if (idx === null) return { type: 'declineDecision' };
 
-  const tpl = map.lands.find((l) => l.id === idx);
+  const tpl = (map.lands ?? []).find((l) => l.id === idx);
   if (tpl === undefined) return { type: 'declineDecision' };
 
   const land: LandInfo = {
@@ -621,13 +692,16 @@ export function decideAtLanding(state: GameState, map: Rich4Map): Action {
     level: state.landLevel[idx] ?? 0,
   };
 
-  // ★ 衰神/大衰神/死神附身时**一切消费都被拦**（`call 0x40fa61`），
-  //   而 `canPurchase` 查的是另一处（土地公只挡买无主地）。
-  //   AI 是纯函数：提一个 reducer 必拒的 action 会被原样重提，
-  //   直接卡死在 awaitingDecision —— 与当初卡片那次是同一类事故。
-  //   故这里先照 `purchase` 的规矩预演一遍。
-  if (purchaseBlockedBy(me) !== null) return { type: 'declineDecision' };
-
+  // ★★ 2026-09-24（第十九份试玩回报「小衰神显灵投资失败的弹窗没显示」）：
+  //   这里原先有一道「衰神/大衰神/死神附身 ⇒ 直接放弃」的短路 —— 那是当年 reducer
+  //   **拒收**被拦的 `buyLand` 时防卡死用的。现在 reducer 把被拦的消费收成
+  //   「弹 `god.blockPurchase` + 回合结束」（`godBlockedPurchase`），短路反而让电脑
+  //   **永远不去碰** `0x40fa61`，那扇「%s顯靈 投資失敗！」就再也弹不出来。
+  //   原版电脑两支都是**先照常决定、再过衰神闸**：
+  //   - 買地 `0x0041a089 call 0x41d7d4`（想买 ⇒ edi=1）→ `0x0041a0c7 call 0x40fa61`；
+  //   - 加蓋 `0x00419976 test [player+0x15],6 / jne 0x4199a7` → `0x004199ae call 0x40fa61`
+  //     （电脑不问，够钱就直接进闸）。
+  //   故这里不再预演 `purchase`，照常出手，由 reducer 弹框收场。
   const buy = canPurchase(land, me, state.priceIndex);
   if (buy.ok && aiShouldPurchase(me, buy.price, initialFundOf(state), state.priceIndex)) {
     return { type: 'buyLand' };

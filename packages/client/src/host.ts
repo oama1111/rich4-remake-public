@@ -69,7 +69,22 @@ export function assetBase(): string {
  *   所以 `cargo run` / dev 能拿到 HD，装好的 `.app` 还拿不到。
  */
 export function hdBase(): string {
-  return `${assetBase().replace(/\/game$/, '')}/hd`;
+  return `${assetBase().replace(/\/game$/, '')}/${hdTierDir()}`;
+}
+
+/**
+ * 读哪一档超分产物（W-80 §4.5 分档输出）：
+ *
+ * - 桌面壳：`hd`（4× 母版，随包，本地读不在乎体积）；
+ * - 浏览器：默认 `hd-2x`（`pnpm upscale tier` 从母版缩出来的 2× 档，体积约四分之一 ——
+ *   网页版隔着网络，4× 一张全屏底图就 10 MB 上下）；`?hdtier=4` 强制读母版。
+ *
+ * ⚠️ 线上的 `packages/server` 目前**不提供**任何 HD 目录（素材白名单里没有），
+ *   浏览器拿不到清单就整包走原图 —— 上线 HD 要另开一张卡，不在这里顺手做。
+ */
+export function hdTierDir(search: string = typeof location === 'undefined' ? '' : location.search): string {
+  if (isDesktop()) return 'hd';
+  return new URLSearchParams(search).get('hdtier') === '4' ? 'hd' : 'hd-2x';
 }
 
 /** 桌面壳记着的原版目录；浏览器下恒为 null */
@@ -398,7 +413,7 @@ export async function pickSoundFont(): Promise<SoundFontPick> {
       options: {
         directory: false,
         multiple: false,
-        title: '选择音色库（.sf2）—— 本项目不附带，需自备',
+        title: '选择音色库（.sf2）',
         filters: [{ name: 'SoundFont 2', extensions: ['sf2'] }],
       },
     });

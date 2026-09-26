@@ -48,6 +48,10 @@ import {
   loanDueDays,
   loanBubbleVoice,
   loanPanelsVisible,
+  loanTickSlide,
+  LOAN_TEXT_STYLE,
+  verticalAdvance,
+  verticalInkOrigin,
   loanSlideDone,
   loanSlideIn,
   loanSlideOut,
@@ -61,43 +65,48 @@ import {
 
 describe('貸款屏滑入 @source loc_00435d48 / loc_004357a7', () => {
   it('★ 面板不是 280×200：玩家面板 200×280、日期面板 200×200', () => {
-    expect(LOAN_INFO_PANEL).toEqual({ resource: 23, image: 15, x: 0, w: 200, h: 280 });
-    expect(LOAN_DATE_PANEL).toEqual({ x: 280, w: 200, h: 200 });
+    // ★ 贴屏顶边：玩家面板 y = 0、日期面板 y = 0x118（0x43555a `add eax, 0x118` 加在 y 那个参数上）
+    expect(LOAN_INFO_PANEL).toEqual({ resource: 23, image: 15, y: 0, w: 200, h: 280 });
+    expect(LOAN_DATE_PANEL).toEqual({ y: 280, w: 200, h: 200 });
+    // 两块叠起来正好占满右栏 480 高
+    expect(LOAN_DATE_PANEL.y + LOAN_DATE_PANEL.h).toBe(480);
+    // 到位 x = 440 时右边缘正好是 640（RECT.right = 0x280 @0x435503）
+    expect(LOAN_SLIDE.shown + LOAN_INFO_PANEL.w).toBe(640);
     // 日期面板的季节图来自资源 2 的图 0..3
     expect(LOAN_MONTH_SCENE).toEqual([3, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3]);
   });
 
-  it('★ 进屏：y 640 → 440，每拍 −40，到位那拍就把 dy 归零', () => {
+  it('★ 进屏：x 640 → 440（从右边滑进来），每拍 −40，到位那拍就把 dx 归零', () => {
     let s = loanSlideIn();
-    expect(s).toEqual({ y: 0x280, dy: -0x28 });
-    const ys: number[] = [s.y];
+    expect(s).toEqual({ x: 0x280, dx: -0x28 });
+    const xs: number[] = [s.x];
     for (let i = 0; i < 10; i++) {
       s = loanSlideStep(s);
-      ys.push(s.y);
+      xs.push(s.x);
       if (loanSlideDone(s)) break;
     }
-    expect(ys).toEqual([640, 600, 560, 520, 480, 440]);
-    expect(s).toEqual({ y: LOAN_SLIDE.shown, dy: 0 });
+    expect(xs).toEqual([640, 600, 560, 520, 480, 440]);
+    expect(s).toEqual({ x: LOAN_SLIDE.shown, dx: 0 });
     // 停住之后不再动
     expect(loanSlideStep(s)).toEqual(s);
   });
 
-  it('★ 收尾：y 440 → 640，每拍 +40', () => {
+  it('★ 收尾：x 440 → 640（往右退），每拍 +40', () => {
     let s = loanSlideOut();
-    const ys: number[] = [s.y];
+    const xs: number[] = [s.x];
     for (let i = 0; i < 10; i++) {
       s = loanSlideStep(s);
-      ys.push(s.y);
+      xs.push(s.x);
       if (loanSlideDone(s)) break;
     }
-    expect(ys).toEqual([440, 480, 520, 560, 600, 640]);
-    expect(s).toEqual({ y: LOAN_SLIDE.hidden, dy: 0 });
+    expect(xs).toEqual([440, 480, 520, 560, 600, 640]);
+    expect(s).toEqual({ x: LOAN_SLIDE.hidden, dx: 0 });
   });
 
-  it('★ 有没有露出来看 y（贴屏的裁切口径）', () => {
-    expect(loanPanelsVisible({ y: LOAN_SLIDE.hidden, dy: 0 })).toBe(false);
-    expect(loanPanelsVisible({ y: LOAN_SLIDE.hidden - 1, dy: -LOAN_SLIDE.step })).toBe(true);
-    expect(loanSlideDone({ y: 500, dy: -40 })).toBe(false);
+  it('★ 有没有露出来看 x（贴屏的裁切口径）', () => {
+    expect(loanPanelsVisible({ x: LOAN_SLIDE.hidden, dx: 0 })).toBe(false);
+    expect(loanPanelsVisible({ x: LOAN_SLIDE.hidden - 1, dx: -LOAN_SLIDE.step })).toBe(true);
+    expect(loanSlideDone({ x: 500, dx: -40 })).toBe(false);
   });
 
   it('★ 定时器 50ms 一拍（SetTimer 的 uElapse = 0x32）', () => {
@@ -148,7 +157,7 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     const withGreet = loanStart(true);
     expect(withGreet.st).toBe(LOAN_ST.greet);
     expect(withGreet.bubble).toBe(LOAN_MSG.greet);
-    expect(withGreet.slide).toEqual({ y: LOAN_SLIDE.hidden, dy: 0 });
+    expect(withGreet.slide).toEqual({ x: LOAN_SLIDE.hidden, dx: 0 });
     const quiet = loanStart(false);
     expect(quiet.st).toBe(LOAN_ST.menu);
     expect(quiet.bubble).toBeNull();
@@ -173,7 +182,7 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     const ok = press(base, 1);
     expect(ok.st).toBe(LOAN_ST.borrowIn);
     expect(ok.bubble).toBe(LOAN_MSG.askBorrow);
-    expect(ok.slide.dy).toBe(-LOAN_SLIDE.step);
+    expect(ok.slide.dx).toBe(-LOAN_SLIDE.step);
     const over = press(base, 1, { overLimit: true });
     expect(over.st).toBe(LOAN_ST.borrowIn);
     expect(over.bubble).toBe(LOAN_MSG.overLimit);
@@ -228,7 +237,74 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     expect(ui.bubble).toBe(LOAN_MSG.borrowSettle);
     ui = step(ui, { kind: 'bubbleEnd' }).ui;
     expect(ui.st).toBe(LOAN_ST.ready);
-    expect(ui.slide.dy).toBe(LOAN_SLIDE.step);
+    expect(ui.slide.dx).toBe(LOAN_SLIDE.step);
+  });
+
+  /** 按原版一拍的次序：先滑入段、再气泡到点（这里气泡都算已到点）*/
+  const tickUntilStill = (ui: LoanUi): LoanUi[] => {
+    const seen: LoanUi[] = [];
+    for (let i = 0; i < 10 && !loanSlideDone(ui.slide); i++) {
+      ui = loanTickSlide(ui);
+      seen.push(ui);
+    }
+    return seen;
+  };
+
+  it('★ 借到手 → #0079 → #0080 → 面板往右退净那一拍 st = 0xb、同拍关屏 @source 0x435348 / 0x43560b', () => {
+    let ui = press({ ...loanStart(false), st: LOAN_ST.ready }, 1);
+    // 滑入 5 拍到位；到位不关
+    const inTicks = tickUntilStill(ui);
+    expect(inTicks.map((u) => u.slide.x)).toEqual([600, 560, 520, 480, 440]);
+    ui = inTicks.at(-1)!;
+    expect(ui.st).toBe(LOAN_ST.borrowIn);
+    ui = step(ui, { kind: 'bubbleEnd' }).ui;
+    ui = step(ui, { kind: 'formClosed', amount: 5000, cash: 0, deposit: 0 }).ui;
+    expect(ui.dealDone).toBe(true);
+    ui = step(ui, { kind: 'bubbleEnd' }).ui; // 7 → 8 + #0080
+    ui = step(ui, { kind: 'bubbleEnd' }).ui; // 8 → 滑回去，st = 4
+    expect(ui.st).toBe(LOAN_ST.ready);
+    const outTicks = tickUntilStill(ui);
+    expect(outTicks.map((u) => u.slide.x)).toEqual([480, 520, 560, 600, 640]);
+    // 前 4 拍还在 st = 4（可点钮），退净那一拍才转 0xb 且**不挂气泡**
+    expect(outTicks.slice(0, -1).every((u) => u.st === LOAN_ST.ready)).toBe(true);
+    ui = outTicks.at(-1)!;
+    expect(ui.st).toBe(LOAN_ST.bye);
+    expect(ui.bubble).toBeNull();
+    // 同一拍 `0x44ee18` 没有气泡返回 1 → case 0xb → 关屏
+    expect(step(ui, { kind: 'bubbleEnd' }).effect).toEqual({ kind: 'close' });
+  });
+
+  it('★ 气泡与面板谁在上 = 原版谁后画：换句 → 气泡在上；滑动那几拍 → 面板在上', () => {
+    let ui: LoanUi = { ...loanStart(false), st: LOAN_ST.ready };
+    // 点「申請貸款」：00435d8c 先画 #0078 → 气泡在上
+    ui = press(ui, 1);
+    expect(ui.bubble).toBe(LOAN_MSG.askBorrow);
+    expect(ui.bubbleOnTop).toBe(true);
+    // 下一拍面板贴了一次（00435552 / 0043557c）→ 面板盖在 #0078 上，到位后也还是
+    ui = loanTickSlide(ui);
+    expect(ui.bubbleOnTop).toBe(false);
+    ui = tickUntilStill(ui).at(-1)!;
+    expect(ui.bubbleOnTop).toBe(false);
+    // 借到手：00435340 画 #0079 → 气泡在上；#0080 同理
+    ui = step(ui, { kind: 'bubbleEnd' }).ui;
+    ui = step(ui, { kind: 'formClosed', amount: 5000, cash: 0, deposit: 0 }).ui;
+    expect(ui.bubble).toBe(LOAN_MSG.borrowDone);
+    expect(ui.bubbleOnTop).toBe(true);
+    // 静止时走一拍不改次序
+    expect(loanTickSlide(ui).bubbleOnTop).toBe(true);
+  });
+
+  it('★ 还款办完、借款填 0：面板退净后**不**关屏（[0x48c3e2] 只在借到手时置 1）', () => {
+    const base = press({ ...loanStart(false), st: LOAN_ST.ready }, 2, { hasLoan: true });
+    let ui = step(base, { kind: 'bubbleEnd' }).ui;
+    ui = step(ui, { kind: 'formClosed', amount: 100, cash: 1000, deposit: 0 }).ui;
+    ui = step(ui, { kind: 'bubbleEnd' }).ui;
+    expect(ui.dealDone).toBe(false);
+    ui = tickUntilStill(ui).at(-1)!;
+    expect(ui.slide).toEqual({ x: LOAN_SLIDE.hidden, dx: 0 });
+    expect(ui.st).toBe(LOAN_ST.ready);
+    // 静止时再走一拍什么都不变
+    expect(loanTickSlide(ui)).toBe(ui);
   });
 
   it('★ 借款填 0（没填）：st=8 且**不挂气泡** —— 下一拍照样滑回去', () => {
@@ -294,7 +370,7 @@ describe('貸款屏状态机 @source fcn_00435062', () => {
     const asking = { ...loanStart(false), st: LOAN_ST.repayAsk, pressed: 0 };
     const ok = step(asking, { kind: 'financeClosed', ok: true }).ui;
     expect(ok.st).toBe(LOAN_ST.bye);
-    expect(ok.financeOk).toBe(true);
+    expect(ok.dealDone).toBe(true);
     const no = step(asking, { kind: 'financeClosed', ok: false }).ui;
     expect(no.st).toBe(LOAN_ST.ready);
   });
@@ -414,8 +490,8 @@ describe('ATM 悬停 / 拖动 / 按下态', () => {
   });
 
   it('★ 按下图画哪张：图号 = 码（金额栏除外）@source loc_004371f9', () => {
-    expect(atmPressedImage(1)).toBe(1); // 存款
-    expect(atmPressedImage(2)).toBe(2); // 提款
+    expect(atmPressedImage(1)).toBe(1); // 提款（钮 0，左上）
+    expect(atmPressedImage(2)).toBe(2); // 存款（钮 1，中间）
     expect(atmPressedImage(3)).toBe(3); // EXIT
     expect(atmPressedImage(4)).toBeNull(); // 金额栏：原版贴满格图后立刻重画进度条
     expect(atmPressedImage(5)).toBe(5); // '7'
@@ -510,6 +586,13 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
       clip: () => undefined,
       beginPath: () => undefined,
       rect: () => undefined,
+      // 假墨迹：每个字 16 宽、顶下 1 px 起墨、墨到 15（textBaseline = 'top' 口径）
+      measureText: () => ({
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: 16,
+        actualBoundingBoxAscent: -1,
+        actualBoundingBoxDescent: 15,
+      }),
       drawImage: (
         _b: unknown,
         dx: number,
@@ -541,7 +624,7 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
     }) as Sprite;
 
   const view = (over: Partial<LoanPanelsView> = {}): LoanPanelsView => ({
-    slide: { y: LOAN_SLIDE.shown, dy: 0 },
+    slide: { x: LOAN_SLIDE.shown, dx: 0 },
     character: 3,
     name: '阿土伯',
     money: [12_345, 67_890, 1000],
@@ -553,48 +636,92 @@ describe('两块滑入面板的绘制（假 ctx，只查落点）', () => {
     ...over,
   });
 
-  it('★ 面板没露出来（y = 640）就整块不画', () => {
+  it('★ 面板没露出来（x = 640）就整块不画', () => {
     const f = fakeCtx();
-    drawLoanPanels(f.ctx, spriteFn, view({ slide: { y: LOAN_SLIDE.hidden, dy: 0 } }));
+    drawLoanPanels(f.ctx, spriteFn, view({ slide: { x: LOAN_SLIDE.hidden, dx: 0 } }));
     expect(f.images).toHaveLength(0);
     expect(f.texts).toHaveLength(0);
   });
 
-  it('★ 玩家面板贴 (0,y)、日期面板贴 (280,y)；文字都在面板局部坐标 + y 上', () => {
+  it('★ 玩家面板贴 (x,0)、日期面板贴 (x,280)；文字都在面板局部坐标 + (x, 面板顶) 上', () => {
     const f = fakeCtx();
     drawLoanPanels(f.ctx, spriteFn, view());
-    // 玩家面板底图（图 15）带锚点 (0,0) → 落点就是 (0,440)
-    expect(f.images[0]).toEqual({ dx: 0, dy: 440, w: undefined, h: undefined });
-    // 头像要减锚点：落 (0x2a − 10, 440 + 0x28 − 20) = (32, 460)
-    expect(f.images[1]).toEqual({ dx: 32, dy: 460, w: undefined, h: undefined });
-    // 日期面板的季节底图贴 (280,440)
-    expect(f.images[2]).toEqual({ dx: 280, dy: 440, w: undefined, h: undefined });
+    // 玩家面板底图（图 15）带锚点 (0,0) → 落点就是 (440,0) @source 0x435552 fcn_004563f5(屏, [0x48c3b8], x, 0)
+    expect(f.images[0]).toEqual({ dx: 440, dy: 0, w: undefined, h: undefined });
+    // 头像要减锚点：落 (440 + 0x2a − 10, 0x28 − 20) = (472, 20)
+    expect(f.images[1]).toEqual({ dx: 472, dy: 20, w: undefined, h: undefined });
+    // 日期面板的季节底图贴 (440,280) @source 0x43557c fcn_004563f5(屏, [0x48c3b4], x, 0x118)
+    expect(f.images[2]).toEqual({ dx: 440, dy: 280, w: undefined, h: undefined });
+    // 正文那一遍是**最后**画的；字效 bit2（描边）时正文落在 (+1,+1) @source 0x44fe1e —— 两块面板的字全带 bit2
+    const O = 1;
     const at = (t: string): { x: number; y: number } => {
-      const hit = f.texts.find((e) => e.t === t);
+      const hit = [...f.texts].reverse().find((e) => e.t === t);
       if (hit === undefined) throw new Error(`没画「${t}」`);
       return { x: hit.x, y: hit.y };
     };
-    expect(at('阿土伯')).toEqual({ x: 0x52, y: 440 + 0x1c });
-    expect(at('現  金')).toEqual({ x: 0x0a, y: 440 + 0x50 });
-    expect(at('存  款')).toEqual({ x: 0x0a, y: 440 + 0x91 });
-    expect(at('貸  款')).toEqual({ x: 0x0a, y: 440 + 0xd0 });
-    expect(at('$12,345')).toEqual({ x: 0xb4, y: 440 + 0x64 });
-    expect(at('$67,890')).toEqual({ x: 0xb4, y: 440 + 0xa4 });
-    expect(at('$1,000')).toEqual({ x: 0xb4, y: 440 + 0xe4 });
-    // 日期面板（x 都要 + 280）
-    expect(at('5')).toEqual({ x: 280 + 0x3c, y: 440 + 0x60 });
-    expect(at('星期四')).toEqual({ x: 280 + 0x0e, y: 440 + 0x48 });
-    expect(at('1998')).toEqual({ x: 280 + 0x8c, y: 440 + 0x08 });
-    expect(at('3月')).toEqual({ x: 280 + 0x3c, y: 440 + 0x30 });
-    expect(at(LOAN_DUE_TEXT.replace('%d', '88'))).toEqual({ x: 280 + 0x14, y: 440 + 0xb0 });
+    expect(at('阿土伯')).toEqual({ x: 440 + 0x52 + O, y: 0x1c + O });
+    expect(at('現  金')).toEqual({ x: 440 + 0x0a + O, y: 0x50 + O });
+    expect(at('存  款')).toEqual({ x: 440 + 0x0a + O, y: 0x91 + O });
+    expect(at('貸  款')).toEqual({ x: 440 + 0x0a + O, y: 0xd0 + O });
+    expect(at('$12,345')).toEqual({ x: 440 + 0xb4 + O, y: 0x64 + O });
+    expect(at('$67,890')).toEqual({ x: 440 + 0xb4 + O, y: 0xa4 + O });
+    expect(at('$1,000')).toEqual({ x: 440 + 0xb4 + O, y: 0xe4 + O });
+    // 日期面板（y 都要 + 280）
+    expect(at('5')).toEqual({ x: 440 + 0x3c + O, y: 280 + 0x60 + O });
+    expect(at('1998')).toEqual({ x: 440 + 0x8c + O, y: 280 + 0x08 + O });
+    expect(at('3月')).toEqual({ x: 440 + 0x3c + O, y: 280 + 0x30 + O });
+    expect(at(LOAN_DUE_TEXT.replace('%d', '88'))).toEqual({ x: 440 + 0x14 + O, y: 280 + 0xb0 + O });
+    // ★ 星期是 flag 3 = **竖排**：一字一行（字距 = 字号 16 + 字距 1 + 粗/描边 1 = 18
+    //   @source fcn_0044f7c7 0x44f7de..0x44f7f2），**墨迹框**以 (0x0e, 0x48) 为中心（0x44ff2a）。
+    //   假墨迹下：框 x ∈ [0, 16+2) → 宽 18；y ∈ [1, 2×18+15+2) → 高 52
+    //   ⇒ 框左上 = (X − 9, Y − 26)，字格原点 = (X − 9, Y − 27)，正文再 (+1,+1)。
+    expect(f.texts.some((e) => e.t === '星期四')).toBe(false);
+    const X = 440 + 0x0e;
+    const Y = 280 + 0x48;
+    expect(at('星')).toEqual({ x: X - 9 + O, y: Y - 27 + O });
+    expect(at('期')).toEqual({ x: X - 9 + O, y: Y - 27 + 18 + O });
+    expect(at('四')).toEqual({ x: X - 9 + O, y: Y - 27 + 36 + O });
+    // ★ 到位时所有字都落在屏内（先前读成顶边 y 时，440 + 0xe4 早就出了 480）
+    for (const e of f.texts) {
+      expect(e.x).toBeGreaterThanOrEqual(440);
+      expect(e.x).toBeLessThan(640);
+      expect(e.y).toBeGreaterThanOrEqual(0);
+      expect(e.y).toBeLessThan(480);
+    }
+  });
+
+  it('★ 字效照 create_font：玩家面板白字深描边、日期面板深字白描边（与棋盘右栏日曆同参）', () => {
+    // @source 00433dba / 00433e26 / 00433fc0..00434116
+    expect(LOAN_TEXT_STYLE.label).toEqual({ size: 12, color: '#ffffff', color2: '#101010', flags: 4, spacing: 0 });
+    expect(LOAN_TEXT_STYLE.info).toEqual({ size: 22, color: '#ffffff', color2: '#101010', flags: 6, spacing: 0 });
+    expect(LOAN_TEXT_STYLE.date(0x10)).toEqual({ size: 16, color: '#101010', color2: '#ffffff', flags: 6, spacing: 1 });
+    expect(verticalAdvance(LOAN_TEXT_STYLE.date(0x10))).toBe(18);
+  });
+
+  it('★ 竖排落点 = 墨迹框（含阴影/描边那几遍）正中 @source 0x44f70c / 0x44ff2a', () => {
+    const g = { left: 0, right: 16, ascent: -1, descent: 15 };
+    // 字效 6（粗+描边）：各遍偏移 0..2 → 框 18×52，框左上 (100−9, 200−26)，原点再减框的 y0 = 1
+    expect(verticalInkOrigin([g, g, g], 18, 6, 100, 200)).toEqual({ ox: 91, oy: 173 });
+    // 字效 0（无阴影无描边）：框 16×50 → (100−8, 200−25−1)
+    expect(verticalInkOrigin([g, g, g], 18, 0, 100, 200)).toEqual({ ox: 92, oy: 174 });
+    // 奇数宽高按 `sar 1` 向下取：框 17×51 → x − 8、y − 25
+    const odd = { left: 0, right: 17, ascent: 0, descent: 15 };
+    expect(verticalInkOrigin([odd, odd, odd], 18, 0, 100, 200)).toEqual({ ox: 92, oy: 175 });
+  });
+
+  it('★ 滑到一半（x = 520）：两块面板一起横移，y 不动', () => {
+    const f = fakeCtx();
+    drawLoanPanels(f.ctx, spriteFn, view({ slide: { x: 520, dx: -40 } }));
+    expect(f.images[0]).toEqual({ dx: 520, dy: 0, w: undefined, h: undefined });
+    expect(f.images[2]).toEqual({ dx: 520, dy: 280, w: undefined, h: undefined });
   });
 
   it('★ 有節日插画时整张盖掉季节底图（200×200 拉到面板上）', () => {
     const f = fakeCtx();
     const art = {} as ImageBitmap;
     drawLoanPanels(f.ctx, spriteFn, view({ holidayArt: art }));
-    // 第 3 张图就是插画（0 = 玩家面板底、1 = 头像），按 200×200 画在 (280,440)
-    expect(f.images[2]).toEqual({ dx: 280, dy: 440, w: 200, h: 200 });
+    // 第 3 张图就是插画（0 = 玩家面板底、1 = 头像），按 200×200 画在 (440,280)
+    expect(f.images[2]).toEqual({ dx: 440, dy: 280, w: 200, h: 200 });
   });
 
   it('★ 距還款日那条不画（dueDays = null）', () => {
@@ -684,7 +811,7 @@ describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', (
       { ...ask, st: LOAN_ST.borrowAsk },
       { kind: 'formClosed', amount: 5000, cash: 0, deposit: 0 },
     ).ui;
-    expect(r.financeOk).toBe(true);
+    expect(r.dealDone).toBe(true);
     expect(r.financeOpen).toBe(false);
     expect(r.st).toBe(LOAN_ST.bye); // 主屏状态 0xb = 收场
   });
@@ -697,7 +824,7 @@ describe('★ 特別融資子对话框的三颗小钮 @source `loc_00434da1`', (
     ).ui;
     expect(r.st).toBe(LOAN_ST.ready);
     expect(r.financeOpen).toBe(true);
-    expect(r.financeOk).toBe(false);
+    expect(r.dealDone).toBe(false);
     expect(r.bubble).toBeNull();
   });
 

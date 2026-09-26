@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
-import { newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
+import { drawStartPlacement, newGame, UNVERIFIED_CARDS_PER_KIND } from './new-game.ts';
+import { landAll } from '../testing/factories.ts';
+import { objectNodeCandidates, runtimeOccupiedNodes } from './object-landing.ts';
+import { WatcomRng } from '../rng/watcom.ts';
+import { directionOf, nextCandidates, pickNextNode } from '../state/reduce.ts';
 import { CARDS } from '@rich4/data';
 import { DEFAULT_INITIAL_FUND, GAME_INITIAL_FUNDS, startingMoney } from './setup.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
@@ -66,10 +70,25 @@ describe('初始状态', () => {
     expect(s.landLevel.every((v) => v === 0)).toBe(true);
   });
 
-  run('人机身份按配置设置', () => {
-    const s = newGame({ map: loadMap(), players: setup(4) });
-    expect(s.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
-    expect(s.players[1]!.whoPlays).toBe(WHO_PLAYS_COMPUTER);
+  run('人机身份按配置设置（`+0x64`；落地时抄进 `who_plays`）', () => {
+    const map = loadMap();
+    const s = newGame({ map, players: setup(4) });
+    // @source 0x004072f9：开局只写 +0x64 = 1 / 2
+    expect(s.players.map((p) => p.landingWhoPlays)).toEqual([
+      WHO_PLAYS_HUMAN,
+      WHO_PLAYS_COMPUTER,
+      WHO_PLAYS_COMPUTER,
+      WHO_PLAYS_COMPUTER,
+    ]);
+    // 第 1 位开局就落地（`0x00418d07 who_plays ← +0x64`），其余还是角色表里的 0
+    expect(s.players.map((p) => p.whoPlays)).toEqual([WHO_PLAYS_HUMAN, 0, 0, 0]);
+    // 各自落地之后就是配置的身份
+    expect(landAll(s, map.nodes).players.map((p) => p.whoPlays)).toEqual([
+      WHO_PLAYS_HUMAN,
+      WHO_PLAYS_COMPUTER,
+      WHO_PLAYS_COMPUTER,
+      WHO_PLAYS_COMPUTER,
+    ]);
   });
 
   run('牌堆按占位值填满', () => {
@@ -174,5 +193,111 @@ describe('開局自帶載具', () => {
     }
     // 汽車是道具 6，四个人各领一件
     expect(s.toolStock[6]).toBe((base.toolStock[6] ?? 0) - 4);
+  });
+});
+
+// ============================================================
+//  ★ 开局摆人：来路 + 朝向（第十四份试玩回报 #2「开局时人物的站立方向
+//    应该和他接下来要行动的方向一致」）
+// ============================================================
+
+describe('★ 开局摆人 —— `last_node_id` = 随机邻格、`direction` = 来路 → 起始格', () => {
+  run('每人**两次** `rand()`：先抽起始格（`0x40aa0f`），再抽来路（`0x00408328`）', () => {
+    const map = loadMap();
+    for (const seed of [1, 7, 1326428325, 0xdeadbeef]) {
+      for (const occupiedList of [[], [objectNodeCandidates(map.nodes)[0]!, objectNodeCandidates(map.nodes)[5]!]]) {
+        const occupied = new Set(occupiedList);
+        const rng = new WatcomRng(seed >>> 0);
+        const got = drawStartPlacement(map.nodes, occupied, rng);
+        // 独立复算：同一个种子手工抽 2 次
+        const ref = new WatcomRng(seed >>> 0);
+        // @source 0x0040aa37 `test [node + 0x24], 0x80ffff00`：占着的格（有人 / 有物件）不收
+        const free = objectNodeCandidates(map.nodes).filter((n) => !occupied.has(n));
+        const nodeId = free[ref.next() % free.length]!;
+        expect(occupied.has(nodeId)).toBe(false);
+        // @source 0x00408302..0x00408326：四个邻接槽里**非 0** 的按槽序排（不看封路位）
+        const adj = map.nodes[nodeId - 1]!.adjacentSlots.filter((n) => n !== 0);
+        const lastNodeId = adj[ref.next() % adj.length]!;
+        const a = map.nodes[lastNodeId - 1]!;
+        const b = map.nodes[nodeId - 1]!;
+        expect(got, `种子 ${seed}`).toEqual({
+          nodeId,
+          lastNodeId,
+          // @source 0x0040835e `call 0x407a8c(last, node)` = 0x454fb4(node − last)
+          direction: directionOf(b.x - a.x, b.y - a.y),
+        });
+        // ★ 可证偽：两边消耗的随机数一样多（少抽一次后面全部错位）
+        expect(rng.getState()).toBe(ref.getState());
+      }
+    }
+  });
+
+  run('★ newGame 只摆第 1 位，抽签紧跟在开局摆物件之后；起始格避开开局摆下的神明/禮物', () => {
+    const map = loadMap();
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = newGame({ map, players: setup(4), seed });
+      // `startNodeId` 这个测试钩子不抽签 ⇒ 它的 rngState 正是「洗牌 + 摆物件」之后、摆人之前
+      const pre = newGame({ map, players: setup(4), seed, startNodeId: 1 });
+      const rng = new WatcomRng();
+      rng.setState(pre.rngState);
+      const occupied = runtimeOccupiedNodes([], s.objects, s.specialActors);
+      const want = drawStartPlacement(map.nodes, occupied, rng)!;
+      const p0 = s.players[0]!;
+      expect({ nodeId: p0.nodeId, lastNodeId: p0.lastNodeId, direction: p0.direction }, `种子 ${seed}`).toEqual(want);
+      expect(s.rngState, `种子 ${seed}：第 1 位恰好两次 rand()`).toBe(rng.getState());
+      expect(s.objects.some((o) => o.nodeId === p0.nodeId && o.attached === 0)).toBe(false);
+      // 其余三位：原封不动的角色表记录（坐标 / 节点 / 来路 / 朝向 / who_plays 全 0）
+      for (const p of s.players.slice(1)) {
+        expect([p.xpos, p.ypos, p.nodeId, p.lastNodeId, p.direction, p.whoPlays], `种子 ${seed} P${p.index}`).toEqual([
+          0, 0, 0, 0, 0, 0,
+        ]);
+      }
+    }
+  });
+
+  run('落地写进玩家：来路是起始格的邻格，朝向背对来路', () => {
+    const map = loadMap();
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = landAll(newGame({ map, players: setup(4), seed }), map.nodes);
+      for (const p of s.players) {
+        const node = map.nodes[p.nodeId - 1]!;
+        expect(node.adjacentSlots, `种子 ${seed} P${p.index}`).toContain(p.lastNodeId);
+        expect(p.lastNodeId).not.toBe(p.nodeId);
+        const last = map.nodes[p.lastNodeId - 1]!;
+        expect(p.direction).toBe(directionOf(node.x - last.x, node.y - last.y));
+      }
+    }
+  });
+
+  run('★ 第一步不会走回来路 —— 站姿朝向就是接下来要走的方向（两邻格的直路上逐格相等）', () => {
+    const map = loadMap();
+    const topo = {
+      nodes: map.nodes,
+      lands: map.lands,
+      facilities: map.facilities,
+      commercials: map.commercials,
+      landscapes: map.landscapes,
+    };
+    let straight = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = landAll(newGame({ map, players: setup(4), seed }), map.nodes);
+      for (const p of s.players) {
+        const next = pickNextNode(topo, p.nodeId, p.lastNodeId, new WatcomRng(seed));
+        const cands = nextCandidates(topo, p.nodeId, p.lastNodeId);
+        if (cands.length > 0) expect(next, `种子 ${seed} P${p.index}`).not.toBe(p.lastNodeId);
+        // 直路（恰两个邻格、且三点共线）上：朝向 = 第一步的位移方向
+        const node = map.nodes[p.nodeId - 1]!;
+        const last = map.nodes[p.lastNodeId - 1]!;
+        const to = map.nodes[next! - 1]!;
+        const adj = node.adjacentSlots.filter((n) => n !== 0);
+        const colinear = (node.x - last.x) * (to.y - node.y) === (node.y - last.y) * (to.x - node.x);
+        if (adj.length === 2 && colinear) {
+          straight++;
+          expect(p.direction).toBe(directionOf(to.x - node.x, to.y - node.y));
+        }
+      }
+    }
+    // 有鉴别力：这 160 次开局里确有直路上的起点
+    expect(straight).toBeGreaterThan(0);
   });
 });

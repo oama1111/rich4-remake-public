@@ -18,7 +18,7 @@ import {
   releaseObject,
 } from '../rules/object-landing.ts';
 import type { ObjectWorld, ReleaseOutcome } from '../rules/object-landing.ts';
-import { MUTATE_DEMOLISH_ONE, MUTATE_FLATTEN, mutateFacility } from './monster.ts';
+import { MUTATE_DEMOLISH_ONE, mutateFacility } from './monster.ts';
 import { MONSTER_HOSTILITY_PER_LEVEL } from './monster.ts';
 import { FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 
@@ -320,12 +320,15 @@ export function applyDevilFacilityCard(
             delta: facility.level * MONSTER_HOSTILITY_PER_LEVEL * priceIndex,
           },
         ];
-  const out = mutateFacility(facility, MUTATE_FLATTEN);
+  // ★★ 2026-09-24 审计订正：惡魔卡的設施支**不走** `mutate_land`，而是无条件直写 ——
+  //   @source `0x004438c4 mov byte [fac+0x1a], 0` / `0x004438c8 mov byte [fac+0x18], 0` /
+  //   `0x004438cc call 0x40dffa`（放住店的人）。先前借 `MUTATE_FLATTEN`，0 级設施被当成「没变」，
+  //   住店的人就不放。
   return {
-    ok: out.changed,
-    facility: out.facility,
+    ok: true,
+    facility: { ...facility, level: 0, type: 0 },
     hostilityDeltas,
-    releasesConfined: out.releasesConfined,
+    releasesConfined: true,
   };
 }
 

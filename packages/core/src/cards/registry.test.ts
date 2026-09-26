@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { ACTOR_PLACE } from '../rules/special-actors.ts';
 import { makeFacility, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { useCard, type UseCardContext } from './registry.ts';
 import { HOUSING_TYPE_MIN, FACILITY_TYPE_MIN } from '../rules/land.ts';
@@ -204,6 +205,45 @@ describe('地块类卡片', () => {
     expect(r.players[1]!.moneyInBank).toBe(1000); // 进存款，不是现金
     expect(r.players[1]!.cash).toBe(500);
     expect(r.lands[0]!.owner).toBe(1); // owner = currentPlayer + 1
+  });
+
+  it('★★ 购地卡站在**設施**上：同一套规矩强买那座設施（@source 0x004424be..0x004425ec）', () => {
+    const fac = makeFacility({ id: 1, owner: 2, level: 2, landPrice: 1001, housePrice: 300 });
+    const ctx = makeCtx({
+      lands: [],
+      facilities: [fac],
+      nodes: [makeNode({ id: 1, type: FACILITY_TYPE_MIN + 1 })],
+      players: [
+        makePlayer({ index: 0, cash: 10000, cards: [3], nodeId: 1 }),
+        makePlayer({ index: 1, cash: 500, moneyInBank: 0 }),
+      ],
+    });
+    const r = useCard(ctx, 3);
+    expect(r.ok).toBe(true);
+    // (地价 +0x22 + 房价 +0x24 × 等级) × 物价 = (1001 + 600) × 1
+    expect(r.players[0]!.cash).toBe(10000 - 1601);
+    expect(r.players[1]!.moneyInBank).toBe(1601);
+    expect(r.facilities[0]!.owner).toBe(1);
+    // 敌意 = double 低 32 位（地价 1001 不是 5 的倍数 ⇒ 非 0）
+    expect(r.hostilityDeltas).toHaveLength(1);
+    expect(r.hostilityDeltas[0]!.from).toBe(1);
+    // 现金不够 → notEnoughCash（弹「您的現金不足！」、卡不扣）
+    const poor = makeCtx({ ...ctx, players: [makePlayer({ index: 0, cash: 100, cards: [3], nodeId: 1 }), makePlayer({ index: 1 })] });
+    expect(useCard(poor, 3).error).toBe('notEnoughCash');
+    // 自己的 / 无主的 → noEffect
+    const own = makeCtx({ ...ctx, facilities: [{ ...fac, owner: 1 }] });
+    expect(useCard(own, 3).error).toBe('noEffect');
+    const none = makeCtx({ ...ctx, facilities: [{ ...fac, owner: 0 }] });
+    expect(useCard(none, 3).error).toBe('noEffect');
+  });
+
+  it('★ 目标玩家已出局（who_plays 0）→ 选择器不收（0x004462d9），卡不扣', () => {
+    const ctx = makeCtx({
+      players: [makePlayer({ index: 0, cards: [2] }), makePlayer({ index: 1, whoPlays: 0 })],
+    });
+    const r = useCard(ctx, 2, { kind: 'player', index: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('targetNotAlive');
   });
 
   it('购地卡买自己的地 → 不生效、不扣卡', () => {
@@ -695,8 +735,10 @@ describe('★ 請神符经统一入口（T-004）', () => {
     // −100 +100（退小財神）−200（大財神）= −200；100 −100（退）+150（新）= 150
     expect(r.players[0]!.misfortune).toBe(-200);
     expect(r.players[0]!.fortune).toBe(150);
-    // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场，nearNode = 旧神记录的节点
-    expect(r.respawns).toEqual([{ partner: 0, nearNode: 10 }]);
+    // 旧神下标 1 < 12 → 搭档（下标 0）要重新登场。
+    // ★★ 2026-09-24（provenance 审计）订正：nearNode = **附身者此刻所在格**（7），不是旧神记录的节点（10）——
+    //   `0x40eb3f call 0x40e32c` → 没被关着 ⇒ `0x0040e3cd mov ax,[host+0x0c] / 0x0040e3d4 mov [obj+0x496d0a],ax` 再放。
+    expect(r.respawns).toEqual([{ partner: 0, nearNode: 7 }]);
   });
 });
 
@@ -714,6 +756,15 @@ describe('★ 紅卡/黑卡经统一入口（T-005）', () => {
     expect(r.players[0]!.cards).toEqual([]);
     // 其余股票不动
     expect(r.market.stocks.filter((s) => s.newsFlag !== 0).length).toBe(1);
+  });
+
+  it('★ 停牌股（f6 ≠ 0）照写 newsFlag、照算当日价（0x00444f88 → 0x429040 都不看 f6）', () => {
+    const base = makeCtx({});
+    const market = { ...base.market, stocks: base.market.stocks.map((st, i) => (i === 3 ? { ...st, f6: 2 } : st)) };
+    const r = useCard(ctxWithCard(24, { market }), 24, { kind: 'stock', index: 3 });
+    expect(r.ok).toBe(true);
+    expect(r.market.stocks[3]!.newsFlag).toBe(0x20);
+    expect(r.players[0]!.cards).toEqual([]);
   });
 
   it('黑卡(25)把目标股 newsFlag 置为 0x02（利空 2 天）并扣卡', () => {
@@ -864,6 +915,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       //   地主反而可以举牌把自己的地买回来。
       bidders: [1, 2],
       seller: 0,
+      fromCard: true,
     });
     // 敌意是 double 压栈的原版 bug：常规地价恒为 0
     expect(r.hostilityDeltas).toEqual([{ from: 2, to: 0, delta: 0 }]);
@@ -898,6 +950,7 @@ describe('★ 拍賣卡经统一入口（T-007，VA 0x00443225）', () => {
       // ★★ 同上：排除用卡者（0 号），只剩 1 号 → 其实没人能出价（原版也会这么建表）
       bidders: [1],
       seller: 0,
+      fromCard: true,
       facility: true,
     });
   });
@@ -1036,7 +1089,7 @@ describe('★ T-008：五张地块卡对設施目标', () => {
   });
 });
 
-describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', () => {
+describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..7；機器娃娃点不中）', () => {
   // 一个已出场在棋盘上的替身 + 牌在手的玩家
   const actorCtx = (cardId: number, slot: number, over: Partial<UseCardContext> = {}) => {
     const actors = initialSpecialActors().map((a, i) =>
@@ -1049,7 +1102,19 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     });
   };
 
-  for (const actor of [4, 5, 6, 7, 8]) {
+  it('★★ 陷害卡(17) 打在场的惡人 → 关進監獄、占床位（0x00444599 → 0x0043d760），无敌意、卡扣', () => {
+    const ctx = actorCtx(17, 1);
+    const r = useCard(ctx, 17, { kind: 'actor', actor: 5 });
+    expect(r.ok).toBe(true);
+    expect(r.actors[1]!.place).toBe(ACTOR_PLACE.prison);
+    expect(r.prisonOccupancy[5]).toBe(1);
+    expect(r.hostilityDeltas).toEqual([]);
+    expect(r.players[0]!.cards).toEqual([]);
+    // 機器娃娃点不中
+    expect(useCard(actorCtx(17, 4), 17, { kind: 'actor', actor: 8 }).error).toBe('actorOutOfRange');
+  });
+
+  for (const actor of [4, 5, 6, 7]) {
     it(`停留卡(14)：actor ${actor} 的 halted 写成 1（= 停 2 天，与别人同款）`, () => {
       const ctx = actorCtx(14, actor - 4);
       const r = useCard(ctx, 14, { kind: 'actor', actor });
@@ -1076,27 +1141,25 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     });
   }
 
-  it('不在棋盘上的 NPC（place ≠ board）→ 状态不动，但**卡照扣**、判成功', () => {
-    // ★ 订正（2026-09-17）：`remove_card`（`0x00443fca`）在掩码取位号之后、
-    //   真正写 halted 之前，收尾返回非 0 ⇒ 原版算成功。
-    // 初始状态：小偷(actor 4)在監獄
+  // ★★ 2026-09-25 审计订正：不在棋盘上的惡人**根本点不中** —— 拾取的精灵表只收 `+0x0a == 0` 的惡人
+  //   （`0x00408b87 cmp byte [惡人+0x0a], 0 / jne 跳过`），卡片函数走不到「扣卡后不写」那一步。
+  it('不在棋盘上的 NPC（place ≠ board）→ 点不中（actorOffBoard），卡不扣', () => {
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [14] }), makePlayer({ index: 1 })],
     });
     const r = useCard(ctx, 14, { kind: 'actor', actor: 4 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[0]!.halted).toBe(0);
-    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('actorOffBoard');
   });
 
-  it('未出场的機器娃娃（actor 8 offBoard）→ 同样 ok + 已扣卡', () => {
+  // ★ 2026-09-24 审计订正：機器娃娃的拾取码是 0（`0x00408a4a`），`0x40d293` 只认低字节 ⇒ 点不中
+  it('機器娃娃（actor 8）→ actorOutOfRange，卡不扣', () => {
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [30] }), makePlayer({ index: 1 })],
     });
     const r = useCard(ctx, 30, { kind: 'actor', actor: 8 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[4]!.singleStep).toBe(0);
-    expect(r.players[0]!.cards).toEqual([]);
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe('actorOutOfRange');
   });
 
   it('actor 越界（9）→ actorOutOfRange', () => {
@@ -1110,11 +1173,9 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(useCard(makeCtx(), 1, { kind: 'actor', actor: 4 }).error).toBe('targetNotAllowed');
   });
 
-  it('★ 机器娃娃在场时转向卡也生效（0x40c78c 不看种类，只看 ≥4）', () => {
+  it('★ 机器娃娃在场也点不中（拾取码 0，`0x00408a4a`）', () => {
     const ctx = actorCtx(6, 8 - 4);
-    const r = useCard(ctx, 6, { kind: 'actor', actor: 8 });
-    expect(r.ok).toBe(true);
-    expect(r.actors[4]!.direction).toBe(7);
+    expect(useCard(ctx, 6, { kind: 'actor', actor: 8 }).error).toBe('actorOutOfRange');
   });
 
   // ── ★ 2026-09-16 补：夢遊卡(16) 的替身那一支 ──────────────────
@@ -1123,7 +1184,7 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
   //   → `mov byte [ebx*16 + 0x498df5], 5`
   // ⚠️ 先前 registry 里写的是「索引空间没核清、故不接」—— 那条判据是错的
   //   （`ebx` 到那一步已经是 CTZ 之后的下标），订正记录见 D-T047-5。
-  for (const actor of [4, 5, 6, 7, 8]) {
+  for (const actor of [4, 5, 6, 7]) {
     it(`夢遊卡(16)：actor ${actor} 的 sleepwalkDays 写成 5`, () => {
       const ctx = actorCtx(16, actor - 4);
       const r = useCard(ctx, 16, { kind: 'actor', actor });
@@ -1155,22 +1216,38 @@ describe('★ T-010：停留/轉向/烏龜卡对特殊棋子（actor 4..8）', (
     expect(r.players[0]!.cards).toEqual([]); // ★ 但卡被扣掉了
   });
 
-  it('夢遊卡(16) 对不在棋盘上的替身 → 状态不动，但**卡照扣**、判成功', () => {
+  it('夢遊卡(16) 对不在棋盘上的替身 → 点不中、卡不扣', () => {
     // ★ 订正（2026-09-17）：`remove_card`（`0x00444219`）在取位号之后，
     //   替身分支的 `cmp ebx,4 / jl` 只是跳过写天数，收尾 `mov eax, esi` 非 0。
     const ctx = makeCtx({
       players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })],
     });
-    // 初始：小偷(4)在監獄、機器娃娃(8)未出场
+    // 初始：小偷(4)在監獄 ⇒ 点不中（`0x00408b87`）；機器娃娃(8)未出场
     const a = useCard(ctx, 16, { kind: 'actor', actor: 4 });
-    expect(a.ok).toBe(true);
-    expect(a.players[0]!.cards).toEqual([]);
+    expect(a.error).toBe('actorOffBoard');
     const b = useCard(ctx, 16, { kind: 'actor', actor: 8 });
-    expect(b.ok).toBe(true);
+    expect(b.error).toBe('actorOutOfRange'); // 機器娃娃点不中
   });
 
   it('夢遊卡(16) 仍然不接受「自己」这个玩家目标（0xe0c0710 不含自己）', () => {
     const ctx = makeCtx({ players: [makePlayer({ index: 0, cards: [16] }), makePlayer({ index: 1 })] });
     expect(useCard(ctx, 16, { kind: 'player', index: 0 }).error).toBe('cannotTargetSelf');
+  });
+});
+
+describe('★★ 天使卡打 0 级設施的首建种类（0x40b110：0x0040b1ad test [+0x15],6）', () => {
+  const ctxFor = (whoPlays: number, owner: number) =>
+    makeCtx({
+      players: [makePlayer({ index: 0, cards: [9], whoPlays }), makePlayer({ index: 1 })],
+      facilities: [makeFacility({ id: 1, owner, level: 0, type: 0 })],
+      rng: { next: () => 6 },
+    });
+  it('电脑、自己的設施 ⇒ rand()%4+1；别人的 ⇒ 公園', () => {
+    expect(useCard(ctxFor(2, 1), 9, { kind: 'facility', facilityId: 1 }).facilities[0]!.type).toBe(6 % 4 + 1);
+    expect(useCard(ctxFor(2, 2), 9, { kind: 'facility', facilityId: 1 }).facilities[0]!.type).toBe(0);
+  });
+  it('真人：种类由选類別窗给（buildType）；没给 ⇒ 不生效、卡不扣', () => {
+    expect(useCard(ctxFor(1, 1), 9, { kind: 'facility', facilityId: 1, buildType: 3 }).facilities[0]!.type).toBe(3);
+    expect(useCard(ctxFor(1, 1), 9, { kind: 'facility', facilityId: 1 }).ok).toBe(false);
   });
 });

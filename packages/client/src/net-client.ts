@@ -12,9 +12,13 @@ import {
   PROTOCOL_VERSION,
   type Action,
   type ClientMessage,
+  type JoinMode,
   type RoomInfo,
+  type LobbyOptions,
+  type PresentCue,
   type SeatInfo,
   type ServerMessage,
+  isPresentCue,
 } from '@rich4/core';
 
 /** 往服务器写文本的口子 */
@@ -32,6 +36,15 @@ export interface NetClientOptions {
    * 老的 `?ws=…&room=…&name=…` 调试入口也一样，从同一个地方取。
    */
   clientId: string;
+  /**
+   * ★ 房間列表（v5）：`'create'` = 建房（码必须还没人用）；`'join'` = 进一间**已有的**；
+   *   不给 = 旧语义（有就进、没有就建）—— 见 core `protocol.ts` 的 `join.mode`。
+   */
+  mode?: JoinMode;
+  /** ★ 聯機存檔（v6）：建房時從這份存檔繼續（只與 `mode: 'create'` 一起）*/
+  fromSave?: string;
+  /** ★ 聯機存檔（v6）：加入已開局的存檔房時認領這一座（只與 `mode: 'join'` 一起）*/
+  claimSeat?: number;
   /** 重连：本地已施加到第几号（含） */
   since?: number;
   /** 每几号 action 上报一次校验和 @default 10 */
@@ -44,9 +57,34 @@ export interface NetClientOptions {
    */
   deferChecksum?: boolean;
   /** 开局参数到了：建本地状态 */
-  onStart(start: { seed: number; globalMapId: number; seats: SeatInfo[] }): void;
+  onStart(start: {
+    seed: number;
+    globalMapId: number;
+    seats: SeatInfo[];
+    /** ★ 第十一份試玩回報 #1：房間的開局選項（總人數 + 單機那五項）*/
+    options: LobbyOptions;
+    /** ★ 聯機存檔（v6）：起點局面（從存檔繼續的局才有）—— 見 `net-start.ts` */
+    snapshot?: string;
+    /** ★ v6：開局日期（服務器的今天）*/
+    startDate?: { year: number; month: number; day: number };
+    /**
+     * ★ 第十二份試玩回報：进房那一刻服务器日志排到第几号（含；-1 = 空 / 旧服务器没带）。
+     *   `> -1` 就说明这是**中途进房**（刷新 / 重连），见 `onCatchUp`。
+     */
+    through: number;
+  }): void;
   /** 一条按序号到达的 action：施加到本地状态 */
   onAction(action: Action, seq: number): void;
+  /**
+   * ★★ 第十二份試玩回報（「断线重连后莫名其妙又进入魔法屋」「断线重连后所有文本提示又重新触发了一轮」）：
+   *   中途进房时服务器补发的那一段（`start.through` 之前、含）**攒齐了一次交出来**，
+   *   宿主应当**静默**追上（只 reduce、不起任何演出）—— 那些都是进房之前就已经发生的事，
+   *   这台要么早就演过（刷新前），要么当时根本不在（断线期间）。
+   *
+   *   缺省（不给这个回调）⇒ 退回旧行为：补发的也逐条走 `onAction`。
+   *   攒着的这一段**不报校验和**（与 `onResync` 同一口径：重建不是「施加完一条」）。
+   */
+  onCatchUp?(actions: { action: Action; seq: number }[]): void;
   /** 房间信息变化（有人进出、掉线） */
   onRoom?(room: RoomInfo): void;
   onJoined?(seat: number, room: RoomInfo): void;
@@ -59,7 +97,16 @@ export interface NetClientOptions {
    * 本地必须以这份参数 `newGame` 再从头 reduce `actions` —— 是**整体替换**
    * 而不是继续增量施加；`NetClient` 已经把序号指针接成 `actions.length`。
    */
-  onResync?(replay: { seed: number; globalMapId: number; seats: SeatInfo[]; actions: Action[] }): void;
+  onResync?(replay: {
+    seed: number;
+    globalMapId: number;
+    seats: SeatInfo[];
+    options: LobbyOptions;
+    /** ★ 聯機存檔（v6）：起點局面 */
+    snapshot?: string;
+    startDate?: { year: number; month: number; day: number };
+    actions: Action[];
+  }): void;
   /**
    * ★ W-74：服务器广播了「这一回合还剩多久」。
    *
@@ -67,6 +114,16 @@ export interface NetClientOptions {
    * （有人交了 intent / 换人 / 该座位不再被等）。
    */
   onClock?(clock: { seat: number; remainingMs: number; hardRemainingMs: number }): void;
+  /** ★ 聯機存檔（v6）：房主存了一份檔（廣播給全桌）*/
+  onSaved?(name: string): void;
+  /**
+   * ★ v8（gap-audit #7）：别的座位转来的**纯演出**提示（亮牌 / 用卡失败 / 道具台词 / 选格取消）。
+   *
+   * 交出来的时机 = 第 `after` 号 action 已经交给 `onAction` 之后、下一号之前 —— 宿主把它排进
+   * 收件箱同一个位置即可（行动方做这件事时已经演完了此前的全部 action）。
+   * 追赶补发 / 等重放期间收到的一律丢掉（那时本地局面不是它说的那一刻）。
+   */
+  onPresent?(present: { seat: number; cue: PresentCue }): void;
   /** 本地状态的指纹（发校验和用） */
   fingerprint(): string;
 }
@@ -80,6 +137,15 @@ export class NetClient {
   #room: RoomInfo | null = null;
   /** 已发出 `resync` 还没等到 `replay` —— 期间不再重复请求（desync 是广播，可能连发） */
   #resyncing = false;
+  /**
+   * ★ 第十二份試玩回報：这一段（含）之前的补发要静默追上（`start.through`）；-1 = 没有要追的。
+   * 只在给了 `onCatchUp` 时生效。
+   */
+  #catchUpThrough = -1;
+  /** 追赶期间攒着的补发（凑到 `#catchUpThrough` 那一号才一次交出） */
+  readonly #catchUp: { action: Action; seq: number }[] = [];
+  /** ★ v8：排在还没到齐的 action 后面的演出提示（按 `after` 等着，见 `onPresent`）*/
+  readonly #cues: { after: number; seat: number; cue: PresentCue }[] = [];
 
   constructor(socket: NetSocket, opts: NetClientOptions) {
     this.#socket = socket;
@@ -101,6 +167,14 @@ export class NetClient {
     return this.#expected;
   }
 
+  /**
+   * ★ 第十二份試玩回報：还在追「进房之前」那一段补发 —— 本地状态还没追上服务器，
+   *   宿主此刻别拿它做任何决定（报 `awaiting`、替本机座位出手……）。
+   */
+  get catchingUp(): boolean {
+    return this.#catchUpThrough >= 0 && this.#expected <= this.#catchUpThrough;
+  }
+
   /** 连上之后第一件事：加入房间 */
   join(): void {
     const msg: ClientMessage = {
@@ -111,6 +185,9 @@ export class NetClient {
       clientId: this.#opts.clientId,
     };
     if (this.#opts.since !== undefined) msg.since = this.#opts.since;
+    if (this.#opts.mode !== undefined) msg.mode = this.#opts.mode;
+    if (this.#opts.fromSave !== undefined) msg.fromSave = this.#opts.fromSave;
+    if (this.#opts.claimSeat !== undefined) msg.claimSeat = this.#opts.claimSeat;
     this.#send(msg);
   }
 
@@ -143,6 +220,16 @@ export class NetClient {
    */
   setMap(globalMapId: number): void {
     this.#send({ t: 'setMap', globalMapId });
+  }
+
+  /**
+   * ★★ 第十一份試玩回報 #1：改房间的**开局选项**（总人数 + 单机那五项）。
+   *
+   * 只带要改的那几项（`Partial`）；服务器逐项校验、只有房主能在未开局时改，
+   * 接受后广播 `{t:'room'}` —— 与 `setCharacter`/`setMap` 同一套。
+   */
+  setOptions(options: Partial<LobbyOptions>): void {
+    this.#send({ t: 'setOptions', options });
   }
 
   /**
@@ -180,6 +267,34 @@ export class NetClient {
     this.#send({ t: 'alive' });
   }
 
+  /** ★ 聯機存檔（v6）：存檔房大廳裡「這是我」 */
+  claim(seat: number): void {
+    this.#send({ t: 'claim', seat });
+  }
+
+  /** ★ 聯機存檔（v6）：把一座放回「沒人坐」（房主：任何人的；其他人：自己的）*/
+  unclaim(seat: number): void {
+    this.#send({ t: 'unclaim', seat });
+  }
+
+  /** ★ 房主交接（v6）：大廳裡主動「離開」（之後宿主自己斷線）*/
+  leave(): void {
+    this.#send({ t: 'leave' });
+  }
+
+  /** ★ 聯機存檔（v6）：房主存一份檔 */
+  save(name: string): void {
+    this.#send({ t: 'save', name });
+  }
+
+  /**
+   * ★ v8（gap-audit #7）：把本机真人刚在自己 UI 里做的一件「原版全桌都看得见」的事告诉同桌
+   *   （纯演出，不是意图 —— 不等回包、不改本地局面）。
+   */
+  present(cue: PresentCue): void {
+    this.#send({ t: 'present', cue });
+  }
+
   /** ★ W-74：本机座位被超时託管了，玩家点一下画面 —— 把座位收回来 */
   resume(): void {
     this.#send({ t: 'resume' });
@@ -204,9 +319,24 @@ export class NetClient {
         this.#room = msg.room;
         this.#opts.onRoom?.(msg.room);
         return;
-      case 'start':
-        this.#opts.onStart({ seed: msg.seed, globalMapId: msg.globalMapId, seats: msg.seats });
+      case 'start': {
+        // 网络来的东西不可信：不是非负整数就当没带（退回旧行为）
+        const through =
+          typeof msg.through === 'number' && Number.isInteger(msg.through) && msg.through >= 0 ? msg.through : -1;
+        this.#catchUp.length = 0;
+        this.#cues.length = 0;
+        this.#catchUpThrough = this.#opts.onCatchUp === undefined ? -1 : through;
+        this.#opts.onStart({
+          seed: msg.seed,
+          globalMapId: msg.globalMapId,
+          seats: msg.seats,
+          options: msg.options,
+          ...(typeof msg.snapshot === 'string' ? { snapshot: msg.snapshot } : {}),
+          ...(isDate(msg.startDate) ? { startDate: msg.startDate } : {}),
+          through,
+        });
         return;
+      }
       case 'action':
         this.#pending.set(msg.seq, msg.action);
         this.#flush();
@@ -228,12 +358,32 @@ export class NetClient {
         this.#pending.clear();
         this.#expected = msg.through + 1;
         this.#resyncing = false;
+        // 重放是整体替换：还没追完的那一段也一并作废（都在重放里了）
+        this.#catchUp.length = 0;
+        this.#cues.length = 0;
+        this.#catchUpThrough = -1;
         this.#opts.onResync?.({
           seed: msg.seed,
           globalMapId: msg.globalMapId,
           seats: msg.seats,
+          options: msg.options,
+          ...(typeof msg.snapshot === 'string' ? { snapshot: msg.snapshot } : {}),
+          ...(isDate(msg.startDate) ? { startDate: msg.startDate } : {}),
           actions: msg.actions.map((a) => a.action),
         });
+        return;
+      }
+      case 'saved':
+        this.#opts.onSaved?.(msg.name);
+        return;
+      case 'present': {
+        // 网络来的东西不可信：形状不对就当没收到
+        if (typeof msg.seat !== 'number' || typeof msg.after !== 'number' || !isPresentCue(msg.cue)) return;
+        if (this.#resyncing || this.catchingUp) return;
+        const have = this.#expected - 1;
+        if (msg.after === have) this.#opts.onPresent?.({ seat: msg.seat, cue: msg.cue });
+        // 前面还有 action 没到齐（乱序）⇒ 等它们；`after` 比手上的还旧 ⇒ 那一刻已经过去了，丢掉
+        else if (msg.after > have) this.#cues.push({ after: msg.after, seat: msg.seat, cue: msg.cue });
         return;
       }
       case 'clock':
@@ -258,9 +408,29 @@ export class NetClient {
       const action = this.#pending.get(seq)!;
       this.#pending.delete(seq);
       this.#expected = seq + 1;
+      // ★ 第十二份試玩回報：进房之前的那一段先攒着，凑齐了一次交给宿主静默追上
+      if (seq <= this.#catchUpThrough) {
+        this.#catchUp.push({ action, seq });
+        if (seq === this.#catchUpThrough) {
+          const batch = this.#catchUp.splice(0);
+          this.#catchUpThrough = -1;
+          this.#opts.onCatchUp?.(batch);
+        }
+        continue;
+      }
       this.#opts.onAction(action, seq);
       if (this.#opts.deferChecksum !== true && every > 0 && (seq + 1) % every === 0) {
         this.#send({ t: 'checksum', seq, hash: this.#opts.fingerprint() });
+      }
+      // ★ v8：排在这一号后面的演出提示
+      for (let i = 0; i < this.#cues.length; ) {
+        const c = this.#cues[i]!;
+        if (c.after > seq) {
+          i++;
+          continue;
+        }
+        this.#cues.splice(i, 1);
+        if (c.after === seq) this.#opts.onPresent?.({ seat: c.seat, cue: c.cue });
       }
     }
   }
@@ -277,6 +447,13 @@ export class NetClient {
   #send(msg: ClientMessage): void {
     this.#socket.send(JSON.stringify(msg));
   }
+}
+
+/** 网络来的日期：三个正整数才收（不然当没带，退回 core 缺省）*/
+function isDate(v: unknown): v is { year: number; month: number; day: number } {
+  if (typeof v !== 'object' || v === null) return false;
+  const d = v as Record<string, unknown>;
+  return [d.year, d.month, d.day].every((x) => typeof x === 'number' && Number.isInteger(x) && x > 0);
 }
 
 /** 从页面 URL 读联机参数：`?ws=ws://host:port&room=r1&name=小明`；缺 ws 就是单机 */

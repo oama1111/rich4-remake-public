@@ -9,7 +9,7 @@
  *   （资金分配、起始位置、牌堆数量）。真正开局要走本模块。
  */
 
-import type { MapNode, Rich4Map } from '../loaders/map.ts';
+import type { Rich4Map } from '../loaders/map.ts';
 import type { GameState, Player } from '../state/types.ts';
 import type { GameMode } from '../rng/policy.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
@@ -17,7 +17,7 @@ import { DEFAULT_INITIAL_FUND, NO_WIN_CONDITIONS, START_DATE_MAX, startingMoney 
 import type { WinConditions } from './setup.ts';
 import { CARDS, CHARACTERS } from '@rich4/data';
 import { traitsOf } from '../ai/personality.ts';
-import { placeOnNodeId } from './position.ts';
+import { landAt, landUnplacedPlayer } from './start-placement.ts';
 import { INITIAL_PRICE_INDEX } from './wealth.ts';
 import { CARD_IMPLS } from '@rich4/data';
 import { FORTUNE_DECK_SIZE, NEWS_DECK_SIZE, createDeck } from '../events/deck.ts';
@@ -26,7 +26,7 @@ import { CONFINEMENT_SLOTS } from './confinement.ts';
 import { emptyLottery } from '../places/lottery.ts';
 import { emptyBoard } from '../places/notice-board.ts';
 import { initialConfinement, initialSpecialActors } from './special-actors.ts';
-import { newStockMarket } from '../places/stock-market.ts';
+import { marketOpenOn, newStockMarket, refreshTradableShares, tickStockMarket } from '../places/stock-market.ts';
 import { emptyOwnership, type CommercialOwnership } from '../places/commercial.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from './objects.ts';
@@ -77,7 +77,10 @@ export interface NewGameOptions {
   mode?: GameMode;
   /** PRNG 种子。★ 单机可随意；联机必须由服务器统一下发 */
   seed?: number;
-  /** 所有人的起始节点。原版是地图上的固定起点，尚未定位，故可注入 */
+  /**
+   * **测试用**：所有人开局当场落在这一格（不抽签、不走惰性摆人）。
+   * 缺省 0 = 照原版：第 1 位开局落地，其余轮到自己时才落地（`rules/start-placement.ts`）。
+   */
   startNodeId?: number;
   /**
    * 開局自帶載具：0 走路 / 1 機車 / 2 汽車。
@@ -148,40 +151,19 @@ export function initialCardAmounts(): number[] {
  * 见 docs/known-deviations.md 的 Q-INIT-2。
  */
 /**
- * ⚠️ **已废弃**：起始节点不是常数，是**随机抽**的（见 `drawStartNodes`）。
+ * ⚠️ **已废弃**：起始节点不是常数，是**随机抽**的（见 `drawStartPlacement`）。
  *   留着只为 `startNodeId` 这个测试用的覆盖项有个默认值；`0` 表示「照原版随机」。
  */
 export const UNVERIFIED_START_NODE = 0;
 
 /**
- * 每个玩家的起始节点 —— **在全图可放物件的节点里随机抽一格**。
+ * 每个玩家的起始节点 —— 在全图可放物件的节点里随机抽一格（Q-INIT-2 结案）。
  *
- * @source 開局摆人 VA 0x004082d9 `call 0x40aa0f` → 结果写进 `node_id`（0x004082fb）。
- *   `0x40aa0f`：
- * ```asm
- * 0040aa1d  for (i = 1; i <= 节点数; i++)
- * 0040aa37    if (node.flags & 0x80ffff00) continue    ; 特殊格 / 已被占用的都不要
- * 0040aa40    if (四个邻接全为 0) continue              ; 孤立格不要
- * 0040aa4c    候选[n++] = i
- * 0040aa53  return 候选[rand() % n]
- * ```
- *   这与物件登场挑格的 `objectNodeCandidates`/`pickObjectNode` 是**同一条**筛选
- *   （那两个函数就是照它写的），故直接复用。`flags` 的 bits 8..11 是「谁站在这格」，
- *   所以**后摆的人不会与先摆的人同格** —— 这里按下标顺序逐个抽、逐个排除。
- *   Q-INIT-2 结案。
+ * ★ 2026-09-24 起摆人是**惰性**的（轮到谁才摆谁，见 `rules/start-placement.ts`），
+ *   不再有「开局一次摆 N 个人」这件事；抽签本身（两次 `rand()`）在那边的
+ *   `drawStartPlacement`，这里只再导出，旧引用不断。
  */
-export function drawStartNodes(
-  nodes: Rich4Map['nodes'],
-  count: number,
-  rng: WatcomRng,
-): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const free = objectNodeCandidates(nodes).filter((n) => !out.includes(n));
-    out.push(pickObjectNode(free, rng.next()));
-  }
-  return out;
-}
+export { drawStartPlacement, type StartPlacement } from './start-placement.ts';
 
 /**
  * 每家公司的总股本。
@@ -215,23 +197,26 @@ function commercialSharesOf(map: Rich4Map, globalMapId: number): number[] {
   return out;
 }
 
-function makeInitialPlayer(
-  index: number,
-  setup: PlayerSetup,
-  fund: number,
-  startNode: number,
-  vehicle: number,
-  nodes: readonly MapNode[],
-): Player {
-  const money = startingMoney(setup.character, fund);
-  const base: Player = {
+/**
+ * 一名玩家的开局记录 —— **还没上盘**（见 `rules/start-placement.ts` 的文件头）。
+ *
+ * @source `0x004072e4 memcpy(player, 0x47e80c + 角色 × 0x68, 0x68)`：角色表里
+ *   `+0x08..+0x10`（坐标 / 节点 / 来路 / 朝向）与 `+0x15`（`who_plays`）全是 0；
+ *   随后 `0x004072f9` 只写 `+0x64 = 1 / 2`（人 / 电脑）= 本引擎的 `landingWhoPlays`。
+ */
+function makeInitialPlayer(index: number, setup: PlayerSetup, fund: number, vehicle: number): Player {
+  // @source 0x004072ff `test al, 1`：真人对半、电脑按角色比例（见 `startingMoney`）
+  const money = startingMoney(setup.character, fund, setup.kind === 'human');
+  return {
     index,
     character: setup.character,
-    whoPlays: setup.kind === 'human' ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER,
+    // @source 角色表 +0x15 = 0：落地（`0x00418d07`）之前谁都不是「在打」的
+    whoPlays: 0,
+    // @source 角色表 +0x08..+0x10 = 0：没上盘
     xpos: 0,
     ypos: 0,
-    nodeId: startNode,
-    lastNodeId: startNode,
+    nodeId: 0,
+    lastNodeId: 0,
     direction: 0,
     // @source VA 0x00407219：交通工具与骰子数都由开局设置定，`ndices = traffic + 1`
     trafficMethod: vehicle,
@@ -275,12 +260,9 @@ function makeInitialPlayer(
     hostility: [0, 0, 0, 0],
     monthlyPaid: 0,
     monthlyReceived: 0,
+    // @source 0x004072f9 `mov byte [player + 0x64], al`（1 = 人、2 = 电脑）
+    landingWhoPlays: setup.kind === 'human' ? WHO_PLAYS_HUMAN : WHO_PLAYS_COMPUTER,
   };
-  // ★★ 位置是**三元组**：`nodeId` / `xpos` / `ypos` 一起写（见 rules/position.ts）。
-  //   原版开局就把玩家放在起始格上、`xpos/ypos` = 该格坐标；而冬眠卡
-  //   （`@source 0x0044415d` `cmp word [player+0x08], 0`）等判据用 `xpos != 0`
-  //   当「在不在盘上」的哨兵 —— 先前这里写 0，于是**新局里冬眠卡一个人也冻不住**。
-  return placeOnNodeId(base, nodes, startNode);
 }
 
 /**
@@ -458,9 +440,24 @@ export function newGame(opts: NewGameOptions): GameState {
     objects = placeObjectOfType(objects, type, node).objects;
   }
 
-  const startNodes = drawStartNodes(map.nodes, players.length, rng);
+  // ★ 开局重算一次可成交量 @source `0x00407dfe call 0x42915a`（摆完物件、算完各企业自留股之后）
+  const refreshed = refreshTradableShares(newStockMarket(globalMapId, map.commercials), rng);
+  // ★★ 然后**走一次行情**（开局那一天）—— 新开一局的主干：
+  //   ```asm
+  //   00401ce1  call 0x407ad2      ; 载图（开局摆物件 0x00407d6a、可成交量 0x00407dfe 都在这里面）
+  //   00401ce6  call 0x4190cf      ; 只读图（read_mkf）
+  //   00401ceb  call 0x4291d6      ; ★ 行情：开头 `0x004291e2 call 0x428d01 / cmp eax,1 / je` 休市日整段不走
+  //   00401cf0  call 0x415872      ; 跳伞过场（没有 rand）
+  //   00401cfe  call 0x401981      ; 进棋盘 —— 第一次重画才摆第 1 位（两次 rand）
+  //   ```
+  //   休市判据与日推进里那一次同一支（`marketOpenOn`：节日 / 星期日 / 暂停天数），日期 = 开局日期；
+  //   开局没有暂停天数（`closedDays` 初值 0），也不走 `0x41cff9` 那段倒数（那在 `0x41cf67` 里）。
+  const openDate = startDate ?? START_DATE_MAX;
+  const market = marketOpenOn(globalMapId, openDate.year, openDate.month, openDate.day, refreshed.closedDays)
+    ? tickStockMarket(refreshed, rng, (i) => map.commercials.find((c) => c.id === i)?.assetValue ?? null)
+    : refreshed;
 
-  return {
+  const state: GameState = {
     mode,
     rngState: rng.getState(),
     globalMapId,
@@ -469,16 +466,7 @@ export function newGame(opts: NewGameOptions): GameState {
     //   `global_rich4_cfg` 的 day/month/year；钳位常量 0x7ce/0x7da 在
     //   VA 0x00411f30 / 0x00411f49。见 `rules/setup.ts` 的 `defaultStartDate`。
     ...(startDate ?? START_DATE_MAX),
-    players: players.map((s, i) =>
-      makeInitialPlayer(
-        i,
-        s,
-        initialFund,
-        startNodeId > 0 ? startNodeId : (startNodes[i] ?? 1),
-        vehicle,
-        map.nodes,
-      ),
-    ),
+    players: players.map((s, i) => makeInitialPlayer(i, s, initialFund, vehicle)),
     currentPlayer: 0,
     phase: 'turnStart',
     priceIndex: INITIAL_PRICE_INDEX,
@@ -541,8 +529,11 @@ export function newGame(opts: NewGameOptions): GameState {
     // 純表現提示：開局沒人走過（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：开局还没有过过路费（见 state/types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
+    // 纯表现提示：开局还没有开过奖（见 state/types.ts 的 GameState.lastLotteryDraw）
+    lastLotteryDraw: null,
     // 纯表现提示：开局还没有过付费类落点（见 state/types.ts 的 GameState.notices）
     notices: [],
     lastViewTarget: null,
@@ -554,7 +545,9 @@ export function newGame(opts: NewGameOptions): GameState {
     tools,
     toolStock,
     // ★ 12 支股票取自本地图那一段（`地图编号 × 12`）
-    market: newStockMarket(globalMapId, map.commercials),
+    // ★ 开局摆完物件、算完各企业自留股之后就重算一次可成交量（12 支里股本 > 1000 的各抽一次 `rand()`）
+    //   @source `0x00407dc6..0x00407df8`（自留股循环）→ `0x00407dfe call 0x42915a`；在第 1 位摆人之前
+    market,
     // 开局全员空仓 @source `_rich4_player_stocks` 全零
     holdings: players.map(() => Array.from({ length: STOCKS_PER_MAP }, () => ({ ...EMPTY_HOLDING }))),
     // ★ 各企业的可售股数取自地图记录的 +0x30；下标 = 企业 1 基序号
@@ -564,4 +557,14 @@ export function newGame(opts: NewGameOptions): GameState {
     // ★ 46 项物件表（神明/路障/地雷/定時炸彈）
     objects,
   };
+
+  // ★ 测试用的覆盖项：所有人**当场**落在同一格（不抽签、不走惰性摆人）
+  if (startNodeId > 0) {
+    const at = { nodeId: startNodeId, lastNodeId: startNodeId, direction: 0 };
+    return { ...state, players: state.players.map((p) => landAt(p, map.nodes, at)) };
+  }
+  // ★★ 第 1 位在开局第一次重画时就落地（`fcn_0040829d` 见当前玩家 `(0,0)` 就摆人，
+  //   随后 `0x418c55` 开头播落地影片、`who_plays ← +0x64`）—— 两次抽签紧跟在开局摆物件之后。
+  //   第 2..N 位留着没上盘，轮到自己时才摆（`state/reduce.ts` 的 `startActorTurn`）。
+  return landUnplacedPlayer(state, map.nodes, 0);
 }

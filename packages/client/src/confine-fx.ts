@@ -137,59 +137,93 @@ export function confineSkippable(kind: ConfineKind): boolean {
 /**
  * 这一次状态变化要不要播、播哪一段。
  *
- * 判据（纯查两张占用表 + 两个计数，都是 `GameState` 里的公开字段）：
- *   ① 占用表**由 0 变 1**（`confine()` 把槽位置 1 的那一下）—— 这是「刚被送进去」；
- *   ② 计数**变大**（`blocking.inPrison` / `inHospital` 的**低 7 位**）——
- *      覆盖「本来就在里面、又被加刑」那一路（原版 `send_to_*` 每次调用都重播影片）。
+ * 判据：某位玩家**首次**被送进去 —— 计数字节（`blocking.inPrison` / `inHospital`，**整字节**）
+ * 原为 0，且这一拍占用表由 0 变 1 或计数变成非 0。
  *
- * ★★ 2026-09-18 修「NPC 走动后自动呼出救护车」（需求方第 5 条）：
- *   计数比较**必须先 `& 0x7f`**。计数字节的高位 `0x80` 不是「更多天数」，而是
- *   **「刑期已满、待释放」这个状态本身**：
+ * ★★ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：**加刑不播**。
+ *   先前这里写「本来就在里面、又被加刑 → 照样播（原版 `send_to_*` 每次调用都重播影片）」—— 与 exe 不符：
  * ```asm
- * 0041c8e3  test dh, 0x3f / jne 跳过     ; 归零判据
- * 0041c8ea  or   ch, 0x80                ; ★ 减到 0 → 挂 0x80（等下一次才真放人）
+ * ; send_to_prison 0x0043d593
+ * 0043d5cc  call 0x41d476                 ; ① view_to(受害者)      ← 加刑也走
+ * 0043d5d4  mov  dh, [ebx + 0x496b9c]     ; 计数字节（整字节，含 0x80 待释放位）
+ * 0043d5da  test dh, dh
+ * 0043d5dc  jne  0x43d6bd                 ; ★ 非 0 ⇒ 直接去「加天数」，跳过搬位置 + 0x21a 警车
+ * 0043d6bd  … add cl, al / and ch, 0x7f   ;   (existing + days) & 0x7f
+ * 0043d6d6  … call 0x41d476               ; ② view_to(新位置)      ← 加刑也走
+ * ; send_to_hospital 0x0043ec3f 同形：0x0043ec86 test dh,dh / 0x0043ec88 jne 0x43ed6c 跳过 0x20c 救护车
  * ```
- *   于是「1 → 0x80」这一步**不是一次送入**，却满足 `0x80 > 1` ⇒ 旧代码误判成
- *   「刚被送医」并重播 6.2 秒的救护车影片。实测复现（5180、`?screen=game&humans=0&ai=4`）：
- *   `inHospital` 由 `0,0,0,1` 变 `0,0,0,128` 的那一拍，`#log` 里第二次出现
- *   `影片：開始 hospital（62 帧 × 100 ms）`，而此时两张占用表都没变、没人被送进去。
- *   掩掉高位之后：1 → 0x80 判为**不触发**；真加刑（3 → 5）与首次送入（0 → 3）照旧触发。
+ *   ⇒ 「待释放」（0x80）期间又被送进去也是非 0 ⇒ 同样只加天数、不播。
+ *   两次 `view_to` 照走（镜头看監獄 / 醫院），见 core 的 `confineViewTargets`（`extended`）。
  *
- * ⚠️ 两边同时成立（一次 action 里既进医院又进监狱）时取**医院**：
- *   原版是两次 `fcn_0045144f` 串行播，本引擎的表现层一次只播一段，
- *   先播医院那一段（`inHospital` 的调用点更多）；这种组合在现有规则里到不了，
- *   登记在 `Q-ANIM-1.md`。
+ * ★★ 2026-09-18（需求方第 5 条）：计数高位 0x80 是「待释放」状态位（@source 0x41c8ea `or ch, 0x80`），
+ *   1 → 0x80 那一步不是送入 —— 按整字节「原为 0」判，这一条自然成立。
+ *
+ * 返回**第一段**（按玩家号、医院在前）。宿主按 `confineFxTriggers` 把每一段都排上
+ *   （第十五份起：原版每次 `send_to_*` 各播一次、串行）。
  *
  * @param before / after 同一拍的前后状态（只读占用表与 `players`）
  */
 export function confineFxTrigger(
-  before: {
-    prisonOccupancy: readonly number[];
-    hospitalOccupancy: readonly number[];
-    players: readonly { blocking: { inPrison: number; inHospital: number } }[];
-  },
-  after: {
-    prisonOccupancy: readonly number[];
-    hospitalOccupancy: readonly number[];
-    players: readonly { blocking: { inPrison: number; inHospital: number } }[];
-  },
+  before: ConfineFxState,
+  after: ConfineFxState,
 ): ConfineKind | null {
-  // @source 0x41c8ea `or ch, 0x80` —— 高位是「待释放」状态，不是天数的一部分
-  const days = (raw: number): number => raw & 0x7f;
+  return confineFxTriggers(before, after)[0]?.kind ?? null;
+}
+
+/** `confineFxTrigger` 读的那几样 */
+interface ConfineFxState {
+  prisonOccupancy: readonly number[];
+  hospitalOccupancy: readonly number[];
+  players: readonly { blocking: { inPrison: number; inHospital: number } }[];
+}
+
+/**
+ * ★ 第十五份：这一拍**每一位**首次被送进去的人（按玩家号）—— 各播一段。
+ *
+ * 原版每次 `send_to_*` 调用各播一次（阻塞、串行）：新聞 4 `fcn_0044913d` 先播飛碟 0x213
+ * （`0x0044925b`），再逐人 `send_to_hospital`（`0x00449285`），各自一辆救护车 0x20c。
+ * 判据与 `confineFxTrigger` 相同（逐人：医院在前、监狱在后）。
+ */
+export function confineFxTriggers(
+  before: ConfineFxState,
+  after: ConfineFxState,
+): { player: number; kind: ConfineKind }[] {
+  const out: { player: number; kind: ConfineKind }[] = [];
   for (let i = 0; i < after.players.length; i++) {
     const b = before.players[i];
     const a = after.players[i];
     if (b === undefined || a === undefined) continue;
+    // @source 0x0043ec86 `test dh, dh / jne` —— 原计数非 0 ⇒ 加刑支，不播
     const hospital =
-      (after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1)
-      || days(a.blocking.inHospital) > days(b.blocking.inHospital);
-    if (hospital) return 'hospital';
+      b.blocking.inHospital === 0
+      && ((after.hospitalOccupancy[i] === 1 && before.hospitalOccupancy[i] !== 1) || a.blocking.inHospital !== 0);
+    if (hospital) out.push({ player: i, kind: 'hospital' });
+    // @source 0x0043d5da `test dh, dh / jne`
     const prison =
-      (after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1)
-      || days(a.blocking.inPrison) > days(b.blocking.inPrison);
-    if (prison) return 'prison';
+      b.blocking.inPrison === 0
+      && ((after.prisonOccupancy[i] === 1 && before.prisonOccupancy[i] !== 1) || a.blocking.inPrison !== 0);
+    if (prison) out.push({ player: i, kind: 'prison' });
   }
-  return null;
+  return out;
+}
+
+/**
+ * 这一次送进去是不是**新聞 / 命運事件**引出的 —— 是就要等事件提示框收掉再播。
+ *
+ * 判据与事件框起播同一条（`event-box-screen.ts` 的 `event()`）：`lastEvent` **换了引用**
+ * 且是 `news` / `fortune`（core 只在真的抽了一张时新建它）。
+ *
+ * @source 新聞 `0x0044b862 push 0x960 / call 0x4544f6`（框停 2400 ms）→ `0x0044b875` pass 1
+ *   → 新聞 29 `0x0044b362 call 0x43d593`；命運 `0x0044dd49`（1600 ms）→ pass 1 → 命運 33
+ *   `0x0044d8c2 call 0x43d593`。警车 `0x21a` / 救护车 `0x20c` 在 `send_to_*` 体内（`0x0043d688` /
+ *   `0x0043ed34`），故都在框之后。详见 `board-film.ts` 的 `afterEventBox`。
+ */
+export function confineAfterEventBox(
+  before: { lastEvent: { kind: string } | null },
+  after: { lastEvent: { kind: string } | null },
+): boolean {
+  const ev = after.lastEvent;
+  return ev !== null && ev !== before.lastEvent && (ev.kind === 'news' || ev.kind === 'fortune');
 }
 
 /**

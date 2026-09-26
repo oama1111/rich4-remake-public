@@ -43,7 +43,8 @@
 
 import type { GameState, MapTopology } from '@rich4/core';
 import type { Sprite } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
+import { ARROW_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
 
 /** 面板与立绘板所在的档案 @source `[0x48bad8]`（= `read_mkf(Data.mkf, 0x205)`）*/
@@ -201,6 +202,7 @@ export function pickerNeededFor(state: GameState, topo: MapTopology, nodeId: num
 
 /** 上面那两个助手 —— 从 `@rich4/core` 转出来，免得宿主再导一次 */
 import { effectiveFacility, facilityIndexOf } from '@rich4/core';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 改建卡（7）打**脚下的設施**时，要不要先过这扇「請選擇設施類別」窗。
@@ -250,14 +252,10 @@ function text(
   y: number,
   flag: 2 | 4,
 ): void {
-  ctx.font = `${PICKER_FONT_SIZE}px ${FONT_FAMILY}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = flag === 2 ? 'middle' : 'middle';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = PICKER_OUTLINE;
-  ctx.strokeText(s, x, y);
-  ctx.fillStyle = PICKER_FILL;
-  ctx.fillText(s, x, y);
+  // `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` @source 0x00440ac2 —— 粗体 + 右下 1 px 阴影（`font.ts`）
+  drawGdiText(ctx, s, x, y, { size: PICKER_FONT_SIZE, color: PICKER_FILL, color2: PICKER_OUTLINE, flags: 3, spacing: 1 });
 }
 
 /** 画整扇窗（只在这一屏接管时调）*/
@@ -271,7 +269,7 @@ export function drawFacilityPicker(
 
   const panel = img(PICKER_PANEL.chunk);
   if (panel !== null) {
-    ctx.drawImage(panel.bitmap, PICKER_PANEL.x - panel.anchorX, PICKER_PANEL.y - panel.anchorY);
+    drawSprite(ctx, panel, PICKER_PANEL.x - panel.anchorX, PICKER_PANEL.y - panel.anchorY);
   }
 
   if (d.hover !== null) {
@@ -283,7 +281,7 @@ export function drawFacilityPicker(
     }
     const board = img(PICKER_BOARD.chunk);
     if (board !== null) {
-      ctx.drawImage(board.bitmap, PICKER_BOARD.x - board.anchorX, PICKER_BOARD.y - board.anchorY);
+      drawSprite(ctx, board, PICKER_BOARD.x - board.anchorX, PICKER_BOARD.y - board.anchorY);
     }
   }
 
@@ -309,9 +307,21 @@ export type PickerAnswer = (type: number | null) => void;
 let pending: PickerAnswer | null = null;
 let hover: number | null = null;
 
+/**
+ * 「待决交互」那一支该不该在本机开窗（`main.ts` 注入：联机只给当前座位、电脑 / 託管不开）。
+ * @source `0x0041a1f0` 那一支：现金够 → **真人**才开这扇窗（电脑由 AI 直接选）。
+ *   先前没有这道闸 ⇒ 联机旁观端也弹出别人的「請選擇設施類別」（还能点，服务器回 `notYourTurn`），
+ *   单机电脑那一手也会一闪而过。与嫁禍窗的 `setScapegoatPickerGate` 同一条闸。
+ * `null` = 不设闸（单测）。
+ */
+let gate: (() => boolean) | null = null;
+export function setFacilityPickerGate(f: (() => boolean) | null): void {
+  gate = f;
+}
+
 /** 这一次开窗是不是「待决交互」那一支（决定选完派什么 action）*/
 function isPendingPick(env: UiScreenEnv): boolean {
-  return env.state.pending?.kind === 'buildFacility';
+  return env.state.pending?.kind === 'buildFacility' && gate?.() !== false;
 }
 
 /** 调试 / 单测用：关掉这一屏 */
@@ -333,6 +343,12 @@ export function openFacilityPicker(answer: PickerAnswer): void {
 
 export const facilityPickerScreen: UiScreen = {
   id: 'facility-picker',
+
+  /**
+   * 软件指针：浮窗 `WM_CREATE` 放出箭头 @source 0x0043fb5d `fcn_00402460(1)`（紧跟 0x0043fb54 挪指针）；
+   * 只在本机真人这边开（加蓋流程的 `openFacilityPicker`，或 `buildFacility` 待决交互过了 `gate`），旁观端没有这扇窗。
+   */
+  cursor: (): CursorWant => showCursor(ARROW_CURSOR),
 
   /**
    * ★ **浮窗**：原版先 `fcn_00451e7e` 存下 (0,0x28)-(0x1b8,0x1e0) 那块
@@ -390,6 +406,13 @@ export const facilityPickerScreen: UiScreen = {
     hover = null;
     env.dispatch({ type: 'declineDecision' });
     env.requestRender();
+  },
+
+  /** 与 `contextmenu` 同一道闸：神明代蓋（`free`）那一次右键无效 */
+  contextmenuLive(env: UiScreenEnv): boolean {
+    if (pending !== null) return true;
+    const p = env.state.pending;
+    return !(p !== null && p.kind === 'buildFacility' && p.free === true);
   },
 
   key(): boolean {

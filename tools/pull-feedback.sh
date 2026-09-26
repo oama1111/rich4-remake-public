@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/feedback"
 mkdir -p "$DEST"
 rsync -az -e "ssh -i $KEY -o IdentitiesOnly=yes" "$HOST:/srv/rich4/feedback/" "$DEST/"
-echo "拉到 $DEST（共 $(ls "$DEST"/*.json 2>/dev/null | wc -l | tr -d ' ') 份）"
+echo "拉到 ${DEST}（共 $(ls "$DEST"/*.json 2>/dev/null | wc -l | tr -d ' ') 份）"
 echo
 node -e '
 const fs=require("fs"),path=require("path");

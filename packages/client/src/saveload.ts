@@ -27,8 +27,12 @@
  *   `localStorage`。桌面版理应写成文件，但那要走 Tauri 的文件 API，
  *   等 M4 收尾时再说 —— 记在 known-deviations 的 Q-SAVE-1。
  *
- * ⚠️ 每行右边那块宽区里写什么（原版画的是角色头像加日期/资产）只解出了
- *   头像的位置，文字位置没解。那部分的排版是**我们的**。
+ * ★ 一行里画的东西已经全照 exe 解齐（gap-audit #18，2026-09-24 逐条复核 0x00403f1d..0x00404094）：
+ *   粉底板上的 AUTO / 年 / 月日、地圖縮圖、参与角色头像循环 —— 见下面 `ROW` 的注释。
+ *   **没有资产、没有玩家名**：那一段只有这几次 `draw_text` / `fcn_004563f5`。
+ *   字是 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`（0x00403f1d..0x00403f2d）= 16 号米白粗体
+ *   + 右下 1 px 深色阴影（`BOX_TEXT_STYLE`），三句都是 `draw_text(…, flag 2)`（横竖都居中）。
+ *   仍是我们自己的：悬停高亮、「存檔損毀」那行字、「匯入原版存檔」钮（原版遇到坏档直接跳过那一槽）。
  */
 
 import type { GameState } from '@rich4/core';
@@ -36,7 +40,8 @@ import { saveStore } from './host.ts';
 import { deserializeGame, serializeGame } from '@rich4/core';
 import type { Sprite } from './assets.ts';
 import { inRect, type Rect } from './gameui.ts';
-import { FONT_FAMILY } from './font.ts';
+import { BOX_TEXT_STYLE, drawGdiText, FONT_FAMILY, type GdiTextStyle } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** Data.mkf 里这一屏的资源号 @source 0x00403d83 `push 0x208` */
 export const SAVELOAD_RESOURCE = 0x208;
@@ -102,6 +107,11 @@ export const ROW = { x: 0x81, y0: 0x18, pitch: 72, size: 72 } as const;
 export const ROW_TEXT_X = 0xa5;
 /** 三行字相对行顶的 y @source `edi + 0x0f / 0x24 / 0x39` */
 export const ROW_TEXT_DY = { auto: 0x0f, year: 0x24, date: 0x39 } as const;
+/**
+ * 三句字的字样 @source 0x00403f1d..0x00403f2d `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`
+ * —— 与框模板那一句逐字节同参（16 号米白、粗体 + 右下 1 px 阴影）。
+ */
+export const ROW_TEXT_STYLE: GdiTextStyle = BOX_TEXT_STYLE;
 /** 地圖縮圖的 x @source 0x00404011 `push 0xd1` */
 export const ROW_THUMB_X = 0xd1;
 
@@ -137,8 +147,50 @@ export const ROW_FACE_PITCH = 0x48;
 /** LOAD 有 6 个槽（含自動存檔的 0 号），SAVE 只有 5 个 */
 export const LOAD_SLOTS = 6;
 export const SAVE_SLOTS = 5;
-/** 自動存檔占 0 号槽 */
+/** 自動存檔占 0 号槽 @source `0x0041904b push 0 / 0x0041904d call _rich4_save_game_to_file` */
 export const AUTOSAVE_SLOT = 0;
+
+/** 游戏日期折成一个可比较的数（年·月·日） */
+export function gameDateKey(s: Pick<GameState, 'year' | 'month' | 'day'>): number {
+  return s.year * 10000 + s.month * 100 + s.day;
+}
+
+/**
+ * 自動存檔**什么时候存** —— 每推进一天存一次，存在「新的一天的第一位行动者回合边界走完」之后。
+ *
+ * @source 回合游标推进 `fcn_00418ebd`（`rich4.asm:11704-11862`）：
+ * ```asm
+ * 00418fb6  cmp esi, 8 / jne …           ; 游标绕回（8 → 0）
+ * 00418fbe  mov [0x49910c], 0 / mov ebx, 1  ; ★ ebx = 1 只在「绕回来」这一次
+ * 0041902e  if (ebx) call 0x41cf67       ; 推日期 / 物价 / 行情 / 開獎 / 月結（拍卖在里面是阻塞的）
+ * 00419039  call 0x41c84f                ; 新当前行动者的回合边界（还款提醒窗是模态的）
+ * 00419041  test ebx,ebx / je …          ; ★ 只有推过日期这一次
+ * 00419045  cmp byte [cfg+4], 0 / je …   ; 且「自動存檔」开着
+ * 0041904b  push 0 / call 0x402fd1       ; ⇒ 存进 0 号槽
+ * ```
+ * 所以：**不分人机**（谁是新一天的第一位都存）、开局那一天**不存**（游标没绕回过）、
+ * 日期回退（時光機）**不算**推进。本引擎推日期里开出的拍卖 / 还款提醒窗是 `pending`
+ * （`deferredTurnStart`）⇒ 等它们收掉、相位落回 `turnStart` 才算「`0x41c84f` 返回」。
+ *
+ * @param lastKey 上一次「已经算过」的日期（`gameDateKey`）；`null` = 这一局还没看过（新局 / 读档之后）
+ * @returns `save`：现在存；`key`：调用方记下的新 `lastKey`
+ */
+export function autosaveStep(
+  state: Pick<GameState, 'year' | 'month' | 'day' | 'phase' | 'pending' | 'deferredTurnStart'>,
+  lastKey: number | null,
+): { save: boolean; key: number | null } {
+  const key = gameDateKey(state);
+  // 新局 / 读档之后第一次看到：只记下，不存（开局那天游标没绕回过）
+  if (lastKey === null) return { save: false, key };
+  // 日期往回走（時光機）：跟着记下，不存
+  if (key < lastKey) return { save: false, key };
+  if (key === lastKey) return { save: false, key: lastKey };
+  // 推过日期了，但回合边界还没走完（拍卖 / 还款提醒窗）⇒ 先不记，等它们收掉
+  if (state.phase !== 'turnStart' || state.pending !== null || (state.deferredTurnStart ?? null) !== null) {
+    return { save: false, key: lastKey };
+  }
+  return { save: true, key };
+}
 
 /** localStorage 的键 —— 照原版的文件名来，一眼能对上 */
 export function slotKey(slot: number): string {
@@ -227,6 +279,26 @@ export function outsideSaveLoad(mode: SaveLoadMode, x: number, y: number): boole
 //  绘制
 // ============================================================
 
+/**
+ * 粉底板上要写的几句（`x` 是舞台坐标，`dy` 相对行顶）—— 纯函数。
+ *
+ * @source 0x00403f78 `test ebp, ebp / jne` → 只有 0 号槽写 `"AUTO"`（串 0x4630e9）；
+ *   0x00403f9c `[0x48a340] >> 16` → `itoa(10)` 写年；0x00403fe4 `sprintf("%d/%d", 月, 日)`（串 0x4630ee）。
+ *   ★ 打不开（0x00403e3d `je 0x4040a6`）或标识 ≠ 0x26（0x00403e55）的槽**整槽跳过**：
+ *   粉底板、AUTO、年月日、縮圖、头像一样都不画 ⇒ 空槽 / 坏档返回空。
+ */
+export function rowTexts(
+  slot: number,
+  st: Pick<GameState, 'year' | 'month' | 'day'> | null,
+): { text: string; x: number; dy: number }[] {
+  const out: { text: string; x: number; dy: number }[] = [];
+  if (st === null) return out;
+  if (slot === AUTOSAVE_SLOT) out.push({ text: 'AUTO', x: ROW_TEXT_X, dy: ROW_TEXT_DY.auto });
+  out.push({ text: String(st.year), x: ROW_TEXT_X, dy: ROW_TEXT_DY.year });
+  out.push({ text: `${st.month}/${st.day}`, x: ROW_TEXT_X, dy: ROW_TEXT_DY.date });
+  return out;
+}
+
 export type SpriteFn = (
   archive: 'Data.mkf' | 'Panel.mkf',
   resource: number,
@@ -260,7 +332,7 @@ export function drawSaveLoad(
   }
 
   const bg = sprite('Data.mkf', SAVELOAD_RESOURCE, SAVELOAD_IMAGE[mode], true);
-  if (bg !== null) ctx.drawImage(bg.bitmap, p.x, p.y);
+  if (bg !== null) drawSprite(ctx, bg, p.x, p.y);
   else {
     ctx.fillStyle = '#6b8c7b';
     ctx.fillRect(p.x, p.y, p.w, p.h);
@@ -279,33 +351,29 @@ export function drawSaveLoad(
 
     // ★ 一行三段，全照原版：粉底板（写年月日）｜ 地圖縮圖 ｜ 参与角色的头像
     const st = info?.state ?? null;
-    const plate = sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
-    if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y, ROW.size, ROW.size);
+    // ★ 粉底板也只画在有档的槽上（空槽 / 坏档整槽跳过 @source 0x00403e3d / 0x00403e55 → 0x00403f70）
+    const plate = st === null ? null : sprite('Data.mkf', SAVELOAD_RESOURCE, EMPTY_CELL_IMAGE, true);
+    if (plate !== null) drawSprite(ctx, plate, r.x, r.y, ROW.size, ROW.size);
 
+    // ★ 三句都是 `draw_text(…, 0xa5, 行顶 + dy, flag 2)`：横竖都以 (0xa5, 行顶 + dy) 为中心
+    //   @source 0x00403f82 / 0x00403fb3 / 0x00403ffc；字样见 `ROW_TEXT_STYLE`
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#10231a';
-    if (slot === AUTOSAVE_SLOT) {
-      // @source 0x00403f82：只有 0 号槽写这四个字母
-      ctx.font = 'bold 13px ui-monospace, monospace';
-      ctx.fillText('AUTO', r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.auto);
+    for (const t of rowTexts(slot, st)) {
+      drawGdiText(ctx, t.text, t.x, r.y + t.dy, ROW_TEXT_STYLE);
     }
     if (st !== null) {
-      ctx.font = `bold 15px ${FONT_FAMILY}`;
-      ctx.fillText(String(st.year), r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.year);
-      ctx.font = `14px ${FONT_FAMILY}`;
-      ctx.fillText(`${st.month}/${st.day}`, r.x + ROW_TEXT_X - ROW.x, r.y + ROW_TEXT_DY.date);
 
       const thumb = sprite(
         'Data.mkf', SAVELOAD_RESOURCE, MAP_THUMB_BASE + (st.globalMapId & 7), true,
       );
-      if (thumb !== null) ctx.drawImage(thumb.bitmap, ROW_THUMB_X, r.y, ROW.size, ROW.size);
+      if (thumb !== null) drawSprite(ctx, thumb, ROW_THUMB_X, r.y, ROW.size, ROW.size);
 
       // ★ 参与这一局的**每个**角色都画出来，不是只画轮到的那个
       //   @source 0x00404056 的循环，上界是存档头里的玩家数
       for (let i = 0; i < st.players.length; i++) {
         const face = sprite('Data.mkf', PORTRAIT_RESOURCE, st.players[i]?.character ?? 0, true);
         if (face === null) continue;
-        ctx.drawImage(face.bitmap, ROW_FACE_X0 + i * ROW_FACE_PITCH, r.y, ROW.size, ROW.size);
+        drawSprite(ctx, face, ROW_FACE_X0 + i * ROW_FACE_PITCH, r.y, ROW.size, ROW.size);
       }
     } else if (info !== undefined && info.error !== null) {
       ctx.textAlign = 'left';

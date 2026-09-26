@@ -26,11 +26,19 @@ import { FACILITY_TYPE, WHEEL, spinWheel } from '../rules/facility.ts';
 import { WatcomRng } from '../rng/watcom.ts';
 import { initialToolStock, toolsOf } from '../rules/tools.ts';
 import { releaseNpc } from '../rules/special-actors.ts';
+import { tickTurnCounters } from '../rules/blocking.ts';
 import { SPECIAL_KIND } from '../loaders/map.ts';
+import { WHO_PLAYS_COMPUTER } from './types.ts';
 
 // ============================================================
 //  住宅：走到别人的地產上
 // ============================================================
+
+/**
+ * ★ 第十四份：九种免收弹完框之后当前玩家（付款方，这里是 0 号）说事件 13
+ * @source `0x0041d6d2 mov edx,[… + 0x48087e]` → `0x0041d6dd player_say([0x49910c], 3, …)`
+ */
+const FREE_SAY = { player: 0, event: 13 } as const;
 
 const LAND = 1;
 /** 同盟者名下的同名地塊（level 1 → 租金表[1] = 500） */
@@ -112,7 +120,7 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
 
   it('★ 免費卡把那笔抹成 0 时，框**照样弹**（原版弹框在免費卡那一段之前）', () => {
     // 費 1200 > 現金 100 ⇒ 电脑必用免費卡（@source 0x444a9b）
-    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20] } }));
+    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } }));
     expect(after.players[0]!.cash).toBe(100);
     expect(after.landLastToll[LAND]).toBe(0);
     expect(after.notices[0]).toEqual({
@@ -132,6 +140,7 @@ describe('★★ 住宅：`RENT.payOneOwner`（0x00419d3e）', () => {
     expect(after.notices[0]).toEqual({
       key: 'rent.freePrison',
       args: ['沙隆巴斯', '過路費'],
+      say: FREE_SAY,
     });
     // 钱一分没动 —— 弹框不改规则
     expect(after.players[0]!.cash).toBe(50_000);
@@ -160,13 +169,13 @@ describe('★★ 免收訊息框：九种全弹', () => {
   it.each(cases)('★★★ 可证伪：地主 $reason ⇒ 键 $key（不弹就是红的）', ({ blocking, key }) => {
     const after = settle(onRivalLand({ owner: { blocking: confined(blocking) } }));
     // 旧实现（豁免直接 `return {...state, phase:'turnEnd'}`）这里是空数组 ⇒ 红
-    expect(after.notices[0]).toEqual({ key, args: ['沙隆巴斯', '過路費'] });
+    expect(after.notices[0]).toEqual({ key, args: ['沙隆巴斯', '過路費'], say: FREE_SAY });
   });
 
   it('★★★ 可证伪：查封（priceStatus 高低半字节都非 0）⇒ `rent.freeSealed`，**只有一个 `%s`**', () => {
     // @source 0x0041d59f `push 0x463bb8` —— 这一支只推了 esi（費名）
     const after = settle(onRivalLand({ priceStatus: 0x11 }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeSealed', args: ['過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeSealed', args: ['過路費'], say: FREE_SAY });
     // 多填一个名字就会红
     expect(after.notices[0]?.args).not.toEqual(['沙隆巴斯', '過路費']);
   });
@@ -174,13 +183,13 @@ describe('★★ 免收訊息框：九种全弹', () => {
   it('★★★ 可证伪：同盟（地主的同盟对象 == 付款方 + 1）⇒ `rent.freeAllied`，名字 + 費名', () => {
     // @source 0x0041d5ce `push esi`（費名）+ `0x41d5cf lea eax,[esp+0x84]`（地主名）
     const after = settle(onRivalLand({ owner: { alliedPlayer: 1 } }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeAllied', args: ['沙隆巴斯', '過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeAllied', args: ['沙隆巴斯', '過路費'], say: FREE_SAY });
   });
 
   it('★★★ 可证伪：死神顯靈（god_info 0xf）⇒ `rent.freeReaper`，**只有一个 `%s`**', () => {
     // @source 0x0041d5fa `push 0x463be2` —— 与查封同形，只有一个实参
     const after = settle(onRivalLand({ owner: { godInfo: 0xf } }));
-    expect(after.notices[0]).toEqual({ key: 'rent.freeReaper', args: ['過路費'] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeReaper', args: ['過路費'], say: FREE_SAY });
     expect(after.notices[0]?.args).not.toEqual(['沙隆巴斯', '過路費']);
   });
 
@@ -243,11 +252,11 @@ describe('★★ 死神顯靈由他人賠償：租金框之后**再**弹一扇',
 
   it('★★★ 可证伪：免費卡把那笔抹成 0 时死神框**不弹**（原版 `test ebp,ebp / je`）', () => {
     // @source 0x00419ec7 `test ebp, ebp / je 0x419f2a` —— 费为 0 就跳过死神框
-    const s = onRivalLand({ payer: { cash: 100, cards: [20] } });
+    const s = onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } });
     const players = s.players.map((p, i) => (i === 2 ? { ...p, godInfo: 0x0f } : p));
     const after = reduce({ ...s, players }, { type: 'settle' }, topo);
-    expect(after.notices).toHaveLength(1);
-    expect(after.notices[0]?.key).toBe('rent.payOneOwner');
+    // （免費卡的亮牌那一扇排在后面 —— 第十四份；死神框没有）
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner', 'card.use']);
   });
 });
 
@@ -545,7 +554,7 @@ describe('★★ 設施的免收框：費名查 `0x47528b` 表（不是住宅的
     const { state, topo } = facilityScene({ type, ownerBlocking: { inHospital: 2 } });
     const after = reduce(state, { type: 'settle' }, topo);
     // @source 0x0041a3b0 `movzx esi, byte [type + 0x47528b]` → `[esi*4 + 0x47517c]`
-    expect(after.notices[0]).toEqual({ key: 'rent.freeHospital', args: ['沙隆巴斯', fee] });
+    expect(after.notices[0]).toEqual({ key: 'rent.freeHospital', args: ['沙隆巴斯', fee], say: FREE_SAY });
     expect(after.notices[0]?.args[1]).not.toBe('過路費');
   });
 
@@ -914,5 +923,304 @@ describe('★★ W-69：`lastTollLands` —— 同一条街的连号地块一起
     const mine = { ...s, currentPlayer: 1 };
     const after = reduce(mine, { type: 'settle' }, topoStreet);
     expect(after.lastTollLands).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ 第十四份（需求方拍板照原版）：过路费的神明调整框 + 進帳台词提示
+// ============================================================
+
+describe('★★ 过路费神明调整那一扇（`fcn_0041d709`，`0x0041d7a2 push 0x5dc`）', () => {
+  it('★★ 小財神减半 ⇒ 租金框之后再弹「小財神顯靈／過路費減免一半！」；地主按减半后的那一笔说進帳', () => {
+    const after = settle(onRivalLand({ payer: { godInfo: GOD_SMALL_FORTUNE } }));
+    expect(after.notices).toEqual([
+      { key: 'rent.payOneOwner', args: ['測試地', '沙隆巴斯', 1200, '過路費'] },
+      { key: 'god.tollHalf', args: ['過路費'] },
+    ]);
+    // @source 0x00419ff0 call 0x44f354(地主, ebp) —— ebp 是神明调过之后的 600
+    expect(after.lastGainSays).toEqual([{ player: 1, amount: 600 }]);
+  });
+
+  it('★★ 大財神免付 ⇒ 「大財神顯靈／免付過路費！」+ 付款方说「逃过一劫」那一句（原额 1200，@source 0x0041d7c1）；地主不说', () => {
+    const after = settle(onRivalLand({ payer: { godInfo: 2 } }));
+    expect(after.notices).toEqual([
+      { key: 'rent.payOneOwner', args: ['測試地', '沙隆巴斯', 1200, '過路費'] },
+      { key: 'god.tollFree', args: ['過路費'], say: { player: 0, reliefAmount: 1200 } },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.lastGainSays ?? null).toBeNull();
+  });
+
+  it('★ 窮神两支：小窮神 ×1.5（`god.tollPlusHalf`）、大窮神 ×2（`god.tollDouble`），都不带 say', () => {
+    expect(settle(onRivalLand({ payer: { godInfo: 5 } })).notices[1]).toEqual({ key: 'god.tollPlusHalf', args: ['過路費'] });
+    expect(settle(onRivalLand({ payer: { godInfo: 6 } })).notices[1]).toEqual({ key: 'god.tollDouble', args: ['過路費'] });
+  });
+
+  it('★ 福神（3/4）不改金额 ⇒ 不弹（`0x0041d79e cmp ebx,esi / je`）', () => {
+    expect(settle(onRivalLand({ payer: { godInfo: 3 } })).notices).toHaveLength(1);
+  });
+
+  it('★★ 同盟分账 ⇒ 只有**地主**说進帳，金额是地主那一份（`0x00419f92 ebx = ebp − 同盟份` → `0x00419fa1`）', () => {
+    const after = settle(onRivalLand({ owner: { alliedPlayer: 3 } }));
+    const says = after.lastGainSays ?? [];
+    expect(says).toHaveLength(1);
+    expect(says[0]!.player).toBe(1);
+    expect(says[0]!.amount).toBeLessThan(1700);
+    // 同盟那份没被截断（付款方钱够）⇒ 地主那份 = 1700 − 同盟实收
+    expect(says[0]!.amount).toBe(1700 - after.players[2]!.monthlyReceived);
+  });
+
+  it('★★ 設施：主人说進帳（`0x0041a735`）；大財神免付 ⇒ 框 + 付款方那一句、主人不说', () => {
+    const plain = facilityScene({ type: FACILITY_TYPE.gasStation });
+    const a = reduce(plain.state, { type: 'settle' }, plain.topo);
+    expect(a.lastGainSays).toEqual([{ player: 1, amount: a.facilityLastToll[FAC] }]);
+    const waived = facilityScene({ type: FACILITY_TYPE.gasStation, godInfo: 2 });
+    const b = reduce(waived.state, { type: 'settle' }, waived.topo);
+    expect(b.notices.at(-1)).toEqual({ key: 'god.tollFree', args: ['加油費'], say: { player: 0, reliefAmount: expect.any(Number) } });
+    expect(b.lastGainSays ?? null).toBeNull();
+  });
+});
+
+describe('★★ 第十四份：企業收費也过神明调整（@source 0x0041aec5 call 0x41d709）', () => {
+  it('★★ 小財神附身 ⇒ 董事長框（原价 3000）之后再弹「減免一半」，只付 1500', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: GOD_SMALL_FORTUNE }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'god.tollHalf', args: ['過路費'] },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000 - 1500);
+    expect(after.players[0]!.monthlyPaid).toBe(1500);
+  });
+
+  it('★★ 大財神附身 ⇒ 「免付」框 + 付款方「逃过一劫」那一句（原额 3000，@source 0x0041d7c1），一分不付', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: 2 }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'god.tollFree', args: ['過路費'], say: { player: 0, reliefAmount: 3000 } },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.companyFunds[CID] ?? 0).toBe(0);
+  });
+
+  it('★ 大窮神附身 ⇒ 加倍付（6000）', () => {
+    const after = reduce(onRivalCompany(INDUSTRY.sect, { godInfo: 6 }), { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.notices[1]).toEqual({ key: 'god.tollDouble', args: ['過路費'] });
+    expect(after.players[0]!.cash).toBe(50_000 - 6000);
+  });
+});
+
+describe('★★ 第十四份：企業收費的免費卡 / 嫁禍卡 / 死神（`0x0041aed7` 起，与住宅同一段尾巴）', () => {
+  /** 在 `onRivalCompany` 上补一个 2 号（替死鬼 / 死神候选） */
+  function withThird(payer: Parameters<typeof makePlayer>[0], third: Parameters<typeof makePlayer>[0] = {}) {
+    const s = onRivalCompany(INDUSTRY.sect, payer);
+    return {
+      ...s,
+      players: [...s.players, makePlayer({ index: 2, character: 2, nodeId: 3, cash: 80_000, moneyInBank: 0, ...third })],
+    };
+  }
+  const topoC = () => companyTopo(INDUSTRY.sect);
+
+  it('★★ 免費卡（費 3000 > 現金 100 ⇒ 电脑必用，@source 0x0041af20 / 0x00444ac4）⇒ 卡用掉、一分不付、没有死神框', () => {
+    const before = withThird({ cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[0]!.monthlyPaid).toBe(0);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'card.use']);
+  });
+
+  it('★★ 嫁禍卡（@source 0x0041af75 call 0x44476a）⇒ 卡用掉、换人付', () => {
+    // 最恨 2 号 ⇒ 电脑嫁禍给他（@source 0x004448b0 的候选 = hostility 最大者）
+    const before = withThird({ cash: 100, cards: [19], hostility: [0, 0, 5, 0], whoPlays: WHO_PLAYS_COMPUTER });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.players[2]!.monthlyPaid).toBe(3000);
+    expect(after.companyFunds[CID]).toBe(3000);
+  });
+
+  it('★★ 死神顯靈由他人賠償（@source 0x0041af99 call 0x40fbb8 / 0x0041afd0 push 0x4639cc，%s = 死神名 + 費名）', () => {
+    const before = withThird({}, { godInfo: 0xe });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.notices).toEqual([
+      { key: 'rent.payBoss', args: ['測試公司', '沙隆巴斯', 3000, '過路費'] },
+      { key: 'rent.reaperPays', args: ['忍太郎', '過路費'] },
+    ]);
+    expect(after.players[0]!.cash).toBe(50_000);
+    expect(after.players[2]!.cash).toBe(80_000 - 3000);
+  });
+
+  it('★ 大財神抹成 0 ⇒ 免費卡与死神都不走（门槛按调整后的 0 判，`0x0041af84 test ebp,ebp`）', () => {
+    const before = withThird({ godInfo: 2, cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER }, { godInfo: 0xe });
+    const after = reduce(before, { type: 'settle' }, topoC());
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payBoss', 'god.tollFree']);
+  });
+});
+
+describe('★★ 第十四份：免費卡的亮牌 + 出牌者那句 + 地主回一句（`fcn_00444a60` 的 `0x00444b07`..`0x00444b98`）', () => {
+  it('★★ 住宅：`lastCardPlay` = 付款方用了卡 20，排在收費框之后，地主（1 号）回一句', () => {
+    const after = settle(onRivalLand({ payer: { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER } }));
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false, answeredBy: 1 });
+    expect(after.notices.map((n) => n.key)).toEqual(['rent.payOneOwner', 'card.use']);
+  });
+
+  it('★ 企業：地主实参 −1（`0x0041af1d push -1`）⇒ 没有回话', () => {
+    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20], whoPlays: WHO_PLAYS_COMPUTER });
+    const after = reduce(s, { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false });
+  });
+
+  it('★ 没用卡 ⇒ 不写 `lastCardPlay`', () => {
+    expect(settle(onRivalLand()).lastCardPlay).toBeNull();
+  });
+});
+
+describe('★★ 第十四份：航空的旅遊（`0x0041b05a call 0x40d375(付款人, 天数, 0)`）', () => {
+  /** 找一个让航空转盘转出非 0 天的随机状态 */
+  function airline(payer: Parameters<typeof makePlayer>[0] = {}) {
+    const topoA = companyTopo(INDUSTRY.airline);
+    for (let seed = 1; seed < 200; seed++) {
+      const s = { ...onRivalCompany(INDUSTRY.airline, payer), rngState: seed };
+      const after = reduce(s, { type: 'settle' }, topoA);
+      if (after.notices.some((n) => n.key === 'rent.payChairman')) return { before: s, after };
+    }
+    throw new Error('no seed');
+  }
+
+  it('★★ 付完旅遊費就出國：`+0x33 = 天数`（原因 0），倒楣天数累加，说小额损失那一句', () => {
+    const { before, after } = airline();
+    const fee = after.notices.find((n) => n.key === 'rent.payChairman')!.args[2] as number;
+    const days = fee / 500; // 費 = 天 × 地價 500 × 物價 1
+    expect(after.players[0]!.blocking.disappearing).toBe(days);
+    expect(after.players[0]!.totalWinterSleepDays).toBe(before.players[0]!.totalWinterSleepDays + days);
+    // 1..3 天 ⇒ `fcn_0044f2c2` 最低档：事件 5
+    expect(after.lastDisappearSay).toEqual({ player: 0, event: 5 });
+  });
+
+  it('★ 保險期内 ⇒ 出國也理赔 2000×天×物價（`0x0040d425`），框排在台词之后', () => {
+    const { after } = airline({ insuranceDays: 30 });
+    const days = after.players[0]!.blocking.disappearing;
+    expect(after.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [2000 * days], holdMs: 2000 });
+  });
+
+  /**
+   * ★★ 第十九份試玩回報「梦游还能被送出国旅游吗」：**能**，原版就是这样。
+   *   · 夢遊者的落点闸（`0x00419873`）只挡 `node+0x24 & 0xff != 0` 的特殊格；企業格是 0 ⇒ 照常收费；
+   *   · 航空那一支 `0x0041b02a..0x0041b05a` 的闸门只有：企業是航空、转出的天数非 0、付款人在场（`who_plays != 0`）、
+   *     终局码 0 —— **不看** `+0x37`；
+   *   · `0x40d375` 自己只查 `+0x33`（已经在消失就不再送，`0x0040d39e`），同样**不看** `+0x37`。
+   *   · 出國期间夢遊天數**冻住**：回合边界 `0x0041caf7 cmp dword [p+0x32], 0 / jne` 把 `+0x36` / `+0x37` 两项一起跳过
+   *     （`rules/blocking.ts` 的 `tickTurnCounters`），回来后接着夢遊剩下的天数。
+   */
+  it('★★ 夢遊中的付款人照样被航空送出國；夢遊天數原样保留（出國期间不走）', () => {
+    const sleepwalk = { ...makePlayer().blocking, sleepWalking: 3 };
+    const { after } = airline({ blocking: sleepwalk });
+    const days = after.players[0]!.blocking.disappearing;
+    expect(days).toBeGreaterThan(0);
+    expect(after.players[0]!.blocking.sleepWalking).toBe(3);
+    // 出國期间回合边界：夢遊天數不减（`0x0041caf7` 那道闸）
+    const ticked = tickTurnCounters(after.players[0]!);
+    expect(ticked.player.blocking.sleepWalking).toBe(3);
+    expect(ticked.wakeFromSleepwalk).toBe(false);
+  });
+
+});
+
+describe('★★ 第十四份（D-008 收口）：企業 / 設施两条路的真人那一问', () => {
+  it('★ 企業：真人有免費卡 ⇒ 停在 `freeCard`；答 YES ⇒ 用卡，出口照问認購（`afterCompany`）', () => {
+    const s = onRivalCompany(INDUSTRY.sect, { cash: 100, cards: [20] });
+    const asked = reduce(s, { type: 'settle' }, companyTopo(INDUSTRY.sect));
+    expect(asked.pending?.kind).toBe('freeCard');
+    const after = reduce(asked, { type: 'answerFreeCard', use: true }, companyTopo(INDUSTRY.sect));
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.players[0]!.cash).toBe(100);
+    expect(after.lastCardPlay).toEqual({ player: 0, cardId: 20, popup: false });
+    expect(after.pending?.kind ?? null).not.toBe('freeCard');
+  });
+
+  // ★★ 2026-09-24 审计订正：設施这一路**有**免費卡那一问，只有旅館跳过（`0x0041a5d5 cmp [fac+0x18],1 / je`）
+  it('★ 設施（旅館）：跳过免費卡，直接问嫁禍卡（`0x0041a5d9 je 0x41a63d`）', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.hotel, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    expect(reduce(withCards, { type: 'settle' }, t).pending?.kind).toBe('scapegoat');
+  });
+
+  it('★ 設施（加油站）：先问免費卡（`0x0041a62e`），不用再问嫁禍卡', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const freeAsked = reduce(withCards, { type: 'settle' }, t);
+    expect(freeAsked.pending?.kind).toBe('freeCard');
+    const asked = reduce(freeAsked, { type: 'answerFreeCard', use: false }, t);
+    expect(asked.pending?.kind).toBe('scapegoat');
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.players[2]!.monthlyPaid).toBeGreaterThan(0);
+  });
+
+  it('★ 審計補：嫁禍給正在坐牢的人 ⇒ 先出獄（0x0041a7c5 call 0x40d761）再住店', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.hotel, steps: 12 });
+    const jailed = makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 });
+    const prisonOccupancy = [...state.prisonOccupancy];
+    prisonOccupancy[2] = 1;
+    const withCards: typeof state = {
+      ...state,
+      prisonOccupancy,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [19] } : p)),
+        { ...jailed, blocking: { ...jailed.blocking, inPrison: 3 } },
+      ],
+    };
+    const asked = reduce(withCards, { type: 'settle' }, t);
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[2]!.blocking.inPrison).toBe(0);
+    expect(after.prisonOccupancy[2]).toBe(0);
+    expect(after.players[2]!.blocking.inHotel).not.toBe(0);
+  });
+
+  it('★ 審計訂正：加油站 / 購物中心**也问**免費卡（`0x0041a5db..0x0041a63b`，与住宅同一套），用了就不付', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const asked = reduce(withCards, { type: 'settle' }, t);
+    expect(asked.pending?.kind).toBe('freeCard');
+    const used = reduce(asked, { type: 'answerFreeCard', use: true }, t);
+    // 費抹成 0 ⇒ 嫁禍卡那一问不再触发（`0x0041a659 cmp ebp, 2000×物價` 且 `0 > 現金+存款` 都不成立）
+    expect(used.pending?.kind ?? null).not.toBe('scapegoat');
+    expect(used.players[0]!.cards).toEqual([19]);
+    expect(used.players[0]!.cash).toBe(100);
+  });
+
+  it('★ 審計保留：加油站拒用免費卡 ⇒ 接着问嫁禍卡', () => {
+    const { state, topo: t } = facilityScene({ type: FACILITY_TYPE.gasStation, steps: 12 });
+    const withCards: typeof state = {
+      ...state,
+      players: [
+        ...state.players.map((p, i) => (i === 0 ? { ...p, cash: 100, moneyInBank: 0, cards: [20, 19] } : p)),
+        makePlayer({ index: 2, character: 2, nodeId: 1, cash: 90_000 }),
+      ],
+    };
+    const asked = reduce(reduce(withCards, { type: 'settle' }, t), { type: 'answerFreeCard', use: false }, t);
+    expect(asked.pending?.kind).toBe('scapegoat');
+    const after = reduce(asked, { type: 'answerScapegoat', target: 2 }, t);
+    expect(after.players[0]!.cards).toEqual([20]);
+    expect(after.players[2]!.monthlyPaid).toBeGreaterThan(0);
   });
 });

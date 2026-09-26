@@ -19,6 +19,9 @@ import {
   AI_ORIGIN,
   AI_PLATE_X,
   AI_PORTRAIT_AT,
+  AI_RESOURCE,
+  AI_ROW_OFF,
+  AI_ROW_ON,
   AI_RATIO_STEP,
   AI_ROW_PITCH,
   AI_SEG,
@@ -26,13 +29,20 @@ import {
   AI_TEXT,
   AI_W,
   drawAiSettings,
+  aiCommitActions,
+  aiInitialSelection,
+  aiSettingsDown,
+  aiSettingsDrag,
+  aiSettingsUp,
   hitAiSettings,
+  openAiSettingsModel,
   ratioFromX,
   rowFlags,
   rowMatchesPlayer,
   rowY,
   type AiSettingRow,
   type AiSettingsHit,
+  type AiSettingsModel,
 } from './ai-settings.ts';
 import type { Sprite } from './assets.ts';
 
@@ -219,15 +229,19 @@ describe('hitAiSettings', () => {
     expect(hit(center(AI_BTN_CANCEL))).toEqual({ kind: 'cancel' });
   });
 
-  it('★ 托管总开关 = 整块行底板（原版判的是 x ∈ (110,226)、y ∈ (70+83n, 153+83n)）', () => {
+  it('★ 玩家行 = 整块行底板，**开区间**（原版判的是 110 < x < 226、70+83n < y < 153+83n）', () => {
     // 底板相对放在 (8, 8)，116×83
     expect(AI_PLATE_X).toBe(8);
     expect(AI_ROW_PITCH).toBe(0x53);
-    expect(hit({ x: AI_LED_AT.x + 7, y: rowY(0) + 7 })).toEqual({ kind: 'autopilot', row: 0 });
-    // 底板四角都算
-    for (const [x, y] of [[8, 8], [123, 8], [8, 90], [123, 90]] as const) {
-      expect({ x, y, hit: hit({ x, y }) }).toMatchObject({ hit: { kind: 'autopilot', row: 0 } });
+    expect(hit({ x: AI_LED_AT.x + 7, y: rowY(0) + 7 })).toEqual({ kind: 'row', row: 0 });
+    // 开区间的四个内角都算
+    for (const [x, y] of [[9, 9], [123, 9], [9, 90], [123, 90]] as const) {
+      expect({ x, y, hit: hit({ x, y }) }).toMatchObject({ hit: { kind: 'row', row: 0 } });
     }
+    // @source 0x0041decd `cmp esi,0x6e / jle`、0x0041deda `cmp edi,ecx / jle`：边线本身不算
+    expect(hit({ x: 8, y: 40 })).toBeNull();
+    expect(hit({ x: 40, y: 8 })).toBeNull();
+    expect(hit({ x: 124, y: 40 })).toBeNull();
   });
 
   it('★ 五个选项圆点各自命中（点圆点或右边文字都算）', () => {
@@ -301,16 +315,16 @@ describe('hitAiSettings', () => {
     });
   });
 
-  it('★ 滑槽改的是「当前玩家」那一行，不是永远第一行', () => {
+  it('★ 选项与滑槽改的是**选中那一行**（`[0x48be4c]`），不是永远第一行', () => {
     const rows: AiSettingRow[] = [
       { player: 0, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
       { player: 2, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
     ];
     const p = { x: AI_SLIDERS.cash.x + 10, y: AI_SLIDERS.cash.y + 10 };
-    expect(hitAiSettings(p, rows, 2)).toMatchObject({ kind: 'ratio', row: 1 });
+    expect(hitAiSettings(p, rows, 1)).toMatchObject({ kind: 'ratio', row: 1 });
     expect(hitAiSettings(p, rows, 0)).toMatchObject({ kind: 'ratio', row: 0 });
-    // 当前玩家不可编辑（电脑）→ 退回第一行，不抛
-    expect(hitAiSettings(p, rows, 1)).toMatchObject({ kind: 'ratio', row: 0 });
+    expect(hitAiSettings({ x: AI_DOT_X, y: AI_DOT_AT[3] }, rows, 1)).toEqual({ kind: 'personality', row: 1, value: 1 });
+    expect(hitAiSettings({ x: AI_DOT_X, y: AI_DOT_AT[0] }, rows, 1)).toEqual({ kind: 'ability', row: 1, bit: 0 });
   });
 
   it('对话框外 → null', () => {
@@ -319,7 +333,7 @@ describe('hitAiSettings', () => {
     // 左侧木纹条的空白处：不在 LED、不在圆点行、不在滑槽、不在按钮
     expect(hit({ x: 60, y: 340 })).toBeNull();
     // ⚠️ (20,20) 不算「外」—— LED 就在 (8,8) 起 15×15，那里正好是 LED
-    expect(hit({ x: 20, y: 20 })).toEqual({ kind: 'autopilot', row: 0 });
+    expect(hit({ x: 20, y: 20 })).toEqual({ kind: 'row', row: 0 });
   });
 
   it('★ 按钮优先于行区（不会被下面的行抢走）', () => {
@@ -466,7 +480,7 @@ describe('drawAiSettings', () => {
 
   it('★ 原版的字面写法照抄（「個 性」中间有空格）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, ROWS, null, () => sprite());
+    drawAiSettings(f.ctx, s, ROWS, () => sprite());
     expect(f.texts).toContain('託管AI');
     expect(f.texts).toContain('個 性');
     expect(f.texts).toContain('資金運用比例');
@@ -478,7 +492,7 @@ describe('drawAiSettings', () => {
 
   it('★ 比例只画**填充**，不画数字（原版没有百分比文字，加数字属「改良」）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 70, stockRatio: 15 }], () => sprite());
 
     expect(f.texts.some((t) => t.includes('%'))).toBe(false);
     // ★ 格数 = [比例 / 10]：70 → 7 格，15 → 1 格（不是两条按比例的长条）
@@ -496,25 +510,265 @@ describe('drawAiSettings', () => {
 
   it('★ 满档 = 10 格（不是 11 格，也不是「长度铺满」）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 100 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 100, stockRatio: 100 }], () => sprite());
     expect(f.rects).toHaveLength(20);
   });
 
   it('比例为 0 时不填（免得画出一条 0 宽的线）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 0, stockRatio: 0 }], null, () => sprite());
+    drawAiSettings(f.ctx, s, [{ ...ROWS[0]!, cashRatio: 0, stockRatio: 0 }], () => sprite());
     expect(f.rects).toHaveLength(0);
   });
 
   it('没有草稿（没人是真人）也画得出来', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, [], null, () => sprite());
+    drawAiSettings(f.ctx, s, [], () => sprite());
     expect(f.texts).toContain('託管AI');
   });
 
   it('精灵全缺也不抛（底图没到就只剩文字）', () => {
     const f = fakeCtx();
-    drawAiSettings(f.ctx, s, ROWS, null, () => null);
+    drawAiSettings(f.ctx, s, ROWS, () => null);
     expect(f.texts).toContain('託管AI');
+  });
+});
+
+describe('★ gap-audit #20 / Q-LAYOUT-1 结案：图 1 / 图 2（116×86）盖的是**一位玩家那一行**，不是选项组', () => {
+  // @source 入口 0x0041e61c..0x0041e62c：每位真人 `fcn_004562a5(图 2, 8, edi)`，edi 从 8 起、每行 +0x53；
+  //   WM_PAINT loc_0041dbe0：`i == [0x48be4c]`（选中的那一行）才 `fcn_00456418(图 1, 0x6e, 0x46 + 0x53·i)`
+  //   —— 屏幕 (0x6e, 0x46) − 对话框原点 (0x66, 0x3e) = 对话框内 (8, 8)，与图 2 同一块；整张贴，不裁。
+  it('当前那一行贴图 1、其余贴图 2，都整张落在 (8, 8 + 83n)', () => {
+    const draws: { res: number; index: number; x: number; y: number; n: number }[] = [];
+    const ctx = {
+      font: '',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      textAlign: 'left',
+      textBaseline: 'top',
+      save: () => undefined,
+      restore: () => undefined,
+      translate: () => undefined,
+      beginPath: () => undefined,
+      rect: () => undefined,
+      clip: () => undefined,
+      drawImage: (b: { res: number; index: number }, x: number, y: number, ...rest: number[]) => {
+        draws.push({ ...b, x, y, n: rest.length });
+      },
+      fillRect: () => undefined,
+      fillText: () => undefined,
+      strokeText: () => undefined,
+      strokeRect: () => undefined,
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+    } as unknown as CanvasRenderingContext2D;
+    const sp = (_a: string, res: number, index: number): Sprite =>
+      ({ bitmap: { res, index } as unknown as ImageBitmap, width: 116, height: 86, anchorX: 0, anchorY: 0 });
+    const state = { players: [player({ index: 0 }), player({ index: 1 })], currentPlayer: 1 } as unknown as GameState;
+    const rows: AiSettingRow[] = [
+      { player: 0, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+      { player: 1, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+    ];
+    drawAiSettings(ctx, state, rows, sp);
+    const plates = draws.filter((d) => d.res === AI_RESOURCE && (d.index === AI_ROW_ON || d.index === AI_ROW_OFF));
+    expect(plates).toEqual([
+      { res: AI_RESOURCE, index: AI_ROW_OFF, x: AI_PLATE_X, y: rowY(0), n: 0 },
+      { res: AI_RESOURCE, index: AI_ROW_ON, x: AI_PLATE_X, y: rowY(1), n: 0 },
+    ]);
+    expect([rowY(0), rowY(1)]).toEqual([8, 8 + 0x53]);
+    expect(AI_ROW_PITCH).toBe(0x53);
+  });
+});
+
+// ============================================================
+//  pt26-input #1：原版的「先选中、再点一次才翻託管」
+// ============================================================
+
+describe('★ pt26 #1：玩家行 —— 点没选中的只选中，点已选中的才翻託管 @source loc_0041def4', () => {
+  const H = WHO_PLAYS_HUMAN;
+  const A = WHO_PLAYS_AUTOPILOT;
+  const two = (): AiSettingRow[] => [
+    { player: 0, whoPlays: H, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+    { player: 2, whoPlays: H, aiFlags: 1, personality: 2, cashRatio: 20, stockRatio: 70 },
+  ];
+  const model = (sel: number): AiSettingsModel => ({ rows: two(), sel, pressed: null });
+  const rowPt = (n: number) => ({ x: AI_LED_AT.x + 7, y: rowY(n) + 7 });
+  /** 一次完整的点：按下（命中按当时的选中行算）→ 抬手 */
+  const click = (m: AiSettingsModel, p: { x: number; y: number }, editable?: (r: AiSettingRow) => boolean) => {
+    const down = aiSettingsDown(m, hitAiSettings(p, m.rows, m.sel), editable);
+    return aiSettingsUp(down, editable);
+  };
+
+  it('开屏选中「轮到的那位」那一行 @source 0x0041e5b3..0x0041e5be `if (i == [0x49910c]) [0x48be4c] = 行号`', () => {
+    const s = { players: [player({ index: 0 }), player({ index: 1, whoPlays: WHO_PLAYS_COMPUTER }), player({ index: 2 })], currentPlayer: 2 } as unknown as GameState;
+    expect(openAiSettingsModel(s, 2, 0)).toMatchObject({ sel: 1, pressed: null });
+    expect(openAiSettingsModel(s, 0, 1)).toMatchObject({ sel: 0 });
+  });
+
+  it('★ 轮到的不是真人：沿用上一次的选中行（`[0x48be4c]` 不在入口的 memset 里）；越界才退回 0', () => {
+    expect(aiInitialSelection(two(), 1, 1)).toBe(1);
+    expect(aiInitialSelection(two(), 1, 0)).toBe(0);
+    expect(aiInitialSelection(two(), 1, 5)).toBe(0);
+    expect(aiInitialSelection(two(), null, 1)).toBe(1);
+  });
+
+  it('★ 单机·热座：点**没选中**的那一行 → 只选中，託管位不动', () => {
+    const { model: m } = click(model(0), rowPt(1));
+    expect(m.sel).toBe(1);
+    expect(m.rows.map((r) => r.whoPlays)).toEqual([H, H]);
+  });
+
+  it('★ 单机·热座：点**已选中**的那一行 → 翻託管（再点一次翻回来）', () => {
+    const once = click(model(1), rowPt(1)).model;
+    expect(once.sel).toBe(1);
+    expect(once.rows.map((r) => r.whoPlays)).toEqual([H, H | A]);
+    const twice = click(once, rowPt(1)).model;
+    expect(twice.rows.map((r) => r.whoPlays)).toEqual([H, H]);
+  });
+
+  it('★ 先选中、再点一次 = 原版的两下（第一下选中，第二下才翻）', () => {
+    let m = model(0);
+    m = click(m, rowPt(1)).model;
+    expect(m.rows[1]!.whoPlays).toBe(H);
+    m = click(m, rowPt(1)).model;
+    expect(m.rows[1]!.whoPlays).toBe(H | A);
+    // 第 0 行从头到尾没动过
+    expect(m.rows[0]!.whoPlays).toBe(H);
+  });
+
+  it('★ 行上那一下在**按下**就办完（原版 0x201 那一支），抬手对它什么都不做', () => {
+    const m = model(1);
+    const down = aiSettingsDown(m, hitAiSettings(rowPt(1), m.rows, m.sel));
+    expect(down.rows[1]!.whoPlays).toBe(H | A);
+    expect(down.pressed).toEqual({ kind: 'row', row: 1 });
+    const up = aiSettingsUp(down);
+    expect(up.close).toBeNull();
+    expect(up.model.pressed).toBeNull();
+    expect(up.model.rows[1]!.whoPlays).toBe(H | A);
+  });
+
+  it('★ 选项在**抬手**才生效，且只认按下时那一颗（抬手坐标不看）@source loc_0041e0b1', () => {
+    const m = model(1);
+    const p = { x: AI_DOT_X, y: AI_DOT_AT[3] }; // 普通人
+    const down = aiSettingsDown(m, hitAiSettings(p, m.rows, m.sel));
+    expect(down.rows[1]!.personality).toBe(2); // 按下还没改
+    const up = aiSettingsUp(down);
+    expect(up.model.rows[1]!.personality).toBe(1); // 改的是选中那一行
+    expect(up.model.rows[0]!.personality).toBe(0);
+  });
+
+  it('选项改的是选中行：切到另一行再点，改的就是那一行', () => {
+    let m = click(model(1), rowPt(0)).model;
+    expect(m.sel).toBe(0);
+    m = click(m, { x: AI_DOT_X, y: AI_DOT_AT[0] }).model; // 使用卡片
+    expect(m.rows[0]!.aiFlags).toBe(2);
+    expect(m.rows[1]!.aiFlags).toBe(1);
+  });
+
+  it('滑槽按下就改、按住拖着改（`loc_0041de44` / `loc_0041de2e`），抬手不再改', () => {
+    const m = model(0);
+    const r = AI_SLIDERS.cash;
+    const down = aiSettingsDown(m, hitAiSettings({ x: r.x + 3 * AI_SEG.pitch, y: r.y + 5 }, m.rows, m.sel));
+    expect(down.rows[0]!.cashRatio).toBe(30);
+    const dragged = aiSettingsDrag(down, { x: r.x + 6 * AI_SEG.pitch, y: 0 });
+    expect(dragged.rows[0]!.cashRatio).toBe(60);
+    const up = aiSettingsUp(dragged).model;
+    expect(up.rows[0]!.cashRatio).toBe(60);
+    // 松开之后再移动：不改
+    expect(aiSettingsDrag(up, { x: r.x, y: r.y + 5 })).toBe(up);
+  });
+
+  it('確定 / 取消在抬手才关屏', () => {
+    const m = model(0);
+    const ok = aiSettingsDown(m, hitAiSettings(center(AI_BTN_OK), m.rows, m.sel));
+    expect(aiSettingsUp(ok).close).toBe('ok');
+    const cancel = aiSettingsDown(m, hitAiSettings(center(AI_BTN_CANCEL), m.rows, m.sel));
+    expect(aiSettingsUp(cancel).close).toBe('cancel');
+    // 按在空白处 → 抬手什么都不做
+    const none = aiSettingsDown(m, hitAiSettings({ x: 60, y: 340 }, m.rows, m.sel));
+    expect(aiSettingsUp(none)).toEqual({ model: { ...m, pressed: null }, close: null });
+  });
+
+  it('★ 联机：本机座位（2 号）那一行照原版选中 → 再点才翻；别人（0 号）那一行点得选中、翻不动、改不动', () => {
+    const mine = (r: AiSettingRow) => r.player === 2;
+    // 选中自己那一行，再点一次才翻
+    let m = click(model(0), rowPt(1), mine).model;
+    expect(m.sel).toBe(1);
+    expect(m.rows[1]!.whoPlays).toBe(H);
+    m = click(m, rowPt(1), mine).model;
+    expect(m.rows[1]!.whoPlays).toBe(H | A);
+    // 别人那一行：第一下选中（看得到他的设置）……
+    m = click(m, rowPt(0), mine).model;
+    expect(m.sel).toBe(0);
+    // ……第二下不翻
+    m = click(m, rowPt(0), mine).model;
+    expect(m.rows[0]!.whoPlays).toBe(H);
+    // 选项、箭头、滑槽也改不动他那一行
+    m = click(m, { x: AI_DOT_X, y: AI_DOT_AT[4] }, mine).model;
+    m = click(m, center(AI_ARROWS.cash[1]!), mine).model;
+    const r = AI_SLIDERS.stock;
+    m = click(m, { x: r.x + 2 * AI_SEG.pitch, y: r.y + 5 }, mine).model;
+    expect(m.rows[0]).toEqual(two()[0]);
+  });
+
+  it('绘制：选项圆点与比例条画的是**选中那一行**（不是第一行、也不是每行叠画）', () => {
+    const images: { x: number; y: number }[] = [];
+    const rects: { x: number; y: number }[] = [];
+    const ctx = {
+      font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'top',
+      save: () => undefined, restore: () => undefined, translate: () => undefined,
+      drawImage: (b: { index: number }, x: number, y: number) => {
+        if (b.index === 3) images.push({ x, y });
+      },
+      fillRect: (x: number, y: number) => rects.push({ x, y }),
+      fillText: () => undefined, strokeText: () => undefined, strokeRect: () => undefined,
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+    } as unknown as CanvasRenderingContext2D;
+    const sp = (_a: string, _res: number, index: number): Sprite =>
+      ({ bitmap: { index } as unknown as ImageBitmap, width: 15, height: 15, anchorX: 0, anchorY: 0 });
+    const state = { players: [player({ index: 0 }), player({ index: 1 }), player({ index: 2 })], currentPlayer: 0 } as unknown as GameState;
+    drawAiSettings(ctx, state, two(), sp, 1);
+    // 第 1 行：aiFlags 1（只亮「使用卡片」）+ 個性 2（大老奸）→ 两颗亮点，都在圆点列上
+    const dots = images.filter((d) => d.x === AI_DOT_X - 7);
+    expect(dots.map((d) => d.y + 7)).toEqual([AI_DOT_AT[0], AI_DOT_AT[4]]);
+    // 比例条：現金 20 → 2 格、股票 70 → 7 格
+    expect(rects).toHaveLength(2 + 7);
+  });
+});
+
+describe('★ pt26 #1：確定只发变过的行；联机只发本机座位那一行', () => {
+  const players = [player({ index: 0 }), player({ index: 1, whoPlays: WHO_PLAYS_COMPUTER }), player({ index: 2 })];
+  const rows = (): AiSettingRow[] => [
+    { player: 0, whoPlays: WHO_PLAYS_HUMAN | WHO_PLAYS_AUTOPILOT, aiFlags: 3, personality: 0, cashRatio: 50, stockRatio: 30 },
+    { player: 2, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 1, cashRatio: 50, stockRatio: 30 },
+  ];
+  it('单机：两行都变了 → 两条 setAi', () => {
+    expect(aiCommitActions(rows(), players).map((a) => (a as { player: number }).player)).toEqual([0, 2]);
+  });
+  it('没变过的行不发', () => {
+    expect(aiCommitActions(aiSettingsDraft({ players } as GameState), players)).toEqual([]);
+  });
+  it('★ 联机（本机 2 号座）：只发 2 号那一行', () => {
+    const acts = aiCommitActions(rows(), players, (r) => r.player === 2);
+    expect(acts).toEqual([
+      { type: 'setAi', player: 2, whoPlays: WHO_PLAYS_HUMAN, aiFlags: 3, personality: 1, cashRatio: 50, stockRatio: 30 },
+    ]);
+  });
+});
+
+describe('★ pt26：託管AI 屏没有悬停高亮 @source loc_0041de2e（WM_MOUSEMOVE 只管按住滑槽）', () => {
+  it('drawAiSettings 不画任何描边框', () => {
+    let strokes = 0;
+    const ctx = {
+      font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'top',
+      save: () => undefined, restore: () => undefined, translate: () => undefined,
+      drawImage: () => undefined, fillRect: () => undefined, fillText: () => undefined, strokeText: () => undefined,
+      strokeRect: () => {
+        strokes++;
+      },
+      measureText: (t: string) => ({ width: t.length * 14 }) as TextMetrics,
+    } as unknown as CanvasRenderingContext2D;
+    const s = { players: [player({ index: 0 })], currentPlayer: 0 } as unknown as GameState;
+    drawAiSettings(ctx, s, ROWS, () => null, 0);
+    expect(strokes).toBe(0);
   });
 });

@@ -253,3 +253,90 @@ export function checkTollPassives(
   }
   return { kind: 'none' };
 }
+
+// ============================================================
+//  嫁禍卡 `0x44476a(持有者, mode, 参数)` 的**电脑支**
+// ============================================================
+
+/** 嫁禍卡的调用模式（第二参）：0 = 夢遊/陷害卡/新聞；1 = 過路費；2 = 查稅卡 */
+export type ScapegoatMode = 0 | 1 | 2;
+
+/**
+ * 卡片路径里「嫁禍給誰」的决定者：`(持有者, 当前局面, 模式) → 新目标 / −1（不嫁禍）`。
+ * `now` 是**已经记过本张卡敌意**之后的玩家表（电脑支挑「最恨的人」读的就是它）。
+ */
+export type ScapegoatPicker = (holder: number, now: readonly Player[], mode: ScapegoatMode) => number;
+
+/**
+ * `0x44476a` 的电脑支（`who_plays != 1`，含託管）：先挑候选，再按模式过门槛。
+ *
+ * ```asm
+ * 004447a1  cmp byte [持有者+0x15], 1 / jne 0x4448b0      ; 真人支另议（确认框 / 选人窗）
+ * 004448b1  call 0x40d2d3   ; ① 最恨的人：在场（+0x15 整字节 ≠ 0）、非自己、hostility 严格最大且 > 0
+ * 004448c0  call 0x40d31c   ; ② 没有 → 在场、非自己、dword [+0x32] == 0 的人里 rand() % n（**这一步掷随机**）
+ * 004448ef  mode 0：0x00444971 mov ebx, ebp                 ; 不设门槛
+ * 00444934  mode 2：fild [持有者+0x1c] × 0.2（0x465380）vs 4000×物價；0x0044496f jae ⇒ 不嫁禍
+ * 004449e7  cmp ebx, -1 / je ⇒ 不扣 19；否则 0x004449ef remove_card(持有者, 19)
+ * ```
+ * ⚠️ 候选（及其随机数）在门槛**之前**就定了：mode 2 门槛不过也已经掷过那一次 `rand()`。
+ * mode 1（過路費）另有 `rules/toll-flow.ts` 的 `aiScapegoat`，这里不接。
+ */
+export function aiScapegoatPick(
+  players: readonly Player[],
+  holder: number,
+  mode: ScapegoatMode,
+  priceIndex: number,
+  rng: { next(): number },
+): number {
+  const me = players[holder];
+  if (me === undefined) return -1;
+  let cand = -1;
+  let best = 0;
+  for (let b = 0; b < players.length; b++) {
+    const p = players[b];
+    if (b === holder || p === undefined || (p.whoPlays & 0xff) === 0) continue;
+    const h = me.hostility[b] ?? 0;
+    // @source 0x0040d30b cmp ecx, ebx / jge 跳过 ⇒ 严格大于才换
+    if (h > best) {
+      best = h;
+      cand = b;
+    }
+  }
+  if (cand === -1) {
+    const pool: number[] = [];
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (i === holder || p === undefined || (p.whoPlays & 0xff) === 0) continue;
+      const bl = p.blocking;
+      if ((bl.inHotel | bl.disappearing | bl.inPrison | bl.inHospital) !== 0) continue;
+      pool.push(i);
+    }
+    // @source 0x0040d355 call rand / idiv esi（有候选才掷）
+    if (pool.length > 0) cand = pool[rng.next() % pool.length]!;
+  }
+  if (cand === -1) return -1;
+  if (mode === 2) {
+    // @source 0x00444934 fild [持有者+0x1c] / 0x0044493a fmul qword [0x465380]（0.2 的 double，略大于 0.2）/
+    //   0x0044496a fcompp（4000×物價）/ 0x0044496f jae ⇒ 不嫁禍。x87 是**扩展精度**（进程 CW = 0x037f，
+    //   見 docs/deviations/Q-NUM-1.md）⇒ 现金恰为 20000×物價 时乘积比 4000×物價 大一点点 ⇒ **嫁禍**：
+    //   整数等价式是 `现金 >= 20000×物價`（不是 `>`）。
+    if (!(me.cash >= 20000 * priceIndex)) return -1;
+  }
+  return cand;
+}
+
+/**
+ * 卡片路径里**真人持卡人**要答一问（免費卡 / 嫁禍卡）而还没答 —— 由 `state/reduce.ts` 的 `playCard`
+ * 接住并挂成待决交互（见 `rules/interaction.ts` 的 `CardPassiveTail`）。卡片效果都是纯函数，
+ * 抛出时一个状态都还没落。
+ */
+export class CardDecisionNeeded extends Error {
+  readonly decision: 'freeCard' | 'scapegoat';
+  readonly holder: number;
+  // ⚠️ 不用 TS 参数属性：`tools/*.ts` 走 node 的 strip-only 模式，不认那种写法
+  constructor(decision: 'freeCard' | 'scapegoat', holder: number) {
+    super(`card passive decision needed: ${decision} by ${holder}`);
+    this.decision = decision;
+    this.holder = holder;
+  }
+}

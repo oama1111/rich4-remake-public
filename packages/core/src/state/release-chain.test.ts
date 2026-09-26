@@ -17,11 +17,19 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { anyoneConfined } from '../rules/confinement.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { reduce } from './reduce.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, WHO_PLAYS_SPECIAL_MASK, type GameState } from './types.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -165,7 +173,8 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     const ready: GameState = { ...flagged, phase: 'turnStart', currentPlayer: 1 };
     const skipped = reduce(ready, { type: 'startTurn' }, t());
     expect(skipped.phase).toBe('turnEnd'); // ★ 整回合跳过
-    expect(skipped.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(0); // 标记已消费
+    // ★ E-41：标记留到这一回合的收尾（`0x418f87`）才消费，见下一条用例
+    expect(skipped.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(WHO_PLAYS_RETURN_TO_BOARD);
     // ★ 原版这一清在走路例程里（`0x40c3cf mov dword [player+0x32], 0`），本引擎折叠到这里
     expect(skipped.players[1]!.blocking).toMatchObject({
       inHotel: 0,
@@ -173,6 +182,26 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
       inPrison: 0,
       inHospital: 0,
     });
+  });
+
+  run('★★ E-41：「走回棋盘」那一回合收尾**不换人**、不走一天，同一位立刻正常开局', () => {
+    const flagged = reduce(pendingRelease('inPrison', 'prisonOccupancy'), { type: 'endTurn' }, t());
+    const walked = reduce({ ...flagged, phase: 'turnStart', currentPlayer: 1 }, { type: 'startTurn' }, t());
+    const before = walked.turnCount;
+    const again = reduce(walked, { type: 'endTurn' }, t());
+    // @source 0x00418f8e `jmp 0x419058`：不 inc 游标
+    expect(again.currentPlayer).toBe(1);
+    expect(again.phase).toBe('turnStart');
+    // `0x418f87 and 0xf`：0x10/0x20 一起消费
+    expect(again.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
+    // 客户端靠 turnCount 判「换回合」
+    expect(again.turnCount).toBe(before + 1);
+    // 不走一天（没 call 0x41c84f）⇒ 日期不动
+    expect([again.year, again.month, again.day]).toEqual([walked.year, walked.month, walked.day]);
+    // 接下来是真回合
+    const play = reduce(again, { type: 'startTurn' }, t());
+    expect(play.phase).toBe('awaitingRoll');
+    expect(play.currentPlayer).toBe(1);
   });
 
   run('★ 医院同理', () => {
@@ -262,41 +291,133 @@ describe('★ 释放后的「走回棋盘」回合（第 84 条）', () => {
     expect(after.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
   });
 
-  run('★ 逐步核对回合数：入狱 3 天 = 白丢 4 个回合（原版 N 天 → N+1）', () => {
+  run('★ 逐步核对回合数：入狱 3 天 = 白丢 4 个回合（原版 N 天 → N+1）—— 真实轮转', () => {
     const { map, topo: tp } = topo();
     const s = newGame({
       map,
       players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
     });
-    const jailed = (st: GameState): GameState => ({
-      ...st,
-      players: st.players.map((p, i) =>
+    // ★ E-41：先前这里是合成迴圈（每轮硬写 `currentPlayer: 1` / `0`），「走回棋盘」
+    //   那一回合的离场者对不上。现在由 `endTurn` 自己轮转，别人的回合只是不掷骰直接收尾。
+    let st: GameState = {
+      ...s,
+      phase: 'turnEnd',
+      pendingNpcSlots: [],
+      currentPlayer: 0,
+      players: s.players.map((p, i) =>
         i === 1 ? { ...p, nodeId: 1, blocking: { ...p.blocking, inPrison: 3 } } : p,
       ),
-    });
-    // ★ 递减发生在「新玩家回合开始之前」（= 原版 `0x419039`，游标已 ++）。
-    //   所以 1 号的第一回合**之前**先要有一次 `endTurn`（由上一位 0 号触发）。
-    let st: GameState = reduce(
-      jailed({ ...s, phase: 'turnEnd', pendingNpcSlots: [], currentPlayer: 0 }),
-      { type: 'endTurn' },
-      tp,
-    );
+    };
+    // 1 号每次轮到时记一笔：1 = 这一回合不掷骰；0 = 正常开局
     const missed: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const started = reduce(
-        { ...st, phase: 'turnStart', currentPlayer: 1 },
-        { type: 'startTurn' },
-        tp,
-      );
-      missed.push(started.phase === 'turnEnd' ? 1 : 0);
-      st = reduce(
-        { ...started, phase: 'turnEnd', currentPlayer: 0 },
-        { type: 'endTurn' },
-        tp,
-      );
+    // 1 号每两次开局之间，别人开局了几次
+    const othersBetween: number[] = [];
+    let others = 0;
+    for (let guard = 0; guard < 200 && !missed.includes(0); guard++) {
+      st = reduce(st, { type: 'endTurn' }, tp);
+      while ((st.pendingNpcSlots ?? []).length > 0) st = reduce(st, { type: 'npcStep' }, tp);
+      expect(st.phase).toBe('turnStart');
+      const started = reduce(st, { type: 'startTurn' }, tp);
+      if (st.currentPlayer === 1) {
+        missed.push(started.phase === 'turnEnd' ? 1 : 0);
+        othersBetween.push(others);
+        others = 0;
+      } else {
+        others++;
+      }
+      st = { ...started, phase: 'turnEnd', pending: null };
     }
-    // T1:3→2、T2:2→1、T3:1→0x80、T4:0x80→释放（这一回合就是「走回棋盘」）、T5 起自由
+    // T1:3→2、T2:2→1、T3:1→0x80、T4:0x80→释放（「走回棋盘」）、T5 自由
     expect(missed).toEqual([1, 1, 1, 1, 0]);
+    // ★★ E-41：T4 → T5 之间**没有别人**行动（原版 `0x418f8e` 不推进游标）
+    expect(othersBetween[4]).toBe(0);
+    expect(othersBetween.slice(1, 4).every((n) => n > 0)).toBe(true);
     expect(st.players[1]!.blocking.inPrison).toBe(0);
+  });
+});
+
+/**
+ * ★★ 第十五份試玩回報（Charles，`wt16/20260923-212221194-manual-Charles.json`）：
+ * 「从监狱里出来那一步为什么没有踩到天使上身？」—— 那一局（地图 2）天使（槽 9）一直停在
+ * 監獄的**关押格**（节点 84，格值 0x1f42，静态禁放位没置）上，人走回棋盘时一动不动。
+ *
+ * 原版走回棋盘那一步与普通走子共用主循环的走子态：
+ * ```asm
+ * 0040dd40  mov  dword [0x48baf8], 1     ; `+0x15 & 0x30` 的人：剩余步数 1，直接进走子态
+ * 0040d950  call 0x40c05c                ; 走路例程（0x10 支：景观位 → 关押格）
+ * 0040d959  mov  byte [0x48bb00], 1      ; 走完 ⇒ 到格
+ * 0040d960  dec  dword [0x48baf8]        ; 1 → 0
+ * 0040d942  call 0x41b42d                ; ★ 落点处理：物件派发 0x41b800 → 神明 0x41b807
+ * 0041b816  cmp  dword [0x48baf8], 0     ;   停下来了 ⇒
+ * 0041b82d  call 0x40ead7                ;   附身（全程不看 0x10/0x30 标记）
+ * ```
+ */
+describe('★★ 走回棋盘那一步照样跑落点处理（`0x40d942 call 0x41b42d`）', () => {
+  /** 1 号刚被放出来、人还在景观位上，关押格上摆着 `slot`（1 基）那件物件 */
+  function onGate(kind: 'prison' | 'hospital', slot: number | null): { st: GameState; gateId: number } {
+    const { map, topo: t } = topo();
+    const field = kind === 'prison' ? 'inPrison' : 'inHospital';
+    const occ = kind === 'prison' ? 'prisonOccupancy' : 'hospitalOccupancy';
+    const released = reduce(pendingRelease(field, occ), { type: 'endTurn' }, t);
+    const gate = map.nodes.find((n) => n.type === (kind === 'prison' ? 0x1f42 : 0x1f41))!;
+    const land = map.landscapes[kind === 'prison' ? 1 : 0]!;
+    const st: GameState = {
+      ...released,
+      phase: 'turnStart',
+      currentPlayer: 1,
+      stepsRemaining: 0,
+      players: released.players.map((p, i) =>
+        i === 1 ? { ...p, nodeId: gate.id, xpos: land.x, ypos: land.y, godInfo: 0 } : p,
+      ),
+      // 关押格上只留这一件（别的都挪开，免得 `objectHandleAt` 拿到别的）
+      objects: released.objects.map((o, i) =>
+        i + 1 === slot
+          ? { ...o, nodeId: gate.id, attached: 0, state: 0 }
+          : o.nodeId === gate.id
+            ? { ...o, nodeId: 0 }
+            : o,
+      ),
+    };
+    return { st, gateId: gate.id };
+  }
+
+  run('★★ 天使（槽 9）在監獄关押格上 ⇒ 走回棋盘那一步附身', () => {
+    const { st, gateId } = onGate('prison', 9);
+    expect(st.objects[8]!.type).toBe(9);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    // @source 0x0040ead7：god_info = 入参 handle；物件跟到人身上、attached = 玩家 + 1、state = 7
+    expect(out.players[1]!.godInfo).toBe(9);
+    expect(out.objects[8]).toMatchObject({ nodeId: gateId, attached: 2, state: 7 });
+    // 这一回合仍是「走回棋盘」：不掷骰、标记留给收尾（E-41）
+    expect(out.phase).toBe('turnEnd');
+    expect(out.players[1]!.whoPlays & WHO_PLAYS_RETURN_TO_BOARD).toBe(WHO_PLAYS_RETURN_TO_BOARD);
+  });
+
+  run('★ 醫院关押格同一条路（天使）', () => {
+    const { st } = onGate('hospital', 9);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    expect(out.players[1]!.godInfo).toBe(9);
+    expect(out.phase).toBe('turnEnd');
+  });
+
+  run('★ 惡犬在关押格上 ⇒ 被咬回醫院，`send_to_hospital` 清掉 0x10 ⇒ 收尾照常换人', () => {
+    const { st } = onGate('prison', 11);
+    expect(st.objects[10]!.type).toBe(11);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    // @source 0x0041b8e6 `push 3 / call send_to_hospital`；0x0043ecad `and byte [player+0x15], 0xf`
+    expect(out.players[1]!.blocking.inHospital).toBe(3);
+    expect(out.players[1]!.whoPlays & WHO_PLAYS_SPECIAL_MASK).toBe(0);
+    expect(out.phase).toBe('turnEnd');
+    const next = reduce(out, { type: 'endTurn' }, topo().topo);
+    expect(next.currentPlayer, '标记没了 ⇒ 0x418f07 那一支不走，游标照常推进').not.toBe(1);
+  });
+
+  run('★ 关押格上什么都没有 ⇒ 与先前完全一样（不动随机数、不附身）', () => {
+    const { st } = onGate('prison', null);
+    const out = reduce(st, { type: 'startTurn' }, topo().topo);
+    expect(out.players[1]!.godInfo).toBe(0);
+    expect(out.rngState).toBe(st.rngState);
+    expect(out.objects).toEqual(st.objects);
+    expect(out.phase).toBe('turnEnd');
   });
 });

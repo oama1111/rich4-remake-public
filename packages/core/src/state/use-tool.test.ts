@@ -6,9 +6,10 @@
 import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
-import type { GameState } from './types.ts';
+import { canUseTool } from './preview.ts';
+import { WHO_PLAYS_HUMAN, type GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
-import { TRAFFIC_CAR, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
+import { TRAFFIC_CAR, TRAFFIC_ENGINEERING, TRAFFIC_MOTORCYCLE, TRAFFIC_WALK } from '../rules/tool-effects.ts';
 
 const topo = { nodes: [makeNode({ id: 1, adjacent: [1] }), makeNode({ id: 2, adjacent: [1] })] };
 
@@ -17,6 +18,7 @@ function withTools(counts: Record<number, number>, over: Partial<GameState> = {}
   const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
   for (const [id, n] of Object.entries(counts)) tools[Number(id)] = n;
   return makeGameState({
+    phase: 'awaitingRoll',
     players: [0, 1, 2, 3].map((i) =>
       makePlayer({ index: i, character: i, nodeId: 1, trafficMethod: TRAFFIC_WALK, ndices: 1 }),
     ),
@@ -59,6 +61,62 @@ describe('★ 交通工具', () => {
     const s = withTools({});
     expect(reduce(s, { type: 'useTool', toolId: 6 }, topo)).toBe(s);
   });
+
+  /*
+   * ★★ 2026-09-25（本分支复核）：**整条路** —— 用道具那一侧真的把原座驾存进
+   *   `+0x64/+0x65`（`0x00447a43..0x00447a55`），到期那一侧才还原得回来
+   *   （`0x0041ccd0..0x0041cd32`）。先前只有 `useVehicleTool` 的单测与到期侧的单测，
+   *   没有一条从 `reduce(useTool 12)` 走到「工程車到期」的用例。
+   */
+  it('★★ 騎機車时开工程車：座驾存进 engineSaved*，到期骑回機車（不再掉成步行）', () => {
+    const s = withTools({ 12: 1 }, {
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({ index: i, nodeId: 1, trafficMethod: i === 0 ? TRAFFIC_MOTORCYCLE : TRAFFIC_WALK, ndices: i === 0 ? 2 : 1 }),
+      ),
+    });
+    const used = reduce(s, { type: 'useTool', toolId: 12 }, topo);
+    expect(used.players[0]!.trafficMethod).toBe(TRAFFIC_ENGINEERING);
+    expect(used.players[0]!.ndices).toBe(1);
+    // @source 0x00447a49 存 +0x11 / 0x00447a55 存 +0x12（在退车 inc 之后、写 0x1f 之前）
+    expect(used.players[0]!.engineSavedTraffic).toBe(TRAFFIC_MOTORCYCLE);
+    expect(used.players[0]!.engineSavedDice).toBe(2);
+    expect(toolCount(used.tools, 0, 5), '機車退回道具栏').toBe(1);
+    expect(toolCount(used.tools, 0, 12), '工程車被收走').toBe(0);
+
+    // 0x1f 的高 6 位 = 7 天，每天到点 −4（0x1f → 0x1b → … → 0x03 ⇒ 第 8 次归零）
+    let t = used;
+    for (let i = 0; i < 8; i++) {
+      // 4 人局：endTurn 从 3 号交回 0 号时才会走 0 号的日结（`0x419039 call 0x41c84f(0)`）
+      t = reduce({ ...t, currentPlayer: 3, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, topo);
+    }
+    // @source 0x0041cd17 写回 +0x64/+0x65、0x0041cd49 扣掉道具栏那辆機車
+    expect(t.players[0]!.trafficMethod).toBe(TRAFFIC_MOTORCYCLE);
+    expect(t.players[0]!.ndices).toBe(2);
+    expect(toolCount(t.tools, 0, 5)).toBe(0);
+  });
+
+  /*
+   * ★★ 2026-09-25（真人道具欄接不上工程車）：客户端 `applyInventoryPick` 对
+   *   `toolIsDirect` 的道具只发 `useTool{toolId}` —— **没有 nodeId / value**。
+   *   这一条钉住「core 收得下这个动作」：真人（`makePlayer` 缺省 `whoPlays = 1`）、
+   *   不给目标，照样开得起来。原版真人那一支同样没有拾取那一步
+   *   （@source 0x00447f51 `call dword ptr [eax*4 + 0x475dd5]`，表项 12 = `0x4479d2`）。
+   */
+  it('★★ 工程車（12）无参可用：真人只发道具号、不给 nodeId，照样开得起来', () => {
+    const s = withTools({ 12: 1 });
+    expect(s.players[0]!.whoPlays).toBe(WHO_PLAYS_HUMAN);
+    expect(s.players[0]!.trafficMethod).toBe(TRAFFIC_WALK);
+    const used = reduce(s, { type: 'useTool', toolId: 12 }, topo);
+    expect(used, '无参也必须生效').not.toBe(s);
+    expect(used.players[0]!.trafficMethod).toBe(TRAFFIC_ENGINEERING);
+    expect(used.players[0]!.ndices).toBe(1);
+    expect(toolCount(used.tools, 0, 12)).toBe(0);
+    // 这件道具本来就不带目标：给一个 nodeId 不影响结果
+    // （`nodeId <= 0` 那道闸只在 `PLACEMENT_TOOLS` 那一支，见 `useToolAction`）
+    expect(reduce(s, { type: 'useTool', toolId: 12, nodeId: 2 }, topo)).toEqual(used);
+    // 客户端拾取模式的预演也认同「现在用得了」
+    expect(canUseTool(s, topo, 12, 0)).toBe(true);
+  });
 });
 
 describe('★ 放置类道具', () => {
@@ -87,6 +145,58 @@ describe('★ 放置类道具', () => {
     const s = withTools({ 2: 1 });
     expect(reduce(s, { type: 'useTool', toolId: 2 }, topo)).toBe(s);
   });
+
+  /*
+   * ★★ 需求方 2026-09-22（第九份試玩回報 #4）拍板：
+   *   「路障/炸弹/定时炸弹 我记得就是不能和神明重叠，按这个改」
+   *
+   * ★★ 2026-09-24 订正：这**不是**偏离 —— 原版拾取层就挡（`tools.md:496` 只看了效果函数）：
+   *   真人拾取图 0x409b18 与电脑候选 0x409ef9 都 `test dword [node+0x24], 0xffff00 / jne 跳过`
+   *   （0x00409bc0 / 0x00409f7c），有人 / 惡人 / 物件的格子都点不到、挑不到。
+   *   这一组钉「神明」那一支；地雷叠地雷 / 站着人那几支见下一组。
+   */
+  describe('★★ 不许和神明（唯一物件）同格', () => {
+    /** 把 0 号物件槽（小財神）摆到某一格上 */
+    const withGodAt = (base: GameState, nodeId: number, attached = 0): GameState => ({
+      ...base,
+      objects: base.objects.map((o, i) =>
+        i === 0 ? { ...o, type: 1, nodeId, state: 0, attached } : o,
+      ),
+    });
+
+    it('★ 那一格有神明 ⇒ 路障(2)/地雷(3)/定時炸彈(4) 一个都放不下去，道具也不收走', () => {
+      for (const tool of [2, 3, 4]) {
+        const s = withGodAt(withTools({ [tool]: 1 }), 2);
+        const after = reduce(s, { type: 'useTool', toolId: tool, nodeId: 2 }, topo);
+        expect(after, `道具 ${tool} 不该生效`).toBe(s);
+        expect(toolCount(after.tools, 0, tool), `道具 ${tool} 不该被收走`).toBe(1);
+        expect(after.objects.some((o) => o.nodeId === 2 && o.type >= 16), '地上不该多一件').toBe(false);
+      }
+    });
+
+    it('★ 神明在**别的**格子上不影响放置（不能一禁禁一片）', () => {
+      const s = withGodAt(withTools({ 2: 1 }), 1);
+      const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+      expect(after).not.toBe(s);
+      expect(after.objects.some((o) => o.nodeId === 2 && o.type === 16)).toBe(true);
+      expect(toolCount(after.tools, 0, 2)).toBe(0);
+    });
+
+    it('★ 已经**附身**的神明不算「站在这一格」（跟着主人走，不挡）', () => {
+      const s = withGodAt(withTools({ 2: 1 }), 2, 1);
+      const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+      expect(after.objects.some((o) => o.nodeId === 2 && o.type === 16)).toBe(true);
+    });
+
+    it('★ 客户端候选会自动跟着 core 走（`canUseTool` = `useToolAction(...) !== state`）', () => {
+      // 这一条钉的是「不用另写一套客户端过滤」——`picking.ts` 靠的就是 `canUseTool`
+      // （四个人都站在 1 号格上 ⇒ 1 号格本身就不空；「空的那一格」另开一个没人站的 3 号格）
+      const topo3 = { nodes: [...topo.nodes, makeNode({ id: 3, adjacent: [1] })] };
+      const s = withGodAt(withTools({ 2: 1 }), 2);
+      expect(canUseTool(s, topo3, 2, 2), '有神明那一格 ⇒ 不是合法目标').toBe(false);
+      expect(canUseTool(s, topo3, 2, 3), '空的那一格 ⇒ 合法').toBe(true);
+    });
+  });
 });
 
 describe('未实现的道具', () => {
@@ -113,17 +223,19 @@ describe('出局者', () => {
 describe('★ 遙控骰子（8）', () => {
   it('指定点数 → 存进 forcedDice，道具被收走', () => {
     const s = withTools({ 8: 1 });
-    const r = reduce(s, { type: 'useTool', toolId: 8, value: 12 }, topo);
-    expect(r.forcedDice).toBe(12);
+    const r = reduce(s, { type: 'useTool', toolId: 8, value: 6 }, topo);
+    expect(r.forcedDice).toBe(6);
+    // ★ 点数窗只有 1..6（`0x00446847 cmp esi, 6`）
+    expect(reduce(s, { type: 'useTool', toolId: 8, value: 7 }, topo)).toBe(s);
     expect(toolCount(r.tools, 0, 8)).toBe(0);
   });
 
   it('★ 下一次掷骰吃掉它，然后**用完即消**', () => {
     const s = withTools({ 8: 1 });
-    const set = reduce(s, { type: 'useTool', toolId: 8, value: 7 }, topo);
+    const set = reduce(s, { type: 'useTool', toolId: 8, value: 5 }, topo);
     const rolled = reduce({ ...set, phase: 'awaitingRoll' }, { type: 'rollDice' }, topo);
-    expect(rolled.dice).toEqual([7]);
-    expect(rolled.stepsRemaining).toBe(7);
+    expect(rolled.dice).toEqual([5]);
+    expect(rolled.stepsRemaining).toBe(5);
     // @source 0x00447285 读出来就把 [0x475dd8] 清零
     expect(rolled.forcedDice).toBe(0);
   });
@@ -139,5 +251,128 @@ describe('★ 機器工人（9）与飛彈（7/13）需要地图，见 tool-land
   it('没有地块信息时机器工人不生效，也不消耗道具', () => {
     const s = withTools({ 9: 1 });
     expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo)).toBe(s);
+  });
+});
+
+/*
+ * ★★ 第十一份試玩回報 #3（`feedback/20260922-200005`「NPC放置炸弹、定时炸弹时好像也有台词」）：
+ *   原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，
+ *   而且**在 human/AI 分流之前**（所以电脑也说）。本引擎先前整条通道没接 ——
+ *   现在由 `GameState.lastToolUsed` 这条瞬态提示交出去（规矩同 `lastCardPlay`）。
+ */
+describe('★★ 道具台词的提示字段（第十一份回报 #3）', () => {
+  it('★ 真的用出去 ⇒ 写 `lastToolUsed`（谁、哪一件）', () => {
+    const s = withTools({ 2: 1 });
+    const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toEqual({ player: 0, toolId: 2 });
+  });
+
+  it('★ 没生效（没这道具）⇒ **不写**（与 `lastCardPlay` 同一条规矩：用出去了才写）', () => {
+    const s = withTools({});
+    const after = reduce(s, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after).toBe(s);
+    expect(after.lastToolUsed).toBeNull();
+  });
+
+  it('★ 目标格被引擎拒（有神明）⇒ 也不写', () => {
+    const base = withTools({ 2: 1 });
+    const withGod = {
+      ...base,
+      objects: base.objects.map((o, i) => (i === 0 ? { ...o, type: 1, nodeId: 2, state: 0, attached: 0 } : o)),
+    };
+    const after = reduce(withGod, { type: 'useTool', toolId: 2, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toBeNull();
+  });
+
+  it('★ 电脑也会写（原版这句在 human/AI 分流之前）', () => {
+    const s = withTools({ 4: 1 });
+    const after = reduce(s, { type: 'useTool', toolId: 4, nodeId: 2 }, topo);
+    expect(after.lastToolUsed).toEqual({ player: 0, toolId: 4 });
+  });
+});
+
+/*
+ * ★★ 需求方 2026-09-24「Npc把地雷重叠放置了」（`20260924-025833909-manual-Charles.json` #108：
+ *   3 号电脑把地雷放到 37 号格，那格 #3 已经有 1 号电脑放的地雷）。
+ *
+ * @source 0x00409bc0（真人拾取图 0x409b18）/ 0x00409f7c（电脑候选 0x409ef9）：
+ *   `test dword [node+0x24], 0xffff00 / jne 跳过` —— bits 8..11 玩家、12..15 惡人、16..21 物件。
+ */
+describe('★★ 放置类道具：有人 / 惡人 / 任何物件的格子都放不上去（0xffff00）', () => {
+  /** 1 号物件槽之后第一个空的放置类槽里摆一件地雷到某格 */
+  const withMineAt = (base: GameState, nodeId: number): GameState => {
+    const r = reduce(base, { type: 'useTool', toolId: 3, nodeId }, topo);
+    expect(r.objects.some((o) => o.nodeId === nodeId && o.type === 17)).toBe(true);
+    return r;
+  };
+  /** 四个人都挪到 1 号格之外（2 号格留空） */
+  const onNode1 = (counts: Record<number, number>): GameState => withTools(counts);
+
+  it('★★ 地雷叠地雷 / 路障叠地雷 / 定時炸彈叠地雷 —— 一个都放不下，道具不收走', () => {
+    for (const tool of [2, 3, 4]) {
+      const s = withMineAt(onNode1({ 3: 1, [tool]: tool === 3 ? 2 : 1 }), 2);
+      const after = reduce(s, { type: 'useTool', toolId: tool, nodeId: 2 }, topo);
+      expect(after, `道具 ${tool} 不该叠上去`).toBe(s);
+      expect(after.objects.filter((o) => o.nodeId === 2 && o.attached === 0).length).toBe(1);
+    }
+  });
+
+  it('★ 有人站着的格子（包括自己脚下）放不上去', () => {
+    const s = onNode1({ 3: 1 });
+    expect(reduce(s, { type: 'useTool', toolId: 3, nodeId: 1 }, topo)).toBe(s);
+    expect(canUseTool(s, topo, 3, 1)).toBe(false);
+  });
+
+  it('★ 被关着的人不占位（0x0043d61d 清位不置）⇒ 关押格照样能放', () => {
+    const s = withTools({ 3: 1 }, {
+      players: [0, 1, 2, 3].map((i) =>
+        makePlayer({
+          index: i,
+          character: i,
+          nodeId: i === 1 ? 2 : 1,
+          trafficMethod: TRAFFIC_WALK,
+          ndices: 1,
+          ...(i === 1 ? { blocking: { ...makePlayer({ index: 1 }).blocking, inPrison: 3 } } : {}),
+        }),
+      ),
+    });
+    const after = reduce(s, { type: 'useTool', toolId: 3, nodeId: 2 }, topo);
+    expect(after.objects.some((o) => o.nodeId === 2 && o.type === 17)).toBe(true);
+  });
+
+  it('★ 惡人站在棋盘上的那一格放不上去', () => {
+    const base = withTools({ 3: 1 });
+    const actors = base.specialActors.map((a, i) => (i === 0 ? { ...a, nodeId: 2, place: 0 } : a));
+    const s: GameState = { ...base, specialActors: actors as GameState['specialActors'] };
+    expect(reduce(s, { type: 'useTool', toolId: 3, nodeId: 2 }, topo)).toBe(s);
+  });
+});
+
+describe('★★ 上车 / 放置用掉的道具直接 dec、不回库存（0x00446ef9 / 0x00446c7e …）', () => {
+  it('機車：道具 −1，库存不变（车被毁时 0x0040cd3b 才还）', () => {
+    const s = withTools({ 5: 1 }, { toolStock: new Array<number>(14).fill(3) });
+    const r = reduce(s, { type: 'useTool', toolId: 5 }, topo);
+    expect(r.players[0]!.trafficMethod).toBe(1);
+    expect(toolCount(r.tools, 0, 5)).toBe(0);
+    expect(r.toolStock).toEqual(s.toolStock);
+  });
+});
+
+describe('★★ 下車（道具表第 14 项 0x447c00）', () => {
+  it('骑機車的真人：機車退回道具 5、步行一颗骰子；汽車退回道具 6；步行 / 工程車 / 电脑不生效', () => {
+    const moto = withTools({}, { phase: 'awaitingRoll' });
+    const onMoto = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 1, ndices: 2 } : p)) };
+    const r = reduce(onMoto, { type: 'useTool', toolId: 14 }, topo);
+    expect(r.players[0]!.trafficMethod).toBe(0);
+    expect(r.players[0]!.ndices).toBe(1);
+    expect(toolCount(r.tools, 0, 5)).toBe(1);
+    expect(r.lastToolUsed ?? null).toBe(onMoto.lastToolUsed ?? null); // 没有台词
+    const onCar = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 2, ndices: 3 } : p)) };
+    expect(toolCount(reduce(onCar, { type: 'useTool', toolId: 14 }, topo).tools, 0, 6)).toBe(1);
+    expect(reduce(moto, { type: 'useTool', toolId: 14 }, topo)).toBe(moto);
+    const eng = { ...moto, players: moto.players.map((p, i) => (i === 0 ? { ...p, trafficMethod: 0x1f } : p)) };
+    expect(reduce(eng, { type: 'useTool', toolId: 14 }, topo)).toBe(eng);
+    const cpu = { ...onMoto, players: onMoto.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2 } : p)) };
+    expect(reduce(cpu, { type: 'useTool', toolId: 14 }, topo)).toBe(cpu);
   });
 });

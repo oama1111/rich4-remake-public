@@ -761,7 +761,7 @@ describe('★ 图素计划 `helpImagePlan`（纯函数，绘制的唯一真源�
     } as unknown as CanvasRenderingContext2D;
     const drawn: { image: number; x: number; y: number }[] = [];
     // 面板落点 (20,60) —— 图素要比计划多这一对偏移
-    drawHelpScreen(ctx, (i) => ({ bitmap: { image: i } as unknown as ImageBitmap, anchorX: 0, anchorY: 0 }), {
+    drawHelpScreen(ctx, (i) => ({ bitmap: { image: i } as unknown as ImageBitmap, width: 0, height: 0, anchorX: 0, anchorY: 0 }), {
       chapter: 6,
       scroll: 0,
       origin: { x: 20, y: 60 },

@@ -41,6 +41,8 @@ import {
   throwFrameCount,
   throwTotalMs,
   type CardFlightAnchors,
+  TURN_AROUND_SFX,
+  cardLandSfx,
 } from './throw-fx.ts';
 
 describe('throwFrameCount —— 照 exe 的帧数公式', () => {
@@ -637,5 +639,21 @@ describe('★ Q-TOOL-5 ②：附身物件的偏移表 / 图号（VA 0x00409065 �
       ];
       expect(ATTACHED_OFFSETS_WITH_GOD.map((o) => [o.x, o.y]).flat()).toEqual(bigDwords);
     });
+  });
+});
+
+describe('★★ 轉向卡飞完那一声 = `0x40c78c` 开头的音效 56（0x0040c79a；调用点 0x00443025，在 0x0044301c 飞行之后）', () => {
+  const S = (dirs: number[], actors: number[] = [0, 0, 0, 0, 0]) => ({
+    players: dirs.map((direction) => ({ direction })),
+    specialActors: actors.map((direction) => ({ direction })),
+  });
+  it('★ 轉向卡、有人朝向变了 ⇒ 56；惡人朝向变了 ⇒ 56', () => {
+    expect(TURN_AROUND_SFX).toBe(56);
+    expect(cardLandSfx(6, S([0, 2, 0, 0]), S([0, 6, 0, 0]))).toBe(56);
+    expect(cardLandSfx(6, S([0, 0], [1, 0, 0, 0, 0]), S([0, 0], [5, 0, 0, 0, 0]))).toBe(56);
+  });
+  it('★ 没掉成（惡人不在棋盘上：卡照扣、0x40c78c 不跑）⇒ 不响；别的卡 ⇒ 不响', () => {
+    expect(cardLandSfx(6, S([0, 2]), S([0, 2]))).toBeNull();
+    expect(cardLandSfx(14, S([0, 2]), S([0, 6]))).toBeNull();
   });
 });

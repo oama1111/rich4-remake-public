@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { WatcomRng } from '../rng/watcom.ts';
 import { readFileSync, existsSync } from 'node:fs';
-import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest } from './reduce.ts';
+import { toolCount } from '../rules/tools.ts';
+import { reduce, reduceAll, nextCandidates, nextAlivePlayer, applyMagicRequest, pickNextNode } from './reduce.ts';
 import type { MapTopology } from './reduce.ts';
 import type { Action } from './actions.ts';
 import { WHO_PLAYS_RETURN_TO_BOARD, type GameState, type Player } from './types.ts';
@@ -88,13 +89,15 @@ describe('nextCandidates —— 不折返', () => {
 });
 
 describe('回合流程', () => {
+  // startTurn 只在 turnStart 相位受理（b4af562，0x00418c55 只进一次）⇒ 夹具从 turnStart 起
   it('startTurn 后进入等待掷骰', () => {
-    const s = reduce(makeState(), { type: 'startTurn' }, ring);
+    const s = reduce(makeState({ phase: 'turnStart' }), { type: 'startTurn' }, ring);
     expect(s.phase).toBe('awaitingRoll');
   });
 
   it('被阻碍的玩家直接进入回合结束', () => {
-    const st = makeState();
+    // ★ `startTurn` 只在 `turnStart` 相位受理（loop 审计 2026-09-25 加的相位闸）⇒ 从 turnStart 起
+    const st = makeState({ phase: 'turnStart' });
     st.players[0]!.blocking.inPrison = 2;
     const s = reduce(st, { type: 'startTurn' }, ring);
     expect(s.phase).toBe('turnEnd');
@@ -360,6 +363,65 @@ describe('在真实地图上推演', () => {
   });
 });
 
+/**
+ * ★★ 第十三份試玩回報 `20260923-150207228`（地图 7，第 38 回合）：「为什么这个回合沙隆巴斯走了个回环」。
+ *
+ * 沙隆巴斯（P2，电脑，三颗骰 6+4+6 = 16 步）从 87（来自 88）出发：
+ * `87 → 21 → 22 → 23 → 24 → 25 → 26 → 81 → 82 → 83 → 84 → 85 → 86 → 21 → 87 → 88 → 89`
+ * （第 16 步踩到自己上回合反瞻放下的地雷 ⇒ 醫院）。绕 21–26–86 那一圈又从 21 拐回 87，
+ * 看起来像「掉头」，其实是**三次岔路各掷一次 `rand() % 候选数`**：
+ *
+ * | 岔路 | 来路 | 候选（去掉来路 / 空槽 / 封路位）| 掷到 |
+ * |---|---|---|---|
+ * | 21 | 87 | [22, 20, 86] | 22 |
+ * | 26 | 25 | [80, 81, 27] | 81 |
+ * | 21 | 86 | [22, 20, **87**] | 87 |
+ *
+ * 规则 @source 走路例程 `0x0040c12c..0x0040c1a5`（spec `game-loop.md`「走路例程 0x40c05c 已整段差分」）：
+ * 只排除 `player.last_node`（+0x0e）、空槽、`node.flags & (0x40000000 >> slot)` 的封路槽；
+ * **没有**「方向 / 顺逆时针 / 单行道」的概念 —— 地图文件的邻接是无向的（地图 7 逐条互指），
+ * 唯一的「单行」手段是封路位（地图 7 只有 51 号的槽 2 → 95 那条支线被封）。
+ * 下面三个 rng 值就是回报轨迹里那三步 `step` 之前的 `rngState`（重放指纹一致 579fc9d1）。
+ */
+describe('★★ 地图 7 的岔路（第十三份試玩回報 150207「沙隆巴斯走了个回环」）', () => {
+  const MAP7 = `${ROOT}/extracted/map/0015.bin`;
+  const has7 = existsSync(MAP7);
+
+  it.skipIf(!has7)('地图 7：邻接逐条互指（无单行道），四个岔路口 21/26/51/62，封路位只在 51 号槽 2', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+    const byId = new Map(map.nodes.map((n) => [n.id, n]));
+    for (const n of map.nodes) {
+      for (const a of n.adjacentSlots) {
+        if (a === 0) continue;
+        expect(byId.get(a)!.adjacentSlots).toContain(n.id);
+      }
+    }
+    const forks = map.nodes.filter((n) => n.adjacentSlots.filter((a) => a !== 0).length > 2).map((n) => n.id);
+    expect(forks).toEqual([21, 26, 51, 62]);
+    expect(byId.get(21)!.adjacentSlots).toEqual([22, 20, 87, 86]);
+    expect(byId.get(26)!.adjacentSlots).toEqual([80, 25, 81, 27]);
+    const blocked = map.nodes.filter((n) => (n.flags & 0x78000000) !== 0).map((n) => [n.id, n.flags & 0x78000000]);
+    expect(blocked).toEqual([[51, 0x10000000]]); // 0x40000000 >> 2 ⇒ 槽 2（= 95）
+  });
+
+  it.skipIf(!has7)('★ 回报那一趟的三次岔路：21←87 掷到 22、26←25 掷到 81、21←86 掷到 87（原版 rand()%n）', () => {
+    const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+    const topo: MapTopology = { nodes: map.nodes };
+    const pick = (from: number, prev: number, state: number): number | null => {
+      const rng = new WatcomRng();
+      rng.setState(state);
+      return pickNextNode(topo, from, prev, rng);
+    };
+    expect(nextCandidates(topo, 21, 87)).toEqual([22, 20, 86]);
+    expect(pick(21, 87, 2415734341)).toBe(22);
+    expect(nextCandidates(topo, 26, 25)).toEqual([80, 81, 27]);
+    expect(pick(26, 25, 40306022)).toBe(81);
+    // ★ 绕完一圈回到 21：来路是 86，87 **重新成了候选** —— 原版只禁「上一格」，不记更早走过哪
+    expect(nextCandidates(topo, 21, 86)).toEqual([22, 20, 87]);
+    expect(pick(21, 86, 2442039289)).toBe(87);
+  });
+});
+
 // ============================================================================
 //  ★★ README §7.142(5) E6 —— `0x40b110` 返回值的 bit7（剛好升到 5 級）
 // ============================================================================
@@ -384,6 +446,8 @@ function twoEntityMap(): MapTopology {
 }
 
 describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契约', () => {
+  /** 道具 / 卡片只能在按 GO 之前用（`canUseItemsNow`）*/
+  const ready = (over: Partial<GameState> = {}): GameState => makeState({ phase: 'awaitingRoll', ...over });
   /** 玩家 0 手里一件機器工人（9）@source 全局道具表 60 项，下标 = 玩家*15 + 道具号 */
   const withTool = (s: GameState): GameState => {
     const tools = [...s.tools];
@@ -393,7 +457,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★★ 住宅 4→5 ⇒ hint.reachedMaxLevel = true（bit7 置位）', () => {
     const topo = twoEntityMap();
-    const s = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const s = withTool(ready({ landLevel: [0, 4], landType: [0, 0] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
     expect(after.landLevel[1]).toBe(5);
     expect(after.lastBuildUpgrades).toEqual([
@@ -405,7 +469,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     // 先前 `client/build-fx.ts` 的注释写着「設施那一支不置位」——**读反了**：
     //   只有「等級 0 → 定种类首建」那一条（0x0040b1f4）没有 bit7。
     const topo = twoEntityMap();
-    const s = withTool(makeState({ facilityLevel: [0, 4], facilityType: [0, 1] }));
+    const s = withTool(ready({ facilityLevel: [0, 4], facilityType: [0, 1] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
     expect(after.facilityLevel[1]).toBe(5);
     expect(after.lastBuildUpgrades).toEqual([
@@ -415,7 +479,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★ 設施 3→4 ⇒ 不置 bit7（新等级不是 5）', () => {
     const topo = twoEntityMap();
-    const s = withTool(makeState({ facilityLevel: [0, 3], facilityType: [0, 1] }));
+    const s = withTool(ready({ facilityLevel: [0, 3], facilityType: [0, 1] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 2 }, topo);
     expect(after.facilityLevel[1]).toBe(4);
     expect(after.lastBuildUpgrades).toEqual([
@@ -426,7 +490,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
   it('★ 設施等級 0 → 首建 ⇒ **不**置 bit7（0x0040b1f4 mov eax, 1 / inc / ret）', () => {
     const topo = twoEntityMap();
     // 电脑玩家：等级 0 的設施走「自己的 → rand()%4+1」那条，不需要 UI 选种类
-    const s = withTool(makeState({
+    const s = withTool(ready({
       facilityLevel: [0, 0],
       facilityType: [0, 0],
       players: [makePlayer(0, { whoPlays: WHO_PLAYS_COMPUTER }), makePlayer(1), makePlayer(2), makePlayer(3)],
@@ -440,7 +504,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★ 住宅 3→4 ⇒ 不置 bit7', () => {
     const topo = twoEntityMap();
-    const s = withTool(makeState({ landLevel: [0, 3], landType: [0, 0] }));
+    const s = withTool(ready({ landLevel: [0, 3], landType: [0, 0] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
     expect(after.landLevel[1]).toBe(4);
     expect(after.lastBuildUpgrades).toEqual([
@@ -448,17 +512,19 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     ]);
   });
 
-  it('★ 蓋不成（住宅已满 5）⇒ 状态一点不动、也没有加蓋事件', () => {
+  // ★ 2026-09-24 审计订正：take_tool（`0x004472fb`）在 `0x40b110`（`0x00447345`）之前 ⇒ 蓋不成**照样扣道具**
+  it('★ 蓋不成（住宅已满 5）⇒ 等级不动、没有加蓋事件，但道具照扣', () => {
     const topo = twoEntityMap();
-    const s = withTool(makeState({ landLevel: [0, 5], landType: [0, 0] }));
+    const s = withTool(ready({ landLevel: [0, 5], landType: [0, 0] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
-    expect(after).toBe(s);
-    expect(after.lastBuildUpgrades).toBeUndefined();
+    expect(after.landLevel).toEqual([0, 5]);
+    expect(after.lastBuildUpgrades ?? []).toEqual([]);
+    expect(toolCount(after.tools, 0, 9)).toBe(toolCount(s.tools, 0, 9) - 1);
   });
 
   it('★ 魔法屋「就地加蓋房屋」也记 bit7（@source 0x00432085）', () => {
     const topo = twoEntityMap();
-    const s = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const s = ready({ landLevel: [0, 4], landType: [0, 0] });
     const after = applyMagicRequest(s, topo, { player: 0, kind: 'build', amount: 1 });
     expect(after.landLevel[1]).toBe(5);
     expect(after.lastBuildUpgrades).toEqual([
@@ -468,7 +534,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★ 魔法屋的多次加蓋是 **append**（一条 action 里多位中签者各盖一级）', () => {
     const topo = twoEntityMap();
-    const s = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const s = ready({ landLevel: [0, 4], landType: [0, 0] });
     const once = applyMagicRequest(s, topo, { player: 0, kind: 'build', amount: 1 });
     const twice = applyMagicRequest(once, topo, { player: 0, kind: 'build', amount: 1 });
     // 第一次 4→5 置位；第二次已满级 ⇒ 状态原样返回、提示不再追加
@@ -482,7 +548,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     //   → `0x004435da mov dword [esp], 1`，最后 `0x004436d4 call 0x40b0cd`。
     //   `cards/land-cards.ts` 的 `applyAngelCard` 只回 level，bit7 得由 core 补齐。
     const topo = twoEntityMap();
-    const base = makeState({ landLevel: [0, 4], landType: [0, 0] });
+    const base = ready({ landLevel: [0, 4], landType: [0, 0] });
     const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
     const after = reduce(s, { type: 'useCard', cardId: 9, target: { kind: 'entity', entityId: 1 } }, topo);
     expect(after.landLevel[1]).toBe(5);
@@ -495,7 +561,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     // @source `0x004436ad call 0x40b110` → `0x004436b5 test al, 0x80`
     //   → `0x004436d4 call 0x40b0cd`（天使卡**不播大锤**，见 BuildUpgradeSource）
     const topo = twoEntityMap();
-    const base = makeState({ facilityLevel: [0, 4], facilityType: [0, 1] });
+    const base = ready({ facilityLevel: [0, 4], facilityType: [0, 1] });
     const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
     const after = reduce(
       s,
@@ -510,7 +576,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★ 天使卡没升到 5 级 ⇒ 记事件但 bit7 = false', () => {
     const topo = twoEntityMap();
-    const base = makeState({ landLevel: [0, 3], landType: [0, 0] });
+    const base = ready({ landLevel: [0, 3], landType: [0, 0] });
     const s: GameState = { ...base, players: [{ ...base.players[0]!, cards: [9] }, ...base.players.slice(1)] };
     const after = reduce(s, { type: 'useCard', cardId: 9, target: { kind: 'entity', entityId: 1 } }, topo);
     expect(after.landLevel[1]).toBe(4);
@@ -525,7 +591,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     // 就会出现「上一次 4→5 置了 bit7、这一次 3→4 没置 ⇒ `some(bit7)` 仍为真
     // ⇒ 多播一段 0x20b」。
     const topo = twoEntityMap();
-    const base = makeState({
+    const base = ready({
       landLevel: [0, 3],
       landType: [0, 0],
       facilityLevel: [0, 4],
@@ -548,7 +614,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   it('★★ 瞬态提示**不进指纹**（C-DET-4）—— 与 `lastNpcWalks` 同一条约定', () => {
     const topo = twoEntityMap();
-    const s = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const s = withTool(ready({ landLevel: [0, 4], landType: [0, 0] }));
     const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: 1 }, topo);
     expect(after.lastBuildUpgrades).toHaveLength(1);
     const base = stateFingerprint(after);
@@ -566,7 +632,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     // `lastBuildUpgrades`，`JSON.parse` 回来是**新数组** —— 若不显式清掉，
     // 客户端的「引用变了 = 本 action 有加蓋」就会在倒退时凭空播一段动效。
     const topo = twoEntityMap();
-    const base = withTool(makeState({ landLevel: [0, 4], landType: [0, 0] }));
+    const base = withTool(ready({ landLevel: [0, 4], landType: [0, 0] }));
     const tools = [...base.tools];
     tools[9] = 1;
     tools[10] = 1; // 再给一件時光機
@@ -598,7 +664,7 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
 
   /** 站在企業格上的玩家 0（电脑），企業老闆 = chairman（null = 无主）*/
   const landingOnCompany = (chairman: number | null, level: number): GameState => {
-    const base = makeState({
+    const base = ready({
       players: [0, 1].map((i) => makePlayer(i, { nodeId: i === 0 ? 2 : 1, whoPlays: WHO_PLAYS_COMPUTER })),
       phase: 'settling',
       priceIndex: 1,
@@ -626,13 +692,47 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     ]);
   });
 
-  it('★ 建設公司（自家、电脑）0→1 ⇒ 记 companyBuild 但 bit7 = false', () => {
+  it('★ 建設公司（自家、电脑）0→2（蓋两次，`0x0041aae8` / `0x0041aafb`）⇒ 记一条 companyBuild、bit7 = false', () => {
     const topo = companyTopo(INDUSTRY.construction);
     const after = reduce(landingOnCompany(0, 0), { type: 'settle' }, topo);
-    expect(after.landLevel[1]).toBe(1);
+    expect(after.landLevel[1]).toBe(2);
     expect(after.lastBuildUpgrades).toEqual([
       { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' },
     ]);
+  });
+
+  it('★★ 建設公司（自家）3→5：第二次才到 5 级 ⇒ 提示里的 bit7 取**第一次**的（false）—— 原版只看 `[esp+0xbc]`（`0x0041ab21`），不说也不放烟花', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const after = reduce(landingOnCompany(0, 3), { type: 'settle' }, topo);
+    expect(after.landLevel[1]).toBe(5);
+    expect(after.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★ 建設公司（自家、真人选目标，`charge: false`）也蓋两次；别人的（`charge: true`）只蓋一次', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const own = landingOnCompany(0, 1);
+    const s: GameState = {
+      ...own,
+      players: own.players.map((p, i) => (i === 0 ? factoryPlayer({ index: 0, nodeId: 2 }) : p)),
+      landOwner: [0, 1],
+    };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(3);
+    expect(done.lastBuildUpgrades).toEqual([{ entity: 0x7d0 + 1, reachedMaxLevel: false, source: 'companyBuild' }]);
+  });
+
+  it('★ 审计补：别人的建設公司、电脑没地可蓋 ⇒ 照收 1000 × 物價（`0x0041ad28 je 0x41adff`）', () => {
+    const topo = companyTopo(INDUSTRY.construction);
+    const base = landingOnCompany(1, 5); // 唯一那块已 5 级 ⇒ 没地可蓋
+    const s: GameState = { ...base, priceIndex: 3 };
+    const before = s.players[0]!.cash + s.players[0]!.moneyInBank;
+    const after = reduce(s, { type: 'settle' }, topo);
+    expect(before - (after.players[0]!.cash + after.players[0]!.moneyInBank)).toBe(3000);
+    expect(after.landLevel[1]).toBe(5);
   });
 
   it('★ 建設公司（真人选目标那一支，`buildTarget`）也记 companyBuild', () => {
@@ -645,6 +745,8 @@ describe('★★ E6：加蓋返回值 bit7（剛好升到 5 級）的 core 契�
     };
     const asked = reduce(s, { type: 'settle' }, topo);
     expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: true });
+    // ★ 2026-09-23：真人选地之前先弹「%s\n\n請選擇欲加蓋地點」（`0x0041acf7`，`%s` = 企業名）
+    expect(asked.notices).toEqual([{ key: 'company.pickBuildSite', args: ['測試公司'] }]);
     const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
     expect(done.landLevel[1]).toBe(5);
     expect(done.lastBuildUpgrades).toEqual([

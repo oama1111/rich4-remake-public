@@ -80,7 +80,9 @@ export type CancelLayer =
   /** 監獄／醫院保釋屏（`_rich4_ui_prison_callback` / `_rich4_ui_hospital_callback`）*/
   | 'bail'
   /** 銀行貸款屏（`fcn_00435062`）*/
-  | 'loan';
+  | 'loan'
+  /** 还款提醒窗（`0x436034`，距还款日 3 天、回合开始）*/
+  | 'loanReminder';
 
 export interface CancelRule {
   layer: CancelLayer;
@@ -137,6 +139,11 @@ export const CANCEL_LADDER: readonly CancelRule[] = [
     effect: '收起定时器 + 关屏，返回 0 = **不保釋**',
   },
   { layer: 'loan', source: 'loc_00435f6d', effect: '说再见 + 关贷款屏' },
+  {
+    layer: 'loanReminder',
+    source: 'loc_004365b4（`[0x48c3e7] < 3` 才认）',
+    effect: '放取消音（音效 4）+ 跳到第三句并收掉 ⇒ 下一拍关窗；已在第三句则不理',
+  },
 ];
 
 /**
@@ -162,6 +169,8 @@ export interface CancelSnapshot {
   readonly shop: boolean;
   readonly bail: boolean;
   readonly loan: boolean;
+  /** 还款提醒窗开着 */
+  readonly loanReminder?: boolean;
 }
 
 /**
@@ -192,6 +201,7 @@ export function cancelLayerOf(s: CancelSnapshot): CancelLayer | null {
   if (s.screen === 'game' && s.shop) return 'shop';
   if (s.screen === 'game' && s.bail) return 'bail';
   if (s.screen === 'game' && s.loan) return 'loan';
+  if (s.screen === 'game' && s.loanReminder === true) return 'loanReminder';
   if (s.screen === 'game' && !s.overlay && s.dialog) return 'dialog';
   if (s.screen === 'options') return s.optionsSub ? 'optionsSub' : 'options';
   if (s.screen === 'aiSettings') return 'aiSettings';

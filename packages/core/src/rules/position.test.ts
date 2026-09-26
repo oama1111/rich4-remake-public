@@ -18,7 +18,7 @@ import { parseSave } from '../loaders/save.ts';
 import { newGame } from '../rules/new-game.ts';
 import { reduce } from '../state/reduce.ts';
 import type { GameState } from '../state/types.ts';
-import { topoOf } from '../testing/factories.ts';
+import { landAll, topoOf } from '../testing/factories.ts';
 import { applyHibernateCard } from '../cards/hibernate.ts';
 import { isOnBoard, placeOnNodeId } from './position.ts';
 
@@ -89,22 +89,32 @@ describe('★ placeOnNodeId 的三元组语义', () => {
 });
 
 describe('★★ 新局的三元组：冬眠卡因此才生效（第 38 条）', () => {
-  run('开局每个玩家 xpos/ypos == 起始节点坐标', () => {
+  run('落了地的人 xpos/ypos == 起始节点坐标；还没上盘的三元组全 0', () => {
     const map = loadMap();
     const s = newGame({ map, players: players(), seed: 42 });
-    for (const p of s.players) {
+    // 开局只有第 1 位上盘（`rules/start-placement.ts`）；其余是角色表里的 0（原版哨兵 `xpos == 0`）
+    for (const p of s.players.slice(1)) expect([p.nodeId, p.xpos, p.ypos], `玩家 ${p.index}`).toEqual([0, 0, 0]);
+    for (const p of landAll(s, map.nodes).players) {
       const node = map.nodes[p.nodeId - 1]!;
       expect([p.xpos, p.ypos], `玩家 ${p.index} nodeId=${p.nodeId}`).toEqual([node.x, node.y]);
       expect(p.xpos).toBeGreaterThan(0);
     }
   });
 
-  run('★ 新局用冬眠卡 ⇒ 其他在场玩家真的被冻住（先前 affected 恒为空）', () => {
+  run('★ 大家都落地之后用冬眠卡 ⇒ 其他在场玩家真的被冻住（先前 affected 恒为空）', () => {
     const map = loadMap();
-    const s = newGame({ map, players: players(), seed: 42 });
+    const s = landAll(newGame({ map, players: players(), seed: 42 }), map.nodes);
     const r = applyHibernateCard(s.players, 0, s.priceIndex);
     expect(r.affected).toEqual([1, 2, 3]);
     expect(r.players.map((p) => p.blocking.sleeping)).toEqual([0, 5, 5, 5]);
+  });
+
+  run('★ 第一輪里（别人还没上盘）用冬眠卡 ⇒ 冻不到没上盘的人 @source 0x0044415e `cmp [player+0x08], 0`', () => {
+    const map = loadMap();
+    const s = newGame({ map, players: players(), seed: 42 });
+    const r = applyHibernateCard(s.players, 0, s.priceIndex);
+    expect(r.affected).toEqual([]);
+    expect(r.players.map((p) => p.blocking.sleeping)).toEqual([0, 0, 0, 0]);
   });
 });
 

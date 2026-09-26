@@ -10,6 +10,9 @@
  *      地雷被踩掉 / 炸彈炸了 + 住院 ⇒ 0x20d。**只**看住院计数变大会把踩地雷也播成狗咬 —— 这是订正前的 bug；
  *   ④ **乞丐造型**：`wreckedThisAction` 只认惡犬 / 地雷 / 炸彈那三条（`0x40cd07` 的调用点），卡片 / 新聞送醫院不算；
  *   ⑤ **次序**：`main.ts` 里 `startDogFx` 必须排在 `startConfineFx` **之前**（原版：先 0x214、后 0x20c）。
+ *   ⑥ **機器娃娃（actor 8）扫到惡犬 ⇒ 什么都不播**（原版娃娃在種類跳表之前就被截住，
+ *      `0x0041b4ec cmp eax, 8`）—— 判据是 `after.lastNpcWalks[].cleared[].index`；
+ *      「没人住院」不能一律当成有车那一支（试玩10 第 52 条：誤播 0x228）。
  *
  * ⚠️ 2026-09-22 订正：先前这里钉的是「音效 85 / flags 0x10001 / 落点 (0,0)」—— 那是有车那一支 0x228 的参数
  *   （`push edi / push edi` 是 `read_mkf` 的两个 0），错套到了 0x214 上；救护车的参数根本不在这一支里。
@@ -19,7 +22,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
-import { OBJECT_TYPE_BOMB, OBJECT_TYPE_DOG, OBJECT_TYPE_MINE } from '@rich4/core';
+import { ACTOR_DOLL, OBJECT_TYPE_BOMB, OBJECT_TYPE_DOG, OBJECT_TYPE_MINE, specialSlotOf } from '@rich4/core';
 
 import { boardFilmSkippable, boardFilmTotalMs } from './board-film.ts';
 import {
@@ -61,6 +64,7 @@ function st(over: {
   f64?: number;
   who?: number;
   object?: { type: number; nodeId: number; attached?: number };
+  lastNpcWalks?: WreckSnapshot['lastNpcWalks'];
 }): WreckSnapshot {
   const who = over.who ?? 0;
   return {
@@ -70,7 +74,13 @@ function st(over: {
       blocking: { inHospital: i === who ? (over.inHospital ?? 0) : 0 },
     })),
     objects: [over.object ? { type: over.object.type, nodeId: over.object.nodeId, attached: over.object.attached ?? 0 } : { type: OBJECT_TYPE_DOG, nodeId: 0, attached: 0 }],
+    ...(over.lastNpcWalks !== undefined ? { lastNpcWalks: over.lastNpcWalks } : {}),
   };
+}
+
+/** 機器娃娃（actor 8）扫掉下标 `index` 那一件的 `lastNpcWalks` 提示 —— `slot` 由 `specialSlotOf` 算，不写死 4 */
+function dollWalk(cleared: readonly { index: number; step: number }[]): WreckSnapshot['lastNpcWalks'] {
+  return [{ slot: specialSlotOf(ACTOR_DOLL), cleared }];
 }
 
 describe('★ 影片规格 @source 资源头 + 调用点字节', () => {
@@ -226,6 +236,40 @@ describe('★ 什么时候播哪一段', () => {
     expect(dogBiteFxTrigger(st({ trafficMethod: 2, object: dogOn }), st({ trafficMethod: 2, object: dogGone }))).toBe(DOG_SCARED_FILM);
   });
 
+  it('★★ 機器娃娃扫走惡犬（`cleared` 含该下标、无人住院）⇒ **不播**（不是 0x228）', () => {
+    // 玩家回报 `feedback/20260922-172529335-manual-Charles.json` 第 52 条：
+    //   该回合 action 是 `{"type":"useTool","toolId":1}`（機器娃娃），却播了
+    //   「踩到惡犬 dog-scared（18 帧 × 71 ms）」= 0x228 —— 娃娃扫狗没人住院，
+    //   旧判据（纯状态差分）落到了「有车那一支」。
+    // @source 原版在種類跳表**之前**就截住 actor 8（VA 0x0041b4ec `cmp eax, 8 / jne`）
+    //   ⇒ 惡犬那一支对娃娃是死代码 ⇒ 什么都不该播。
+    const after = st({ object: dogGone, lastNpcWalks: dollWalk([{ index: 0, step: 3 }]) });
+    const spec = dogBiteFxTrigger(st({ object: dogOn }), after);
+    expect(spec).toBeNull();
+    expect(spec).not.toBe(DOG_SCARED_FILM);
+    expect(DOG_SCARED_FILM.resource).toBe(0x228);
+    // 乞丐造型同理：娃娃扫狗不该把主人画成乞丐
+    expect(wreckedThisAction(st({ object: dogOn }), st({ inHospital: 3, object: dogGone, lastNpcWalks: dollWalk([{ index: 0, step: 3 }]) }), 0)).toBe(false);
+  });
+
+  it('★★ 反向：有车玩家踩到惡犬（娃娃这一趟扫的是**别的**下标）⇒ 仍然是 0x228', () => {
+    // 娃娃扫的是下标 1、惡犬在下标 0 ⇒ 玩家的两条路一点不受影响
+    const walks = dollWalk([{ index: 1, step: 2 }]);
+    expect(dogBiteFxTrigger(st({ trafficMethod: 2, object: dogOn }), st({ trafficMethod: 2, object: dogGone, lastNpcWalks: walks }))).toBe(DOG_SCARED_FILM);
+    expect(dogBiteFxTrigger(st({ object: dogOn }), st({ inHospital: 3, object: dogGone, lastNpcWalks: walks }))).toBe(DOG_BITE_FILM);
+  });
+
+  it('★★ 上一拍留下的娃娃提示（`lastNpcWalks` 引用未变）不参与本拍 ⇒ 玩家踩狗照旧', () => {
+    // `lastNpcWalks` 是「只保留最近一次」的持久提示、别的 action 不清它；
+    // 若只看内容，上一趟娃娃的旧下标会把**后来新放置**在同一槽位的惡犬也算成「被扫的」。
+    // 娃娃那一趟是在同一条 action 里写下的，所以本拍必然是**新数组**（`reduce.ts` 的 useTool）。
+    const stale = dollWalk([{ index: 0, step: 3 }]);
+    const before = st({ trafficMethod: 2, object: dogOn, lastNpcWalks: stale });
+    const after = st({ trafficMethod: 2, object: dogGone, lastNpcWalks: stale });
+    expect(before.lastNpcWalks).toBe(after.lastNpcWalks);
+    expect(dogBiteFxTrigger(before, after)).toBe(DOG_SCARED_FILM);
+  });
+
   it('★ 惡犬还在盘上（没被踩掉）⇒ 什么都不播 —— 别的住院不是狗咬', () => {
     expect(dogBiteFxTrigger(st({ object: dogOn }), st({ inHospital: 3, object: dogOn }))).toBeNull();
     expect(dogBiteFxTrigger(st({ object: dogGone }), st({ inHospital: 3, object: dogGone }))).toBeNull();
@@ -300,6 +344,7 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     expect(src).toContain('let pendingBoardFilmAfter: BoardFilmSpec | null = null;');
     expect(src).toContain('pendingBoardFilmAfter: pendingBoardFilmAfter !== null,');
     expect(src).toContain('if (stageBusy(stageBusyFlags())) {');
-    expect(src).toContain('if (pendingBoardFilmAfter === null) resumeTurnDriver();');
+    // ★ 2026-09-22（#11 堵漏）：收摊那一段多了一句清快照，断言放宽成「里面有这行」
+    expect(src).toContain('if (pendingBoardFilmAfter === null) {');
   });
 });

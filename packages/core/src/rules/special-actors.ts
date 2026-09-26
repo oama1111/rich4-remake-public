@@ -189,6 +189,15 @@ export interface SpecialActor {
    * ⚠️ 可省略 = 0（既有存档与测试替身不必补字段）。
    */
   sleepwalkDays?: number;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：替身记录 **+11**（`0x498df3`）—— 「老家」：低 7 位 1 = 監獄 / 2 = 醫院，
+   *   bit7 = 已离开过（再踩到老家那一格就回去）。只在保釋放人时写（監獄 `0x0043d84e` = 1、醫院 `0x0043eefd` = 2，
+   *   门口那一格恰是監獄 / 醫院**落点格**（4 / 5）才当场 |0x80）；被送回去（`0x43d760` / `0x43ee0f` 的 NPC 支）清 0。
+   *   回老家的判据读它（`0x0041c7b1`），不是 actor 号。
+   *
+   * ⚠️ 可省略：老状态 / 老存档没有这一项 ⇒ 按 actor 号推（4/5 監獄、6/7 醫院）且视为已离开过（旧行为）。
+   */
+  home?: number;
   /** 在哪儿：棋盘 / 監獄 / 醫院 / 未出场 */
   place: ActorPlace;
 }
@@ -333,8 +342,14 @@ export function spawnDoll(state: GameState, owner: number): SpecialActor | null 
  * ⚠️ `last_node = 0` 是有讲究的：`pickNextNode` 拿 `prev === 0` 当
  *   「没有来路」，于是出獄第一步**四个方向都可以走**，不受「不走回头路」限制。
  */
-export function releaseNpc(gateNodeId: number, owner: number, steps: number): SpecialActor {
-  return {
+export function releaseNpc(
+  gateNodeId: number,
+  owner: number,
+  steps: number,
+  /** 从哪儿放出来的 + 门口那一格的落点类型（`node.flags & 0xff`）—— 写 +11，见 `SpecialActor.home` */
+  from?: { place: 'prison' | 'hospital'; gateSpecialKind: number },
+): SpecialActor {
+  const base: SpecialActor = {
     nodeId: gateNodeId,
     lastNodeId: 0,
     direction: 0,
@@ -344,6 +359,11 @@ export function releaseNpc(gateNodeId: number, owner: number, steps: number): Sp
     singleStep: 0,
     place: ACTOR_PLACE.board,
   };
+  if (from === undefined) return base;
+  // @source 監獄 0x0043d84e `mov byte [+0x0b],1` → 0x0043d86f `cmp edx,4 / jne` → `or byte [+0x0b],0x80`；醫院 0x0043eefd 同形（2 / 5）
+  const low = from.place === 'prison' ? 1 : 2;
+  const armed = from.gateSpecialKind === (from.place === 'prison' ? 4 : 5) ? 0x80 : 0;
+  return { ...base, home: low | armed };
 }
 
 /**
@@ -375,10 +395,14 @@ export function releaseNpc(gateNodeId: number, owner: number, steps: number): Sp
  *   所以 NPC 不会自己出院，只能等人花 300 點券保釋（见 `rules/visit.ts`）。
  *   这正是需求方说的「玩家可以选择继续支付 300 点把他们救出来」。
  */
-export function npcBittenByDog(actor: SpecialActor): SpecialActor {
+export function npcBittenByDog(
+  actor: SpecialActor,
+  /** 关到哪儿：缺省醫院（惡犬/飛彈）；陷害卡是監獄（`0x0043d788 mov byte [+0x0a], 1`）*/
+  place: ActorPlace = ACTOR_PLACE.hospital,
+): SpecialActor {
   return {
     ...idleActor(),
-    place: ACTOR_PLACE.hospital,
+    place,
     // ★ 主人不清 —— 原版那一支只动 +10 与 +11..15，没碰 +8
     owner: actor.owner,
   };
@@ -410,12 +434,37 @@ export function npcBittenByDog(actor: SpecialActor): SpecialActor {
  *   写进物件表的 `+0x08..+0x14` 四个 float —— 纯动画，不进 core。
  */
 export function dollSweepNode(objects: readonly MapObject[], nodeId: number): MapObject[] | null {
-  const at = objects.findIndex((o) => o.nodeId === nodeId);
+  const at = nodeObjectIndex(objects, nodeId);
   if (at === -1) return null;
   const next = objects.map((o, i) =>
     i === at ? { ...o, nodeId: 0, state: 0, attached: 0 } : o,
   );
   return next;
+}
+
+/**
+ * 这一格**地上**的那件物件（在 `objects` 里的下标；没有 = −1）—— 原版读的是节点的反向索引
+ * `node+0x24` 的第 3 字节（`0x0041b4b4 and eax, 0xff0000 / shr eax, 0x10`）。
+ *
+ * ★★ **附身 / 被带着走的物件不算**：`attach_object`（0x40e2cc 一带）把它从那一字节里抹掉，
+ *   `release_object` 0x40e14d 也只在 `attached == 0` 时才清那一字节 —— 但附身物件的 `nodeId`
+ *   仍跟着主人走（`syncEscortNodes`），光比 `nodeId` 会把**别人身上的神明 / 定時炸彈**当成地上的。
+ *   第 24 份试玩回报 `20260924-182247766`「我身上背的窮神莫名其妙消失了」：電腦放機器娃娃，
+ *   九格里正好走过真人脚下，娃娃把他身上的小窮神「扫」掉（物件清零，玩家的 `godInfo` 却还指着它）。
+ * ★ 同格多件取那一字节**按位或**的结果（与 `reduce.ts` 的 `objectHandleAt` 同一条规则：
+ *   `place_object` 往 `node+0x26` 里 `or` 槽号 —— VA 0x0040e13c `or [node+0x24], (槽+1)<<16`）
+ *   ⇒ 返回的下标**可能不是**同格任何一件真正所在的那个槽（例：死神槽 14 与第 10 个路障槽 25
+ *   压在一格 ⇒ `15|26 = 31` ⇒ 槽 30 的地雷）。原版随后正是拿这一字节去查
+ *   `objects[字节-1]`（`0x0041b4ca..db`）与 `remove_object`（`0x0041b529`），所以这里照抄。
+ */
+export function nodeObjectIndex(objects: readonly MapObject[], nodeId: number): number {
+  // @source 0x0040e13c `or [node+0x24], (槽+1)<<16`
+  let handle = 0;
+  for (let i = 0; i < objects.length; i++) {
+    const o = objects[i];
+    if (o !== undefined && o.nodeId === nodeId && o.nodeId !== 0 && o.attached === 0) handle |= i + 1;
+  }
+  return handle - 1;
 }
 
 /**
@@ -456,6 +505,12 @@ export function runDoll(
   actor: SpecialActor,
   objects: readonly MapObject[],
   advance: (from: number, prev: number) => number,
+  /**
+   * 扫掉第 `index` 件（原版 `0x0041b529 call 0x40e14d(物件下标 + 1)` = `release_object`：
+   * 放置类回库存、神明的搭档另找地方登场）。缺省 = 只把那一件清零（老用例）。
+   * ★ 与 `advance` **交错**调用（每走一格先挑路、再扫这一格）—— 两边吃的是同一条随机流。
+   */
+  release?: (objs: MapObject[], index: number, node: number) => MapObject[],
 ): SweepResult {
   let cur = actor.nodeId;
   let prev = actor.lastNodeId;
@@ -469,11 +524,11 @@ export function runDoll(
     prev = cur;
     cur = next;
     path.push(cur);
-    const at = objs.findIndex((o) => o.nodeId === cur);
-    const swept = dollSweepNode(objs, cur);
-    if (swept !== null) {
+    // @source 0x0041b4b4 读节点反向索引（只认**地上**的，见 `nodeObjectIndex`）→ 0x0041b529 `call 0x40e14d`
+    const at = nodeObjectIndex(objs, cur);
+    if (at !== -1) {
       cleared.push({ index: at, step: path.length - 1 });
-      objs = swept;
+      objs = release === undefined ? (dollSweepNode(objs, cur) ?? objs) : release(objs, at, cur).map((o) => ({ ...o }));
     }
   }
 

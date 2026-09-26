@@ -8,7 +8,7 @@ import {
   SCORE_RATIO,
   STOCK_LOAN_DUE_GUARD_DAYS,
   daysUntil,
-  decideStockTrade,
+  aiStockBuy,
   holdingsCost,
   holdingsValue,
   pickRanked,
@@ -19,7 +19,6 @@ import {
   type StockScoreInput,
 } from './stock-policy.ts';
 import { stockBudget } from './personality.ts';
-import { aiRoll } from './card-policy.ts';
 import { truncTowardZero } from '../rules/rounding.ts';
 import { HISTORY_DAYS } from '../places/stock-market.ts';
 import type { GameState } from '../state/types.ts';
@@ -54,14 +53,20 @@ function attractive(s: GameState): GameState {
   for (let d = 138; d < HISTORY_DAYS; d++) row[d] = 10;
   // 表里的 f10（当日可成交量）开局为 0，要等每日重算；这里直接给
   const stocks = s.market.stocks.map((x, j) => (j === 0 ? { ...x, f10: x.shares } : x));
-  let rngState = 1;
-  while (aiRoll({ ...s, rngState }, 0x42c690, 24) > 12) rngState++;
-  return { ...s, rngState, market: { ...s.market, history, stocks } };
+  return { ...s, market: { ...s.market, history, stocks } };
 }
+
+/** 按次序吐出原版 `rand()` 的替身（用完之后恒 0） */
+function seq(...vals: number[]): () => number {
+  let i = 0;
+  return () => vals[i++] ?? 0;
+}
+/** 入口闸 rand()%3 = 0、第一名 rand()%24 = 0 ⇒ 一定进场、一定挑第一名 */
+const buy = (s: GameState) => aiStockBuy(s, { nodes: [] }, seq(0, 0));
 
 describe('AI 炒股', () => {
   it('★ 闸一：f26 == 0 的角色从不碰股票（@source 0x0042bf30）', () => {
-    expect(decideStockTrade(scene({ stockRatio: 0 }))).toBeNull();
+    expect(buy(scene({ stockRatio: 0 }))).toBeNull();
   });
 
   it('★ 闸三：距還款日不足 15 天就不进股市（@source 0x0042bf65 cmp eax, 0xf）', () => {
@@ -69,24 +74,32 @@ describe('AI 炒股', () => {
     // 到期日正好 15 天之后 —— 还能炒
     const ok = scene({ loanDueDate: packed(1998, 1, 20) });
     expect(daysUntil(ok, packed(1998, 1, 20))).toBe(15);
-    expect(decideStockTrade(ok)).not.toBeNull();
+    expect(buy(ok)).not.toBeNull();
     // 14 天 —— 不炒
     const guard = scene({ loanDueDate: packed(1998, 1, 19) });
     expect(daysUntil(guard, packed(1998, 1, 19))).toBe(14);
-    expect(decideStockTrade(guard)).toBeNull();
+    expect(buy(guard)).toBeNull();
     // 没欠款（0）不受这条限制
-    expect(decideStockTrade(scene({ loanDueDate: 0 }))).not.toBeNull();
+    expect(buy(scene({ loanDueDate: 0 }))).not.toBeNull();
   });
 
   // ★★ 2026-09-19 补（§7.140，通道 2 `test_stock_daily_bf03.py`）：原版入口
   //   `0x0042bf14` 是 `rand()%3 != 0 ⇒ 返回` —— **三分之二的回合根本不看股市**，
   //   此前复刻漏了这道闸（卖股侧 `decideStockSell` 早有同型实现）。
-  it('★★ 入口闸：aiRoll(0x42bf14,3) != 0 就不看股市', () => {
-    // aiRoll(state, salt, 3) = ((rngState ^ imul(salt,0x9e3779b1)) >>> 0) % 3
-    //   rngState=1 ⇒ 0（通过）；rngState=0 ⇒ 2（跳过）
-    expect(decideStockTrade({ ...scene(), rngState: 0 })).toBeNull();
-    expect(decideStockTrade({ ...scene(), rngState: 2 })).toBeNull();
-    expect(decideStockTrade({ ...scene(), rngState: 1 })).not.toBeNull();
+  it('★★ 入口闸：rand()%3 != 0 就不看股市（0x0042bf14，先于三道闸、每回合必掷）', () => {
+    expect(aiStockBuy(scene(), { nodes: [] }, seq(1))).toBeNull();
+    expect(aiStockBuy(scene(), { nodes: [] }, seq(5))).toBeNull();
+    expect(aiStockBuy(scene(), { nodes: [] }, seq(3, 0))).not.toBeNull();
+    // f26 == 0 的角色也照样先掷这一次
+    let n = 0;
+    aiStockBuy(scene({ stockRatio: 0 }), { nodes: [] }, () => (n++, 0));
+    expect(n).toBe(1);
+  });
+
+  it('★ 排名里每个非 0 分的名次各掷一次 rand()%24，<= 12 − 名次才选中', () => {
+    // 只有 0 号股票有分 ⇒ 第一名 roll 13 落选 ⇒ 不买；roll 12 选中
+    expect(aiStockBuy(scene(), { nodes: [] }, seq(0, 13))).toBeNull();
+    expect(aiStockBuy(scene(), { nodes: [] }, seq(0, 12))?.stock).toBe(0);
   });
 
   it('★ 预算封顶在**存款**上 —— 股票从存款付（@source 0x0042c05e）', () => {
@@ -106,14 +119,13 @@ describe('AI 炒股', () => {
     };
     // 持仓市值远超 50% 目标
     expect(holdingsValue(rich, 0)).toBeGreaterThan(0);
-    expect(decideStockTrade(rich)).toBeNull();
+    expect(buy(rich)).toBeNull();
   });
 
-  it('买的是合法的 buyStock，股数不超过流通量也不超预算', () => {
+  it('买的股数不超过可成交量也不超预算', () => {
     const s = scene();
-    const a = decideStockTrade(s);
-    expect(a).not.toBeNull();
-    if (a === null || a.type !== 'buyStock') throw new Error('应当是 buyStock');
+    const a = buy(s);
+    if (a === null) throw new Error('应当买');
     const stock = s.market.stocks[a.stock]!;
     expect(a.shares).toBeGreaterThan(0);
     expect(a.shares).toBeLessThanOrEqual(stock.shares);
@@ -250,10 +262,13 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
     expect(recentAverage(st, 0, 6)).toBe(87.5);
   });
 
-  it('排名：分降序、同分下标升序（D-006）；选中规则 rand()%24 <= 12 − 名次', () => {
-    expect(rankStocks([0, 5, 3, 5]).map((r) => r.stock)).toEqual([1, 3, 2, 0]);
+  it('排名：分降序、同分照原版 Watcom qsort（0x457e6c）；选中规则 rand()%24 <= 12 − 名次', () => {
+    // ★ gap 3 那一趟：cmp(0 号 0 分, 3 号 5 分) > 0 ⇒ 互换 ⇒ 同为 5 分的 3 号排到 1 号前面（原版如此）
+    expect(rankStocks([0, 5, 3, 5]).map((r) => r.stock)).toEqual([3, 1, 2, 0]);
+    // ★ 不稳定：gap 3 那一趟把 3 号（分 5）换到 0 号位 ⇒ 同分的 3 号排在 1 号前面
+    expect(rankStocks([1, 5, 1, 5]).map((r) => r.stock)).toEqual([3, 1, 2, 0]);
     // 第一名 roll 13 落选、第二名 roll 11 <= 11 选中
-    expect(pickRanked(rankStocks([0, 5, 3, 5]), (i) => (i === 0 ? 13 : 11))).toBe(3);
+    expect(pickRanked(rankStocks([0, 5, 3, 5]), (i) => (i === 0 ? 13 : 11))).toBe(1);
     // 全是 0 分 → -1；roll 全部太大 → -1
     expect(pickRanked(rankStocks([0, 0]), () => 0)).toBe(-1);
     expect(pickRanked(rankStocks([1, 1]), () => 23)).toBe(-1);
@@ -283,13 +298,14 @@ describe('★ 选股打分 @source 0x0042c075..0x0042c557', () => {
 //  賣股 @source 0x0042c79f
 // ============================================================
 
-import { SELL_GAIN_SHIFT, SELL_RATIO, decideStockSell, lowestHistory, pickForSale, scoreStockForSale, sellScoreInput, type SellScoreInput } from './stock-policy.ts';
+import { SELL_GAIN_SHIFT, SELL_RATIO, aiStockSellPick, lowestHistory, pickForSale, scoreStockForSale, type SellScoreInput } from './stock-policy.ts';
 import { loanSellPressure, loanStillUncovered } from '../places/stock-market.ts';
 import { reduce } from '../state/reduce.ts';
 
 function sellInput(over: Partial<SellScoreInput> = {}): SellScoreInput {
   return {
-    ...input({ myHolding: 100 }),
+    // trend 1：无企業那条「趋势 < 1.0」的 +2 默认不命中（0x0042cd72）
+    ...input({ myHolding: 100, trend: 1 }),
     avgCost: 10,
     openPrice: 10,
     minHist: 9999,
@@ -343,8 +359,8 @@ describe('★ 賣出打分：無企業', () => {
     // gain = 0.5（price 5 / cost 10）→ 旧误读 `trunc(2×0.5 − 3) = trunc(−2) = −2`；
     //   原版跳过 → 0。openPrice 取 5 以免落进「跌停直接 0」那条岔路（0x42cfbb `cmp eax,3`）
     expect(scoreStockForSale(sellInput({ price: 5, openPrice: 5 }), me, 1, 10, 0, false, 5)).toBe(0);
-    // gain = 2.0 → +trunc(2×(2−2)+1) = +1；gain > 1.6 且波动 < 1 → 再 +2
-    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, volatility: 0.5 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
+    // gain = 2.0 → +trunc(2×(2−2)+1) = +1；gain > 1.6 且**趋势** < 1 → 再 +2（审计订正：原先写的是波动系数）
+    expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, trend: 0.5 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
   });
 
   it('★ 边界：gain 恰好 / 刚过 / 刚不到 +2.0，以及负的 −2.0', () => {
@@ -385,7 +401,7 @@ describe('★ 賣出打分：無企業', () => {
   });
 
   it('現價 > 144 日最低×8 且 最低×8 > 成本×1.25 → +2；avg24 > avg6 且 現價 < 開盤 → +2', () => {
-    // minHist 2 → 16；price 20 > 16；16 > 12.5 ✓；gain 2 → +1；volatility 1（不 < 1）
+    // minHist 2 → 16；price 20 > 16；16 > 12.5 ✓；gain 2 → +1；trend 1（不 < 1）
     expect(scoreStockForSale(sellInput({ price: 20, openPrice: 20, minHist: 2 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
     expect(scoreStockForSale(sellInput({ price: 20, openPrice: 21, avg24: 30, avg6: 10 }), me, 1, 10, 0, false, 5)).toBe(1 + 2);
   });
@@ -411,10 +427,19 @@ describe('★ 賣出打分：有企業', () => {
     expect(scoreStockForSale({ ...s, company: co({ funds: -10_000, chairman: 1 }) }, me, 1, 10, 0, false, 12)).toBe(3);
   });
 
-  it('月均盈餘平平、現價 >= A×2、賺 30%、持股比例 < 0.4 → +1', () => {
+  it('★★ 持股比例是「全體 ÷ 我」（0x0042c8c9 fdivrp，DE F1）⇒ 恒 ≥ 1：「< 0.4」那条 +1 永不命中，「> 0.6」恒命中', () => {
+    // 月均盈餘平平、現價 >= A×2、賺 30% —— 只差比例那一条，而它永远不成立
     const s = sellInput({ price: 20, openPrice: 20, company: co(), myHolding: 10, totalHold: 100 });
-    expect(scoreStockForSale(s, me, 1, 10, 0, false, 5)).toBe(1);
-    expect(scoreStockForSale({ ...s, myHolding: 50 }, me, 1, 10, 0, false, 5)).toBe(0);
+    expect(scoreStockForSale(s, me, 1, 10, 0, false, 5)).toBe(0);
+    // 深亏、月中前：我只持 10%（「我 ÷ 全體」= 0.1）照样 +3（全體 ÷ 我 = 10 > 0.6）
+    const red = sellInput({ price: 10, openPrice: 10, company: co({ funds: -10_000, chairman: 1 }), myHolding: 10, totalHold: 100 });
+    expect(scoreStockForSale(red, me, 1, 10, 0, false, 12)).toBe(3);
+  });
+
+  it('★★ 無企業那条 +2 看趋势 +0x1c（0x0042cd72），不看波动系数', () => {
+    const hot = sellInput({ price: 17, openPrice: 17, trend: 0.5, volatility: 5 }); // gain 1.7 > 1.6
+    expect(scoreStockForSale(hot, me, 1, 10, 0, false, 5)).toBe(2);
+    expect(scoreStockForSale({ ...hot, trend: 1, volatility: 0.1 }, me, 1, 10, 0, false, 5)).toBe(0);
   });
 
   it('当不了董事長且公司不赚、賺 50% → +1；跌势中 A×2/成本×2 之上（董事長不是我）→ +2；×3（董事長是我）→ +2；壓力 +1', () => {
@@ -440,36 +465,38 @@ describe('★ 挑哪支、要不要賣', () => {
     expect(lowestHistory(s, 1)).toBe(9999);
   });
 
-  it('★ 没壓力时三分之二的回合不看（aiRoll 替身）；賣出是全部持股', () => {
+  it('★ 挑中就賣**全部持股**（打分在 aiStockSellPick，随机闸在 reducer）', () => {
     const base = scene();
     const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j === 0 ? { amount: 500, avgCost: 1 } : x)) : h));
-    const s = { ...base, holdings };
+    expect(aiStockSellPick({ ...base, holdings }, { nodes: [] }, false)).toEqual({ stock: 0, shares: 500 });
+  });
+
+  it('★ reducer：没壓力时掷 rand()%3（每趟一次），壓力下不掷', () => {
+    const base = scene({ whoPlays: 2 });
+    const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j === 0 ? { amount: 500, avgCost: 1 } : x)) : h));
     let sold = 0;
-    let looked = 0;
     for (let seed = 1; seed <= 90; seed++) {
-      const st = { ...s, rngState: seed };
-      const a = decideStockSell(st, { nodes: [] });
-      if (a !== null) {
-        sold++;
-        expect(a).toEqual({ type: 'sellStock', stock: 0, shares: 500 });
-      }
-      if (aiRoll(st, 0x42c802, 3) === 0) looked++;
+      const st = { ...base, holdings, aiStep: 1, rngState: seed };
+      const after = reduce(st, { type: 'aiNext' }, { nodes: [] });
+      if ((after.holdings[0]![0]!.amount) === 0) sold++;
     }
-    expect(sold).toBe(looked); // gain = 10 → 分远大于 0，看了就賣
     expect(sold).toBeGreaterThan(10);
     expect(sold).toBeLessThan(60);
   });
 
-  it('★ 壓力下不掷闸；reducer 賣完一支若仍没盖住 貸款×1.1 就把调度步留在 1', () => {
+  it('★★ 壓力旗整趟不重算：卖到 貸款 ≤ 現金+存款 < 貸款×1.1 仍接着卖（0x0042d0de），一直盖住 1.1 倍为止', () => {
+    // 貸款 100000、手头 200；两支各 1000 股 @ 50 ⇒ 卖一支得 50000（仍 < 貸款，壓力下也会继续）
     const base = scene({ cash: 100, moneyInBank: 100, loan: 100_000, loanDueDate: packed(1998, 1, 8), whoPlays: 2 });
-    const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j <= 1 ? { amount: 100, avgCost: 1 } : x)) : h));
-    const s = { ...base, holdings, aiStep: 1 };
-    const a = decideStockSell(s, { nodes: [] });
-    expect(a?.type).toBe('sellStock');
-    const after = reduce(s, a!, { nodes: [] });
-    expect(after.aiStep).toBe(1);
-    // 賣掉的那支已经没了，下一帧还会挑另一支
-    expect(sellScoreInput(after, { nodes: [] }, a!.type === 'sellStock' ? a.stock : 0, 0)!.myHolding).toBe(0);
+    const stocks = base.market.stocks.map((x, j) => (j <= 2 ? { ...x, price: 50, openPrice: 50 } : x));
+    const amounts = [1000, 1000, 100];
+    const holdings = base.holdings.map((h, i) => (i === 0 ? h.map((x, j) => (j <= 2 ? { amount: amounts[j]!, avgCost: 10 } : x)) : h));
+    const s = { ...base, market: { ...base.market, stocks }, holdings, aiStep: 1 };
+    expect(loanSellPressure(s.players[0]!, s)).toBe(true);
+    const after = reduce(s, { type: 'aiNext' }, { nodes: [] });
+    // 两支卖完 100200 ≥ 貸款（入口旗若重算就此停），但 < 110000 ⇒ 第三支也卖
+    expect(after.holdings[0]!.slice(0, 3).map((h) => h!.amount)).toEqual([0, 0, 0]);
+    expect(after.players[0]!.moneyInBank).toBe(100 + 50_000 + 50_000 + 5_000);
+    expect(after.aiStep).toBe(2);
   });
 });
 

@@ -22,7 +22,11 @@ import {
   atmButtonRect,
   atmLimit,
   atmKeyOf,
+  atmOp,
+  atmOpen,
   atmPress,
+  atmPressSound,
+  ATM_MODE,
   drawAtmBar,
   hitAtmButton,
   type AtmState,
@@ -37,7 +41,7 @@ describe('ATM 面板几何 @source VA 0x4379c9 / 表 0x475888', () => {
 
   it('★ 18 颗钮的矩形照表 dump（面板局部）', () => {
     expect(ATM_BUTTONS).toHaveLength(18);
-    // 存款 / 提款 / EXIT
+    // 提款（左上）/ 存款（中间）/ EXIT
     expect(ATM_BUTTONS[0]).toEqual({ x0: 57, y0: 49, x1: 137, y1: 90 });
     expect(ATM_BUTTONS[1]).toEqual({ x0: 139, y0: 49, x1: 219, y1: 90 });
     expect(ATM_BUTTONS[2]).toEqual({ x0: 221, y0: 49, x1: 264, y1: 90 });
@@ -78,10 +82,10 @@ describe('ATM 面板几何 @source VA 0x4379c9 / 表 0x475888', () => {
     expect(hitAtmButton(500, 500)).toBeNull();
   });
 
-  it('★ 「銀行暫停放款」禁止章是图 29，盖在存款钮中心 (157,141)', () => {
+  it('★ 「銀行暫停放款」禁止章是图 29，盖在提款钮（钮 0，左上）中心 (157,141)', () => {
     expect(ATM_FROZEN_MARK).toBe(29);
     expect(ATM_FROZEN_AT).toEqual({ x: 157, y: 141 });
-    expect(atmButtonCenter(0)).toEqual({ x: 157, y: 141 }); // 存款钮中心 ✓
+    expect(atmButtonCenter(0)).toEqual({ x: 157, y: 141 }); // 提款钮中心 ✓
     expect(atmButtonRect(0)).toEqual({ x: 117, y: 120, w: 81, h: 42 });
   });
 });
@@ -110,24 +114,38 @@ describe('ATM 的按键逻辑（纯函数）', () => {
   });
 
   it('★ MAX 把金额填成**当前模式**的上限', () => {
-    expect(atmPress(base, 16)!.digits).toBe('50000'); // 存款上限
-    expect(atmPress({ ...base, mode: 1 }, 16)!.digits).toBe('20000'); // 提款上限
+    expect(atmPress(base, 16)!.digits).toBe('50000'); // 模式 0（提款）的上限
+    expect(atmPress({ ...base, mode: 1 }, 16)!.digits).toBe('20000'); // 模式 1（存款）的上限
     expect(atmLimit(base)).toBe(50000);
     expect(atmLimit({ ...base, mode: 1 })).toBe(20000);
   });
 
-  it('★ 模式钮：点当前那件什么都不做；换模式把已键入的清掉', () => {
-    const deposit: AtmState = { mode: 0, digits: '99', limits: [50000, 20000] };
-    expect(atmPress(deposit, 0)).toEqual(deposit); // 已经是存款 → 原样（连 digits 都留）
-    const asWithdraw = atmPress(deposit, 1)!;
-    expect(asWithdraw.mode).toBe(1);
-    expect(asWithdraw.digits).toBe('');
+  it('★ 模式钮：每按一次都把金额清掉 —— 点当前那件也一样', () => {
+    // @source `0x004371ce cmp ebx,[0x48c3f0] / je 0x43738f` 只跳过重画高亮；之后照样写码，
+    //   `0x004373ab`（码 1）/ `0x004373eb`（码 2）设模式与上限再 `call 0x436edb`（金额串 = "0"）
+    //   （先前断言「点当前那件原样、连 digits 都留」是把那个 `je` 读成了整段跳过 —— 第十三份试玩回报复核订正）
+    const withdraw: AtmState = { mode: 0, digits: '99', limits: [50000, 20000] };
+    expect(atmPress(withdraw, 0)).toEqual({ ...withdraw, digits: '' }); // 已经是提款 → 模式不变、金额清掉
+    const asDeposit = atmPress(withdraw, 1)!;
+    expect(asDeposit.mode).toBe(1);
+    expect(asDeposit.digits).toBe('');
   });
 
-  it('★ 冻结时点「存款」不认（原版改用当前模式）', () => {
-    const withdrawFirst: AtmState = { mode: 1, digits: '', limits: [50000, 20000] };
-    expect(atmPress(withdrawFirst, 0, true)).toEqual(withdrawFirst); // 冻结 → 原样
-    expect(atmPress(withdrawFirst, 0, false)!.mode).toBe(0); // 没冻结 → 切得过去
+  it('★ 暫停放款时点「提款」（钮 0）当成点当前那件（原版改用当前模式）', () => {
+    // @source `0x004371e5 cmp byte [+0x3c],0` / `0x004371ee mov ebx,[0x48c3f0]`
+    const depositFirst: AtmState = { mode: 1, digits: '5', limits: [50000, 20000] };
+    expect(atmPress(depositFirst, 0, true)).toEqual({ ...depositFirst, digits: '' }); // 暫停 → 仍是存款
+    expect(atmPress(depositFirst, 0, false)!.mode).toBe(0); // 没暫停 → 切得过去
+  });
+
+  it('★ 按下那一声：模式钮 1、金额栏 9、其余 7；越界不放 @source `0x004373b5` / `0x00437415` / `0x0043749a` / `0x00437571`', () => {
+    expect(atmPressSound(1)).toBe(1); // 提款
+    expect(atmPressSound(2)).toBe(1); // 存款
+    expect(atmPressSound(3)).toBe(7); // EXIT
+    expect(atmPressSound(4)).toBe(9); // 金额栏（含拖动、键盘 H）
+    for (let code = 5; code <= 18; code++) expect(atmPressSound(code)).toBe(7);
+    expect(atmPressSound(0)).toBeNull();
+    expect(atmPressSound(19)).toBeNull();
   });
 
   it('★ EXIT 返回 null（关面板）；↵ 不改状态（发 action 是调用方的事）', () => {
@@ -191,5 +209,39 @@ describe('ATM 进度条（Q-BANK-1 / T-029c）@source fcn_00436d3a', () => {
     expect(ATM_PCT_SCALE).toBe(34);
     expect(ATM_BAR_STEP).toBe(6);
     expect(ATM_PCT_SCALE * ATM_BAR_STEP).toBe(ATM_BAR.w);
+  });
+});
+
+describe('★ 第十三份试玩回报 #1：左上 = 提款、中间 = 存款（按 exe 数据流，不按看图）', () => {
+  // @source `0x004373c4 mov [0x48c3f0],0` + `0x004373d1 mov eax,[player+0x496b88]`（码 1 = 钮 0 → 模式 0，上限 = 存款）
+  //         `0x004373fa mov [0x48c3f0],1` + `0x0043740b mov eax,[player+0x496b84]`（码 2 = 钮 1 → 模式 1，上限 = 現金）
+  //         `0x0043781e cmp [0x48c3f0],0 / 0x00437827 sub [+0x496b88] / 0x0043782d add [+0x496b84]`（模式 0 = 提款）
+  it('★ 钮 0 在左上、钮 1 在它右边（中间）', () => {
+    expect(ATM_BUTTONS[0]!.x0).toBeLessThan(ATM_BUTTONS[1]!.x0);
+    expect(ATM_BUTTONS[0]!.y0).toBe(ATM_BUTTONS[1]!.y0);
+  });
+
+  it('★ 模式号 = 钮序号：钮 0 → 提款、钮 1 → 存款', () => {
+    expect(ATM_MODE).toEqual({ withdraw: 0, deposit: 1 });
+    const st = atmOpen(5000, 3000, false);
+    expect(atmOp(atmPress(st, 0)!.mode)).toBe('withdraw');
+    expect(atmOp(atmPress(st, 1)!.mode)).toBe('deposit');
+  });
+
+  it('★ 开窗：默认提款、上限 = 存款余额；换到存款后上限 = 現金 @source `0x0043705f` / `0x0043706c`', () => {
+    const st = atmOpen(5000, 3000, false);
+    expect(st.mode).toBe(ATM_MODE.withdraw);
+    expect(atmLimit(st)).toBe(3000);
+    expect(atmPress(st, 16)!.digits).toBe('3000'); // MAX = 存款余额
+    const dep = atmPress(st, 1)!;
+    expect(atmLimit(dep)).toBe(5000);
+    expect(atmPress(dep, 16)!.digits).toBe('5000'); // MAX = 現金
+  });
+
+  it('★ 暫停放款时开窗：默认存款、上限 = 現金，提款钮点了不认 @source `0x00437028` / `0x00437039` / `0x004371ee`', () => {
+    const st = atmOpen(5000, 3000, true);
+    expect(st.mode).toBe(ATM_MODE.deposit);
+    expect(atmLimit(st)).toBe(5000);
+    expect(atmPress(st, 0, true)!.mode).toBe(ATM_MODE.deposit);
   });
 });

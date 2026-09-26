@@ -7,7 +7,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   actorTokens,
   playerAnchorWorld,
-  ASLEEP_FILTER,
   attachedObjectTokens,
   actorWalkSteps,
   BoardRenderer,
@@ -35,6 +34,7 @@ import {
   TOOLBAR,
   TOOLBAR_RIGHT,
   toolbarIconAt,
+  WALK_CHAIN_MS,
 } from './render.ts';
 import {
   buildingResource,
@@ -304,16 +304,18 @@ describe('★ T-047 替身的图组资源号 —— 全部照 exe，不许猜', 
     expect(isAsleep({ sleeping: 0 })).toBe(false);
     expect(isAsleep({ sleeping: 5 })).toBe(true);
     expect(isAsleep({ sleeping: 1 })).toBe(true);
-    // 去色 filter 必须真的去色（saturate(0)），不能只调亮度
-    expect(ASLEEP_FILTER).toContain('saturate(0)');
-    // ★ 结构断言：绘制那一支必须**在 drawImage 两侧**设/清 filter，
-    //   否则这个 filter 会漏到后面所有绘制（棋子、建筑全变灰）
+    // ★ 结构断言：绘制那一支用的是**灰版精灵**（`asleepSpriteOf`），不是 `ctx.filter`
+    //   （WebKit 不认 filter ⇒ iPhone 上从来不灰；2026-09-24）
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    const at = src.indexOf('if (asleep) ctx.filter = ASLEEP_FILTER;');
+    const at = src.indexOf('drawSprite(ctx, asleep ? asleepSprite(token)');
     expect(at).toBeGreaterThan(0);
     const after = src.slice(at, at + 200);
-    expect(after).toContain('ctx.drawImage(token.bitmap');
-    expect(after, '画完必须清掉 filter').toContain("if (asleep) ctx.filter = 'none';");
+    expect(after).toContain('asleepSprite(token)');
+    expect(after).toContain('drawSprite(ctx');
+    // 灰版按位图**像素**尺寸做（高清舞台下超分图更大），见 `asleepSprite`
+    const g = src.indexOf('function asleepSprite(');
+    expect(g).toBeGreaterThan(0);
+    expect(src.slice(g, g + 300)).toContain('asleepSpriteOf(s.bitmap');
   });
 
   it('★★ 载具那一支：脚下节点 bit31（`noObjects`）置位时**走姿**换成 +2', () => {
@@ -572,6 +574,33 @@ describe('★ 走子补间：一格的 tick 数按**世界**距离算，与镜�
     expect(r.walkRemainingMs(9999)).toBe(0);
     // 对照：这就是先前让「結算 / 收尾 / 下一位开局」每步都多等一整格的那个值
     expect(r.lastWalkMs()).toBe(320);
+  });
+
+  it('★★ 连续走格首尾相接：下一格从上一格的**理论结束时刻**起算，走子速度与帧率无关', () => {
+    const r = renderer();
+    // 8 tick × 40 = 320 ms：0 → 320
+    r.startWalk(0, { x: 1000, y: 1000 }, { x: 1064, y: 1000 }, 0, false, 40, 0);
+    // 帧慢，370 才发现走完、起下一格 —— 仍从 320 起算，640 结束（而不是 690）
+    r.startWalk(0, { x: 1064, y: 1000 }, { x: 1128, y: 1000 }, 0, false, 40, 370);
+    expect(r.lastWalkEndAt()).toBe(640);
+    expect(r.walkRemainingMs(370)).toBe(270);
+  });
+
+  it('★ 不回拨的三种情形：停过（缝超出窗口）/ 换了人 / 不首尾相接', () => {
+    const late = renderer();
+    late.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    late.startWalk(0, { x: 64, y: 0 }, { x: 128, y: 0 }, 0, false, 40, 320 + WALK_CHAIN_MS + 1);
+    expect(late.lastWalkEndAt()).toBe(320 + WALK_CHAIN_MS + 1 + 320);
+
+    const other = renderer();
+    other.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    other.startWalk(1, { x: 64, y: 0 }, { x: 128, y: 0 }, 0, false, 40, 350);
+    expect(other.lastWalkEndAt()).toBe(670);
+
+    const jump = renderer();
+    jump.startWalk(0, { x: 0, y: 0 }, { x: 64, y: 0 }, 0, false, 40, 0);
+    jump.startWalk(0, { x: 500, y: 0 }, { x: 564, y: 0 }, 0, false, 40, 350);
+    expect(jump.lastWalkEndAt()).toBe(670);
   });
 
   it('★ `special`（乘骑/被抬走/替身）走 `dist × 0.125` —— 不管交通方式', () => {
@@ -1257,7 +1286,8 @@ describe('★ 設施 level == 0 是**空地**：不画公園贴片（需求方�
     });
     const items = buildingArtItems(facMap({ level: 0, owner: 2, type: 0 }), state, 3);
     expect(items).toEqual([
-      { x: 100, y: 200, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character },
+      // `facilityId`：新聞 18 / 19 的白闪按它认（第二十二份）
+      { x: 100, y: 200, res: EMPTY_LAND_LOGO_RESOURCE, img: state.players[1]!.character, facilityId: 1 },
     ]);
     // 这一支**不吃视角**（图号是角色号，不是 `8 − (朝向+视角)`）
     for (let v = 0; v < 8; v++) {
@@ -1314,20 +1344,12 @@ describe('★ T-047：替身冬眠变灰（`record + 12`）@source `rich4.asm:15
     expect(after.map((t) => t.frozen)).toEqual([false, false, true, false]);
   });
 
-  it('★ 绘制那一条必须在 `drawImage` 两侧设/清 filter（否则会漏到建筑）', () => {
+  it('★ 替身那一条同样画灰版精灵（`asleepSpriteOf`），不设 `ctx.filter`', () => {
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
-    for (const marker of [
-      'if (t.frozen) ctx.filter = ASLEEP_FILTER;',
-      "if (t.frozen) ctx.filter = 'none';",
-    ]) {
-      expect(src, `缺标记：${marker}`).toContain(marker);
-    }
-    // 两个标记必须夹着那一次 `ctx.drawImage(`
-    const a = src.indexOf('if (t.frozen) ctx.filter = ASLEEP_FILTER;');
-    const b = src.indexOf("if (t.frozen) ctx.filter = 'none';");
+    const a = src.indexOf('t.frozen ? asleepSprite(sp) : sp');
     expect(a).toBeGreaterThan(0);
-    expect(b).toBeGreaterThan(a);
-    expect(src.slice(a, b)).toContain('ctx.drawImage(');
+    expect(src.slice(a - 100, a)).toContain('drawSprite(');
+    expect(src).not.toMatch(/\bctx\.filter\s*=/);
   });
 });
 

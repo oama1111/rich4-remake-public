@@ -58,12 +58,17 @@ import {
   GIFT_WARN_RES,
   GIFT_WARN_SPAN,
   GIFT_WARN_FRAMES,
+  MINI_BIG_CENTER_X,
+  MINI_BIG_PITCH,
+  MINI_BIG_Y,
   MINI_DIGIT_PITCH,
   MINI_END_MS,
   MINI_FONT_RES,
   MINI_SCORE_CAP,
   PENGUIN_ARRIVE_SOUND,
   PENGUIN_CELLS,
+  PENGUIN_CURSOR,
+  PENGUIN_END_LO_RES,
   PENGUIN_DIG_SOUND,
   PENGUIN_END_HI_SCORE,
   PENGUIN_END_HI_SOUND,
@@ -77,12 +82,17 @@ import {
   PENGUIN_TICK_MS,
   PENGUIN_TREASURE_COUNT,
   PENGUIN_VALID_CELLS,
+  BALLOON_CURSOR,
   balloonClick,
+  balloonCursorShown,
+  miniCursorWant,
   balloonHit,
+  balloonShootable,
   balloonOffscreen,
   balloonStart,
   balloonStep,
   catchBoxOf,
+  drawBigScore,
   drawNumber,
   giftCatcherImage,
   giftGodImage,
@@ -96,6 +106,7 @@ import {
   MINI_INTRO_FLIC_RES,
   MINI_INTRO_GIVE_UP_MS,
   minigameBgmFile,
+  minigameIntroStage,
   minigameScreen,
   minigameSeed,
   minigameTickMs,
@@ -104,6 +115,7 @@ import {
   penguinCellX,
   penguinCellY,
   penguinClick,
+  penguinCursorShown,
   penguinDir,
   penguinHitCell,
   penguinPlaceTreasures,
@@ -112,6 +124,30 @@ import {
   penguinStep,
   playMiniSounds,
 } from './minigame-screen.ts';
+import {
+  ARROW_CURSOR,
+  CURSOR_ARCHIVE,
+  CURSOR_RESOURCE,
+  CURSOR_TICK_MS,
+  cursorImageAt,
+  cursorShape,
+  resolveCursor,
+  type CursorFrame,
+  type CursorWant,
+} from './soft-cursor.ts';
+
+/** 棋盘上什么别的都没开（小游戏那一拍：按过 GO，指针本来就藏着）*/
+const BOARD_IDLE: CursorFrame = {
+  screen: 'game',
+  pick: null,
+  dicePick: false,
+  stockPick: false,
+  amountWindow: false,
+  atm: false,
+  localInput: false,
+  goPhase: false,
+  spectator: false,
+};
 
 describe('三个小游戏的出处与资源 @source rich4_small_games.asm', () => {
   it('★ specialKind 6/7/8 就是三屏 —— 第 8 项调的函数名就叫「喜從天降」', () => {
@@ -168,7 +204,7 @@ describe('企鵝挖寶：格子与命中 @source 0x474d7c / 0x00414abe', () => {
     expect([penguinCellX(40), penguinCellY(40)]).toEqual([0, 0]);
   });
 
-  it('★ 命中与命中表 #81 逐点一致（下表是 #81 的原始像素值）', () => {
+  it('★ 退回路径（无素材时的几何近似）在格内采样点上与 #81 一致（下表是 #81 的原始像素值；边缘见 penguin-hit-mask.test.ts）', () => {
     // 复核命令：`python3 -c "print(open('assets-clean/Panel/0081.bin','rb').read()[y*640+x])"`
     const samples: readonly (readonly [number, number, number])[] = [
       [80, 153, 3],
@@ -323,9 +359,10 @@ describe('企鵝挖寶：埋寶与计分 @source 0x00412014 / fcn_00413a4a', () 
 });
 
 describe('七彩氣球 @source 0x004154dc', () => {
-  it('16 个槽、7 条道、生成高度 420、入场 5 tick', () => {
+  it('16 个槽、8 条道、生成高度 420、入场 5 tick', () => {
     expect(BALLOON_SLOTS).toBe(16);
-    expect(BALLOON_LANES).toEqual([0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208]);
+    // ★ `0x0041305e cmp ebx, 0x280 / jge 出圈` ⇒ 0x258(600) 也是一条道（先前漏了，右边那条永远空着）
+    expect(BALLOON_LANES).toEqual([0x28, 0x78, 0xc8, 0x118, 0x168, 0x1b8, 0x208, 0x258]);
     expect(BALLOON_SPAWN_Y).toBe(0x1a4);
     expect(BALLOON_INTRO_TICKS).toBe(5);
     // 气球图 = 图 `类型 + 1` @source `loc_0041311b`
@@ -365,9 +402,10 @@ describe('七彩氣球 @source 0x004154dc', () => {
     expect(balloonClick(make(9), 0x78, 200).score).toBe(14);
     expect(balloonClick(make(10), 0x78, 200).score).toBe(3); // sar 7 → 3
     expect(balloonClick(make(12), 0x78, 200).score).toBe(7 + 13);
-    // 爆掉的那一格类型字写成 0x3c：画 2 帧爆开图
+    // 爆掉的那一格类型字写成 0x3c：0x2c / 0x1c 两拍画爆开图、0x0c 那一拍置空
     const popped = balloonClick(make(3), 0x78, 200).balloons[0];
     expect(popped?.popped).toBe(BALLOON_POP_TICKS);
+    expect(BALLOON_POP_TICKS).toBe(3);
     expect(BALLOON_POP_IMAGE).toBe(13);
   });
 
@@ -949,5 +987,648 @@ describe('★ 三处定曲 @source rich4_small_games.asm:4335/4481/4638', () => 
     // ③ 「動畫過程」关掉 → 也不点
     minigameScreen.tick!(mk(SPECIAL_KIND.GIFT_FROM_SKY, 1, false));
     expect(played).toEqual(['midi13.mid']);
+  });
+});
+
+// ============================================================
+//  ★★ 第十六份试玩回报（2026-09-24）：天降鴻福
+// ============================================================
+
+describe('★★ 天降鴻福：財神走满全场 @source loc_00413886..loc_00413a22（第十六份回报）', () => {
+  const offBox = catchBoxOf(null, -5000, GIFT_CATCHER_Y);
+  /** 跑一局真实时长（360 tick），记下每一拍的財神状态 */
+  function run(seed: number, ticks = GIFT_PLAY_TICKS): ReturnType<typeof giftStart>[] {
+    let st: ReturnType<typeof giftStart> = { ...giftStart(seed), phase: 'play', intro: 0, ticks: 100000 };
+    const out = [st];
+    for (let i = 0; i < ticks; i++) {
+      st = giftStep(st, -5000, offBox, 0);
+      out.push(st);
+    }
+    return out;
+  }
+
+  it('★ 拿主意那一拍的落点恒为 170+72k（往右）/ 470−72k（往左）—— 一趟 5 帧 + 1 拍 = 72px', () => {
+    // `loc_004138fd` / `loc_004139f9` 贯穿进 `loc_00413926` / `loc_00413a22` 把帧清零 ⇒
+    // 两次拿主意之间一定隔着 5 帧走行（各 ±12）+ 拿主意那一拍（±12）
+    const right = new Set<number>();
+    const left = new Set<number>();
+    for (let seed = 1; seed <= 40; seed++) {
+      const trail = run(seed * 7919);
+      for (let i = 1; i < trail.length; i++) {
+        const prev = trail[i - 1]!;
+        if (prev.godState === 0 && prev.godFrame === 5) right.add(prev.godX);
+        if (prev.godState === 4 && prev.godFrame === 5) left.add(prev.godX);
+        // 拿主意那一拍之后帧一定回到 0（不论转身还是继续走）
+        if ((prev.godState === 0 || prev.godState === 4) && prev.godFrame === 5) {
+          expect(trail[i]!.godFrame, `seed ${seed} tick ${i}`).toBe(0);
+        }
+      }
+    }
+    expect([...right].sort((a, b) => a - b)).toEqual([170, 242, 314, 386, 458, 530]);
+    expect([...left].sort((a, b) => a - b)).toEqual([110, 182, 254, 326, 398, 470]);
+  });
+
+  it('★ 一局（360 tick）里两个端点 110 / 530 都走得到，且只在 [110, 530] 里、步距 12', () => {
+    let hitMax = 0;
+    let backToMin = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      const xs = run(seed * 7919).map((s) => s.godX);
+      if (xs.includes(GIFT_GOD_X_MAX)) hitMax++;
+      // 起手就在 110（`[0x48bd4c] = 0x6e`），所以左端要看「离开之后又回来过」
+      const firstLeave = xs.findIndex((x) => x !== GIFT_GOD_X_MIN);
+      if (xs.slice(firstLeave).includes(GIFT_GOD_X_MIN)) backToMin++;
+      for (const x of xs) {
+        expect(x).toBeGreaterThanOrEqual(GIFT_GOD_X_MIN);
+        expect(x).toBeLessThanOrEqual(GIFT_GOD_X_MAX);
+        expect((x - GIFT_GOD_X_MIN) % 12).toBe(0);
+      }
+    }
+    // 修后实测 40/40 到过 530、39/40 回到过 110；旧实现（帧不清零）只有 7/40 到过 530
+    expect(hitMax).toBeGreaterThanOrEqual(36);
+    expect(backToMin).toBeGreaterThanOrEqual(36);
+  });
+
+  it('★ 停留时间铺满全场，不再挤在中线两侧（旧实现 80% 时间在 [242, 398]）', () => {
+    let inMiddle = 0;
+    let total = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const s of run(seed * 7919)) {
+        total++;
+        if (s.godX >= 242 && s.godX <= 398) inMiddle++;
+      }
+    }
+    // 修后实测 ≈ 44%；[242, 398] 占整段 [110, 530] 的 37%。旧实现（帧不清零）实测 ≈ 80%。
+    expect(inMiddle / total).toBeLessThan(0.55);
+  });
+
+  it('★ 走行的每一趟（5 帧）撒且只撒一个幣 @0x00413899 / @0x0041399a', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const trail = run(seed * 104729);
+      let walks = 0;
+      let coins = 0;
+      for (let i = 1; i < trail.length; i++) {
+        const prev = trail[i - 1]!;
+        const cur = trail[i]!;
+        if ((prev.godState === 0 || prev.godState === 4) && prev.godFrame === 4) walks++;
+        // 这一拍刚生成的：还停在起点、速度还是初速（已有的每拍都 +2，不会再是 −16）
+        coins += cur.items.filter((it) => it.x !== 0 && it.type !== 4 && it.y === GIFT_ITEM_Y0 && it.speed === -16).length;
+      }
+      // 起手那一趟从帧 0 开始（状态 3 → 0 时清零），之后每趟都有一个撒幣帧；槽满（16 个）才会丢
+      // 最后一拍可能停在一趟的半路：撒幣帧已过、那一趟还没走完
+      expect(coins - walks, `seed ${seed}`).toBeGreaterThanOrEqual(0);
+      expect(coins - walks, `seed ${seed}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('状态 1 原版跳表直接落 `loc_00413a2b`（什么都不做）', () => {
+    const st = { ...giftStart(5), phase: 'play' as const, intro: 0, godState: 1, godFrame: 2, godX: 300 };
+    const next = giftStep(st, -5000, offBox, 0);
+    expect(next.godState).toBe(1);
+    expect(next.godFrame).toBe(2);
+    expect(next.godX).toBe(300);
+  });
+});
+
+describe('★★ 结算大号分数：透明贴、按锚点贴 @source fcn_00414789 → 0x00414816 call fcn_00456418', () => {
+  it('每个大字都要抠黑（`draw_non_zero_image_in_rect`）并减去图自带原点', () => {
+    const calls: { index: number; keyed: boolean }[] = [];
+    const sprite = ((_a: string, _r: number, index: number, keyed?: boolean) => {
+      calls.push({ index, keyed: keyed === true });
+      return { bitmap: {} as ImageBitmap, width: 60, height: 76, anchorX: 30, anchorY: 41 };
+    }) as unknown as Parameters<typeof drawBigScore>[1];
+    const at: [number, number][] = [];
+    const ctx = {
+      drawImage: (_b: unknown, x: number, y: number) => {
+        at.push([x, y]);
+      },
+    } as unknown as CanvasRenderingContext2D;
+    drawBigScore(ctx, sprite, 47);
+    // 图号：大号从 10 起 @0x004147e5 `sub edx, 0x26`
+    expect(calls.map((c) => c.index)).toEqual([14, 17]);
+    expect(calls.every((c) => c.keyed)).toBe(true);
+    // x0 = 0x161 − 33×位数；每字 +0x42；落点 = x − 锚点
+    const x0 = MINI_BIG_CENTER_X - 33 * 2;
+    expect(at).toEqual([
+      [x0 - 30, MINI_BIG_Y - 41],
+      [x0 + MINI_BIG_PITCH - 30, MINI_BIG_Y - 41],
+    ]);
+  });
+
+  it('HUD 小号数字仍是不透明贴（`fcn_004563f5`）', () => {
+    const keyed: boolean[] = [];
+    const sprite = ((_a: string, _r: number, _i: number, k?: boolean) => {
+      keyed.push(k === true);
+      return { bitmap: {} as ImageBitmap, width: 15, height: 28, anchorX: 0, anchorY: 0 };
+    }) as unknown as Parameters<typeof drawNumber>[1];
+    const ctx = { drawImage: () => undefined } as unknown as CanvasRenderingContext2D;
+    drawNumber(ctx, sprite, '123', 0, 0, MINI_DIGIT_PITCH, 0, 3);
+    expect(keyed).toEqual([false, false, false]);
+  });
+});
+
+// ============================================================
+//  ★★ 第二十一份試玩回報（2026-09-24，联机第 12 回合）：
+//  「打气球游戏时鼠标指针没换成瞄准镜，没有出现炸弹气球以及配套规则」
+// ============================================================
+
+describe('★★ 七彩氣球的准星 @source 0x00414d85..0x00414d95 `fcn_004021f8(9,3,5)` + `fcn_00402460(1)`', () => {
+  it('★ 指针图是 `Data.mkf` #0 的图 9/10/11，每 20ms 一拍、每帧 5 拍 = 100ms 轮一张', () => {
+    // 0x00402108..0x0040211a `read_mkf([0x48a0e4] = Data.mkf, 0)`；0x004021a3 `timeSetEvent(0x14, …)`
+    expect(CURSOR_ARCHIVE).toBe('Data.mkf');
+    expect(CURSOR_RESOURCE).toBe(0);
+    expect(CURSOR_TICK_MS).toBe(20);
+    expect(BALLOON_CURSOR).toEqual({ image: 9, frames: 3, ticks: 5 });
+    expect(cursorImageAt(BALLOON_CURSOR, 0)).toBe(9);
+    expect(cursorImageAt(BALLOON_CURSOR, 99)).toBe(9);
+    expect(cursorImageAt(BALLOON_CURSOR, 100)).toBe(10);
+    expect(cursorImageAt(BALLOON_CURSOR, 219)).toBe(11);
+    expect(cursorImageAt(BALLOON_CURSOR, 300)).toBe(9); // 帧号 == 帧数 回 0（0x00402058）
+    // 单帧的指针（例如收场换回的箭头 0x29）不动
+    expect(cursorImageAt(cursorShape(0x29), 12345)).toBe(0x29);
+  });
+
+  it('★ 入场、结算没有指针；能打的两段（play / ending）才有准星', () => {
+    const st = balloonStart(1);
+    expect(balloonCursorShown(st)).toBe(false); // intro：0x405 还没来
+    expect(balloonCursorShown({ ...st, phase: 'play' })).toBe(true);
+    expect(balloonCursorShown({ ...st, phase: 'ending' })).toBe(true);
+    // `[0x48bd58] == 2` 那一拍 0x00414d05 `fcn_00402460(0)` 收起，才画大号分数
+    expect(balloonCursorShown({ ...st, phase: 'score' })).toBe(false);
+  });
+
+  it('★ 交给软件指针的请求：能打那几段要准星（触屏上也画）；旁观端、入场影片中、財神那屏都藏', () => {
+    const balloon = { ...balloonStart(1), phase: 'play' as const };
+    const base = { balloon, spectator: false, intro: null };
+    // `touch: true` = 触屏上也画（跟着手指的点 / 拖走）—— 触屏上唯一画出来的指针
+    expect(miniCursorWant(base)).toEqual({ shape: BALLOON_CURSOR, touch: true });
+    expect(miniCursorWant({ ...base, spectator: true })).toBeNull();
+    expect(miniCursorWant({ ...base, intro: { at: 0, until: 5000 } })).toBeNull();
+    expect(miniCursorWant({ ...base, balloon: { ...balloon, phase: 'score' } })).toBeNull();
+    // 財神接金幣（既不是氣球也不是企鵝）：整局藏着（#10）
+    expect(miniCursorWant({ ...base, balloon: null })).toBeNull();
+    expect(miniCursorWant(null)).toBeNull();
+  });
+});
+
+describe('★★ 七彩氣球的规则细节（第二十一份回报追查时对 exe 逐条复核）', () => {
+  const withBalloons = (
+    list: { x: number; y: number; type: number; popped: number }[],
+    over: Partial<ReturnType<typeof balloonStart>> = {},
+  ): ReturnType<typeof balloonStart> => {
+    const st = balloonStart(99);
+    const balloons = st.balloons.map((b, i) => list[i] ?? { ...b });
+    return { ...st, balloons, phase: 'play', intro: 0, ...over };
+  };
+
+  it('★ 时间到了、屏上还有气球（ending）照样能打 @source 0x00414d9f 只拦 `[0x48bd58] == 2`', () => {
+    const st = withBalloons([{ x: 0x78, y: 200, type: 4, popped: 0 }], { phase: 'ending', ticks: 0, score: 10 });
+    expect(balloonShootable(st)).toBe(true);
+    expect(balloonClick(st, 0x78, 200).score).toBe(15);
+    // 入场中 / 结算中不理
+    expect(balloonClick({ ...st, phase: 'intro' }, 0x78, 200).score).toBe(10);
+    expect(balloonClick({ ...st, phase: 'score' }, 0x78, 200).score).toBe(10);
+  });
+
+  it('★「?」先清掉上一个效果再抽 @source 0x00414e5c / 0x00414e64', () => {
+    const st = withBalloons([{ x: 0x78, y: 200, type: 11, popped: 0 }], { freeze: 7, speed: -1, score: 9 });
+    const roll = new WatcomRng(st.rngState).next() % 6;
+    const after = balloonClick(st, 0x78, 200);
+    // 没抽到「定住」就不该还定着；没抽到「变速」速度就回到 ×1
+    expect(after.freeze).toBe(roll === 1 ? BALLOON_FREEZE_TICKS : 0);
+    expect(after.speed).toBe(roll === 2 ? -1 : roll === 3 ? 1 : 0);
+  });
+
+  it('★ 已在爆的气球不吃点、也不放「点空」音 @source 0x00414f35 `test 0xf0 / jne 下一个`', () => {
+    const st = withBalloons([
+      { x: 0x78, y: 200, type: 1, popped: 2 },
+      { x: 0xc8, y: 200, type: 1, popped: 0 },
+    ]);
+    const after = balloonClick({ ...st, sfx: [] }, 0x78, 200);
+    // 只有第二个（没爆、没点中）放一声 20
+    expect(after.sfx.map((s) => s.id)).toEqual([BALLOON_MISS_SOUND]);
+    expect(after.score).toBe(0);
+  });
+
+  it('★ 爆开后第 3 个 tick 置空（0x3c → 0x2c → 0x1c → 0x0c）@source 0x004130b6..0x004130d2', () => {
+    let st = balloonClick(withBalloons([{ x: 0x78, y: 200, type: 1, popped: 0 }], { ticks: 100 }), 0x78, 200);
+    st = balloonStep(st, 0);
+    expect(st.balloons[0]?.x).toBe(0x78); // 0x2c：还画爆开图
+    st = balloonStep(st, 100);
+    expect(st.balloons[0]?.x).toBe(0x78); // 0x1c：还画
+    st = balloonStep(st, 200);
+    expect(st.balloons[0]?.x).toBe(0); // 0x0c：置空
+  });
+
+  it('★ 收场前剩余时间照减（「?」抽到 0 把它改回 1，下一拍再归 0）@source 0x00414cc9..0x00414ce0', () => {
+    const st = withBalloons([{ x: 0x78, y: 100, type: 1, popped: 0 }], { phase: 'ending', ticks: 1 });
+    const after = balloonStep(st, 0);
+    expect(after.ticks).toBe(0);
+    expect(after.phase).toBe('ending'); // 屏上还有气球，接着等
+  });
+
+  it('★★ 没有「炸彈氣球」：生成出来的类型只有 0..11，12 种气球图（#91 图 1..12）+ 爆开图 13', () => {
+    // 生成 @0x004131a5 / 0x00412fe1 / 0x00413014：r<20 → 0..4、r<28 → 5..8、r<30 → 表 0x475039 = 9/10/11
+    let st: ReturnType<typeof balloonStart> = { ...balloonStart(20260924), phase: 'play', intro: 0, ticks: 100000 };
+    const seen = new Set<number>();
+    for (let i = 0; i < 4000; i++) {
+      st = balloonStep(st, i * BALLOON_TICK_MS);
+      for (const b of st.balloons) if (b.x !== 0 && b.popped === 0) seen.add(b.type);
+    }
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    // 八条道都用得上（x = 600 那条也有）
+    expect(BALLOON_LANES).toContain(0x258);
+  });
+});
+
+describe('★★ 七彩氣球整屏：本机在玩 vs 联机旁观', () => {
+  interface Drawn {
+    archive: string;
+    res: number;
+    index: number;
+    x: number;
+    y: number;
+  }
+  const mkEnv = (
+    opts: { now: number; localSeat?: number | null | undefined; pending?: boolean },
+    sink: { dispatched: unknown[]; effects: number[]; drawn: Drawn[] },
+  ): UiScreenEnv => {
+    const state = {
+      pending: opts.pending === false ? null : { kind: 'minigame', game: SPECIAL_KIND.BALLOON },
+      currentPlayer: 0,
+      players: [{ whoPlays: 1, points: 0 }, { whoPlays: 1, points: 0 }],
+      day: 1,
+      month: 1,
+      year: 1,
+    } as unknown as GameState;
+    let last: Drawn | null = null;
+    const stage = {
+      drawImage: (bmp: unknown, x: number, y: number) => {
+        if (last !== null && bmp === last) sink.drawn.push({ ...(bmp as Drawn), x, y });
+      },
+    } as unknown as CanvasRenderingContext2D;
+    return {
+      screen: 'game',
+      state,
+      topo: { nodes: [], lands: [], facilities: [] } as never,
+      map: null as never,
+      now: opts.now,
+      stage,
+      animation: false, // 不播入场影片，直接进游戏
+      sprite: (archive: string, res: number, index: number) => {
+        const tag = { archive, res, index, x: 0, y: 0 };
+        last = tag as Drawn;
+        // 锚点照素材：准星 (15,14)，其余 (0,0)
+        const anchor = archive === 'Data.mkf' ? { anchorX: 15, anchorY: 14 } : { anchorX: 0, anchorY: 0 };
+        return { bitmap: tag as unknown as ImageBitmap, width: 31, height: 29, ...anchor };
+      },
+      flic: () => null,
+      dispatch: (a) => sink.dispatched.push(a),
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: (id: number) => sink.effects.push(id),
+      stopEffect: () => undefined,
+      ...(opts.localSeat === undefined ? {} : { localSeat: opts.localSeat }),
+    };
+  };
+
+  /** 跑到屏上有气球为止（最多 60 拍），返回此刻的时间 */
+  const playUntilBalloons = (localSeat: number | null | undefined, sink: { dispatched: unknown[]; effects: number[]; drawn: Drawn[] }): number => {
+    // 先把上一个用例的那一局清掉（pending 没了 ⇒ run = null）
+    minigameScreen.tick!(mkEnv({ now: 0, pending: false, localSeat }, sink));
+    let now = 1000;
+    minigameScreen.tick!(mkEnv({ now, localSeat }, sink));
+    for (let i = 0; i < 60; i++) {
+      now += BALLOON_TICK_MS;
+      minigameScreen.tick!(mkEnv({ now, localSeat }, sink));
+      sink.drawn.length = 0;
+      minigameScreen.draw(mkEnv({ now, localSeat }, sink));
+      if (sink.drawn.some((d) => d.archive === 'Panel.mkf' && d.res === BALLOON_RES && d.index >= 1 && d.index <= 12)) {
+        return now;
+      }
+    }
+    throw new Error('60 拍都没生成气球');
+  };
+
+  it('★★ 单机 / 联机的玩家本人：软件指针换成准星（触屏也画）、舞台上不另画、点空放 20、打完送分', () => {
+    const sink = { dispatched: [] as unknown[], effects: [] as number[], drawn: [] as Drawn[] };
+    for (const seat of [undefined, 0] as const) {
+      sink.dispatched.length = 0;
+      let now = playUntilBalloons(seat, sink);
+      const env = mkEnv({ now, localSeat: seat }, sink);
+      // 交给 `soft-cursor.ts` 的那一支：图 9 起 3 帧、每帧 5 拍；接管整屏时它就是最终那一支
+      expect(minigameScreen.cursor!(env)).toEqual({ shape: BALLOON_CURSOR, touch: true });
+      expect(resolveCursor({ ...BOARD_IDLE, overlay: minigameScreen.cursor!(env) })).toEqual({ shape: BALLOON_CURSOR, touch: true });
+      // 准星由软件指针那一层画（盖在最上面），舞台上不再画 `Data.mkf` #0
+      sink.drawn.length = 0;
+      minigameScreen.draw(env);
+      expect(sink.drawn.filter((d) => d.archive === 'Data.mkf')).toEqual([]);
+      // 往左上角空处点一下：屏上的每个气球都放一声「点空」
+      sink.effects.length = 0;
+      minigameScreen.down!(2, 2, mkEnv({ now, localSeat: seat }, sink));
+      expect(sink.effects.length).toBeGreaterThan(0);
+      expect(new Set(sink.effects)).toEqual(new Set([BALLOON_MISS_SOUND]));
+      // 打完：送一条 `minigame`
+      for (let i = 0; i < 400 && sink.dispatched.length === 0; i++) {
+        now += BALLOON_TICK_MS * 5;
+        minigameScreen.tick!(mkEnv({ now, localSeat: seat }, sink));
+      }
+      expect(sink.dispatched).toEqual([{ type: 'minigame', score: 0 }]);
+    }
+  });
+
+  it('★★ 联机旁观：没有准星（给普通箭头，D-CURSOR-ONLINE-1）、点了不算、不送分、不亮自己那份 0 分', () => {
+    const sink = { dispatched: [] as unknown[], effects: [] as number[], drawn: [] as Drawn[] };
+    let now = playUntilBalloons(1, sink);
+    // 旁观端不作答 ⇒ 这一屏不换准星（别人那一屏的指针不归本机）
+    expect(minigameScreen.cursor!(mkEnv({ now, localSeat: 1 }, sink))).toBeNull();
+    // ★ 需求方要求的联机偏离：别人的回合里放出默认箭头 0x29（不是准星；触屏照样不画）
+    expect(
+      resolveCursor({ ...BOARD_IDLE, spectator: true, overlay: minigameScreen.cursor!(mkEnv({ now, localSeat: 1 }, sink)) }),
+    ).toEqual({ shape: ARROW_CURSOR });
+    sink.drawn.length = 0;
+    minigameScreen.draw(mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.drawn.filter((d) => d.archive === 'Data.mkf')).toEqual([]);
+    sink.effects.length = 0;
+    minigameScreen.down!(2, 2, mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.effects).toEqual([]);
+    for (let i = 0; i < 400; i++) {
+      now += BALLOON_TICK_MS * 5;
+      minigameScreen.tick!(mkEnv({ now, localSeat: 1 }, sink));
+    }
+    expect(sink.dispatched).toEqual([]);
+    // 本机那一局早就演完了：画面停在空天上，不画大号分数（大号数字 = Panel #79 图 10..19）
+    sink.drawn.length = 0;
+    minigameScreen.draw(mkEnv({ now, localSeat: 1 }, sink));
+    expect(sink.drawn.filter((d) => d.res === MINI_FONT_RES && d.index >= 10)).toEqual([]);
+    // 玩家那台的分数广播到了 ⇒ pending 清掉 ⇒ 屏关、指针还原
+    minigameScreen.tick!(mkEnv({ now, localSeat: 1, pending: false }, sink));
+    expect(minigameScreen.active(mkEnv({ now, localSeat: 1, pending: false }, sink))).toBe(false);
+  });
+});
+
+// ============================================================
+//  ★★ 企鵝挖寶的指针（与七彩氣球同一套软件指针）：
+//  入场演出后 0x00414a95 `fcn_004021f8(0x2a, 1, 0)` + 0x00414a9f `fcn_00402460(1)`；
+//  `[0x48bd58]` 1 → 2 那一拍 0x00414a2f `fcn_00402460(0)` + 0x00414a3d `fcn_004021f8(0x29, 1, 0)`
+// ============================================================
+
+describe('★★ 企鵝挖寶的靶圈指针 @source 0x00414a8f..0x00414a9f / 0x00414a0f..0x00414a3d', () => {
+  it('★ 指针图是 `Data.mkf` #0 的图 42（0x2a），单帧不动', () => {
+    // 0x00414a8f `push 0` / 0x00414a91 `push 1` / 0x00414a93 `push 0x2a` = (图, 帧数, 每帧几拍)
+    expect(PENGUIN_CURSOR).toEqual({ image: 42, frames: 1, ticks: 0 });
+    expect(cursorImageAt(PENGUIN_CURSOR, 0)).toBe(42);
+    expect(cursorImageAt(PENGUIN_CURSOR, 98765)).toBe(42);
+  });
+
+  it('★ 阶段对上 `[0x48bd58]`：intro 没有；play / end（都是 0）有；score（= 2）没有', () => {
+    const st = penguinStart(1);
+    // intro = `[0x48bd7c]` 还在倒数（0x00414957），0x405 还没来
+    expect(st.phase).toBe('intro');
+    expect(penguinCursorShown(st)).toBe(false);
+    expect(penguinCursorShown({ ...st, phase: 'play' })).toBe(true);
+    expect(penguinCursorShown({ ...st, phase: 'end' })).toBe(true);
+    expect(penguinCursorShown({ ...st, phase: 'score' })).toBe(false);
+  });
+
+  it('★ 真跑一遍：时间到（0x00414986）进 end 指针还在；姿势放完（0x00412b95 置 1 → 0x00414a1c 置 2）当拍就收', () => {
+    // 最后一拍：`[0x48bd2c]` 1 → 0，`jle loc_00414a0a` 那一支挑结算姿势 —— `[0x48bd58]` 仍是 0
+    let st = penguinStep({ ...penguinStart(7), phase: 'play', intro: 0, ticks: 1 }, 0);
+    expect(st.phase).toBe('end');
+    expect(penguinCursorShown(st)).toBe(true);
+    let n = 0;
+    while (st.phase === 'end') {
+      st = penguinStep(st, n * PENGUIN_TICK_MS);
+      if (st.phase === 'end') expect(penguinCursorShown(st)).toBe(true);
+      n++;
+    }
+    // `1` 留不到下一拍：姿势放完的那一次 `penguinStep` 直接就是 score，指针已收
+    expect(st.phase).toBe('score');
+    expect(penguinCursorShown(st)).toBe(false);
+  });
+
+  it('★ 交给软件指针的请求：play / end 要靶圈（触屏也画，跟着手指）；旁观端、入场影片中、intro / score 都藏', () => {
+    const penguin = { ...penguinStart(1), phase: 'play' as const };
+    const base = { balloon: null, penguin, spectator: false, intro: null };
+    const target = { shape: PENGUIN_CURSOR, touch: true };
+    expect(miniCursorWant(base)).toEqual(target);
+    expect(miniCursorWant({ ...base, penguin: { ...penguin, phase: 'end' } })).toEqual(target);
+    expect(miniCursorWant({ ...base, spectator: true })).toBeNull();
+    expect(miniCursorWant({ ...base, intro: { at: 0, until: 5000 } })).toBeNull();
+    expect(miniCursorWant({ ...base, penguin: { ...penguin, phase: 'score' } })).toBeNull();
+    expect(miniCursorWant({ ...base, penguin: { ...penguin, phase: 'intro' } })).toBeNull();
+  });
+});
+
+describe('★★ 企鵝挖寶整屏：本机在玩 vs 联机旁观', () => {
+  interface Drawn {
+    archive: string;
+    res: number;
+    index: number;
+    x: number;
+    y: number;
+  }
+  type Sink = { dispatched: unknown[]; drawn: Drawn[] };
+  const mkEnv = (opts: { now: number; localSeat?: number | null | undefined; pending?: boolean }, sink: Sink): UiScreenEnv => {
+    const state = {
+      pending: opts.pending === false ? null : { kind: 'minigame', game: SPECIAL_KIND.PENGUIN_DIG },
+      currentPlayer: 0,
+      players: [{ whoPlays: 1, points: 0 }, { whoPlays: 1, points: 0 }],
+      day: 1,
+      month: 1,
+      year: 1,
+    } as unknown as GameState;
+    let last: Drawn | null = null;
+    const stage = {
+      drawImage: (bmp: unknown, x: number, y: number) => {
+        if (last !== null && bmp === last) sink.drawn.push({ ...(bmp as Drawn), x, y });
+      },
+    } as unknown as CanvasRenderingContext2D;
+    return {
+      screen: 'game',
+      state,
+      topo: { nodes: [], lands: [], facilities: [] } as never,
+      map: null as never,
+      now: opts.now,
+      stage,
+      animation: false, // 不播入场影片
+      sprite: (archive: string, res: number, index: number) => {
+        const tag = { archive, res, index, x: 0, y: 0 };
+        last = tag as Drawn;
+        // 锚点照素材：图 42 = 31×17、热点 (16,9)；其余 (0,0)
+        const anchor = archive === 'Data.mkf' ? { anchorX: 16, anchorY: 9 } : { anchorX: 0, anchorY: 0 };
+        return { bitmap: tag as unknown as ImageBitmap, width: 31, height: 17, ...anchor };
+      },
+      flic: () => null,
+      dispatch: (a) => sink.dispatched.push(a),
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: () => undefined,
+      stopEffect: () => undefined,
+      ...(opts.localSeat === undefined ? {} : { localSeat: opts.localSeat }),
+    };
+  };
+  /** 这一帧交给软件指针的那一支（`null` = 藏着）；顺带钉住舞台上不再画 `Data.mkf` #0 */
+  let lastCursor: CursorWant = null;
+  const cursorOf = (sink: Sink): CursorWant => {
+    expect(sink.drawn.filter((d) => d.archive === 'Data.mkf')).toEqual([]);
+    return lastCursor;
+  };
+  const TARGET = { shape: PENGUIN_CURSOR, touch: true };
+  const endPoseDrawn = (sink: Sink): boolean => sink.drawn.some((d) => d.res === PENGUIN_END_LO_RES);
+  const bigScoreDrawn = (sink: Sink): boolean => sink.drawn.some((d) => d.res === MINI_FONT_RES && d.index >= 10);
+
+  /** 推一拍再画一帧 */
+  const frame = (now: number, localSeat: number | null | undefined, sink: Sink): void => {
+    minigameScreen.tick!(mkEnv({ now, localSeat }, sink));
+    sink.drawn.length = 0;
+    minigameScreen.draw(mkEnv({ now, localSeat }, sink));
+    // main.ts 每帧：接管整屏的那一屏要什么，就是最终那一支（`resolveCursor`）
+    //   联机旁观（坐 1 号、当前 0 号）= `main.ts` 的 `!localSeatActive()`
+    lastCursor = resolveCursor({
+      ...BOARD_IDLE,
+      spectator: localSeat === 1,
+      overlay: minigameScreen.cursor!(mkEnv({ now, localSeat }, sink)),
+    });
+  };
+
+  it('★★ 单机 / 联机的玩家本人：入场无指针 → 挖宝与结算姿势换靶圈（软件指针，触屏也画）→ 大号分数前收起', () => {
+    for (const seat of [undefined, 0] as const) {
+      const sink: Sink = { dispatched: [], drawn: [] };
+      minigameScreen.tick!(mkEnv({ now: 0, pending: false, localSeat: seat }, sink)); // 清掉上一局
+      let now = 1000;
+      frame(now, seat, sink);
+      // 从按 GO 起指针就藏着（0x0040126f）；入场（`[0x48bd7c]` 倒数）还没换上靶圈
+      expect(cursorOf(sink)).toBeNull();
+      for (let i = 0; i <= PENGUIN_INTRO_TICKS; i++) frame((now += PENGUIN_TICK_MS), seat, sink);
+      // play：0x405 之后 0x00414a95 `fcn_004021f8(0x2a, 1, 0)` + 0x00414a9f `fcn_00402460(1)`
+      expect(cursorOf(sink)).toEqual(TARGET);
+      // 时间到 → 结算姿势（0 分 ⇒ 资源 85）：`[0x48bd58]` 还是 0，靶圈照画
+      for (let i = 0; i < PENGUIN_PLAY_TICKS + 5 && !endPoseDrawn(sink); i++) frame((now += PENGUIN_TICK_MS), seat, sink);
+      expect(endPoseDrawn(sink)).toBe(true);
+      expect(cursorOf(sink)).toEqual(TARGET);
+      // 姿势放完 → 0x00414a2f 收起，才画大号分数；之后一直藏着（0x00414a3d 换回的箭头不放出来）
+      for (let i = 0; i < 100 && !bigScoreDrawn(sink); i++) {
+        frame((now += PENGUIN_TICK_MS), seat, sink);
+        if (!bigScoreDrawn(sink)) expect(cursorOf(sink)).toEqual(TARGET);
+      }
+      expect(bigScoreDrawn(sink)).toBe(true);
+      expect(cursorOf(sink)).toBeNull();
+      // 停 2000ms 后送分
+      for (let i = 0; i < 40 && sink.dispatched.length === 0; i++) frame((now += PENGUIN_TICK_MS), seat, sink);
+      expect(sink.dispatched).toEqual([{ type: 'minigame', score: 0 }]);
+    }
+  });
+
+  it('★★ 联机旁观：整局没有靶圈（给普通箭头，D-CURSOR-ONLINE-1）、点了不算、不送分', () => {
+    const sink: Sink = { dispatched: [], drawn: [] };
+    const ARROW = { shape: ARROW_CURSOR };
+    minigameScreen.tick!(mkEnv({ now: 0, pending: false, localSeat: 1 }, sink));
+    let now = 1000;
+    frame(now, 1, sink);
+    expect(cursorOf(sink)).toEqual(ARROW);
+    for (let i = 0; i <= PENGUIN_INTRO_TICKS; i++) frame((now += PENGUIN_TICK_MS), 1, sink);
+    expect(cursorOf(sink)).toEqual(ARROW);
+    for (let i = 0; i < PENGUIN_PLAY_TICKS + 60; i++) {
+      frame((now += PENGUIN_TICK_MS), 1, sink);
+      expect(cursorOf(sink)).toEqual(ARROW);
+    }
+    expect(sink.dispatched).toEqual([]);
+    // 玩家那台的分数广播到了 ⇒ pending 清掉 ⇒ 屏关
+    minigameScreen.tick!(mkEnv({ now, localSeat: 1, pending: false }, sink));
+    expect(minigameScreen.active(mkEnv({ now, localSeat: 1, pending: false }, sink))).toBe(false);
+  });
+});
+
+describe('★ gap-audit #11：先在画好的舞台上数入场拍，归零（0x405）才放入场影片 @source 0x00414c93..0x00414ca9 / 0x00414d60', () => {
+  const mk = (game: number, now: number, flicReady: { v: boolean }, opts: { pending?: boolean; localSeat?: number } = {}): UiScreenEnv => {
+    const state = {
+      pending: opts.pending === false ? null : { kind: 'minigame', game },
+      currentPlayer: 0,
+      players: [{ whoPlays: 1, points: 0 }, { whoPlays: 1, points: 0 }],
+      day: 2,
+      month: 3,
+      year: 1,
+    } as unknown as GameState;
+    const frames = Array.from({ length: 20 }, () => ({}) as ImageBitmap);
+    return {
+      screen: 'game',
+      state,
+      topo: { nodes: [], lands: [], facilities: [] } as never,
+      map: null as never,
+      now,
+      stage: { drawImage: () => undefined } as unknown as CanvasRenderingContext2D,
+      animation: true,
+      sprite: () => null,
+      // 第一次问一定 null（后台在解），之后才到手 —— 与 `env.flic` 的契约一样
+      flic: () => {
+        if (!flicReady.v) {
+          flicReady.v = true;
+          return null;
+        }
+        return { frames, frameMs: 100 } as never;
+      },
+      dispatch: () => undefined,
+      requestRender: () => undefined,
+      log: () => undefined,
+      playEffect: () => undefined,
+      stopEffect: () => undefined,
+      music: () => undefined,
+      ...(opts.localSeat === undefined ? {} : { localSeat: opts.localSeat }),
+    };
+  };
+
+  const cases: [string, number, number][] = [
+    ['企鵝挖寶（10 × 100ms）', SPECIAL_KIND.PENGUIN_DIG, PENGUIN_INTRO_TICKS * 100],
+    ['七彩氣球（5 × 100ms）', SPECIAL_KIND.BALLOON, BALLOON_INTRO_TICKS * 100],
+    ['財神接金幣（10 × 50ms）', SPECIAL_KIND.GIFT_FROM_SKY, GIFT_INTRO_TICKS * 50],
+  ];
+  for (const localSeat of [undefined, 0, 1]) {
+    for (const [name, game, entryMs] of cases) {
+      it(`${name}：入场拍 → 影片（20 帧 × 100ms）→ 开玩${localSeat === undefined ? '（单机）' : localSeat === 0 ? '（联机·玩家）' : '（联机·旁观）'}`, () => {
+        const ready = { v: false };
+        const seat = localSeat === undefined ? {} : { localSeat };
+        minigameScreen.tick!(mk(game, 0, ready, { pending: false, ...seat }));
+        expect(minigameIntroStage()).toBeNull();
+        const t0 = 10_000;
+        const step = minigameTickMs(game);
+        minigameScreen.tick!(mk(game, t0, ready, seat));
+        // ① 一开场先数入场拍 —— 影片**还没**放（旧实现这里就在放影片）
+        expect(minigameIntroStage()).toBe('entry');
+        let now = t0;
+        while (now < t0 + entryMs - step) {
+          now += step;
+          minigameScreen.tick!(mk(game, now, ready, seat));
+          expect(minigameIntroStage(), `t=${now - t0}`).toBe('entry');
+        }
+        // ② 数到 0 的那一拍 = PostMessage 0x405 → 影片
+        now += step;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        minigameScreen.draw!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('film');
+        // ③ 影片放完之前一直阻塞，放完才开玩
+        now += 1900;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('film');
+        now += 200;
+        minigameScreen.tick!(mk(game, now, ready, seat));
+        expect(minigameIntroStage()).toBe('play');
+      });
+    }
+  }
+
+  it('影片阻塞放的时候点击不算（原版在 `fcn_0045144f` 里，收不到 WM_LBUTTONDOWN）', () => {
+    const ready = { v: true };
+    const game = SPECIAL_KIND.PENGUIN_DIG;
+    minigameScreen.tick!(mk(game, 0, ready, { pending: false }));
+    let now = 50_000;
+    minigameScreen.tick!(mk(game, now, ready));
+    for (let i = 0; i < PENGUIN_INTRO_TICKS; i++) {
+      now += 100;
+      minigameScreen.tick!(mk(game, now, ready));
+    }
+    minigameScreen.draw!(mk(game, now, ready));
+    expect(minigameIntroStage()).toBe('film');
+    minigameScreen.down!(penguinCellX(3), penguinCellY(3), mk(game, now, ready));
+    expect(minigameIntroStage()).toBe('film');
   });
 });

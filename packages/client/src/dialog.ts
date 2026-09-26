@@ -48,11 +48,20 @@ import {
   type Rect,
   type SpriteFn,
 } from './gameui.ts';
-import { AMOUNT_KEY_RECTS, AMOUNT_WINDOW, amountSlotOfId } from './amount-keys.ts';
-import { drawAmountWindow } from './amount-window.ts';
+import {
+  AMOUNT_KEY_RECTS,
+  AMOUNT_WINDOW,
+  amountButtonDownSound,
+  amountDragTo,
+  amountSlotOfId,
+  amountWindowPos,
+  setAmountWindowPos,
+} from './amount-keys.ts';
+import { AMOUNT_BAR_RECT, amountPixelId, drawAmountWindow, getAmountHitMap } from './amount-window.ts';
 import { boardToScreen, pointInGo, type GoPos } from './go-button.ts';
 import { LAYOUT } from './stage.ts';
-import { FONT_FAMILY } from './font.ts';
+import { BOX_TEXT_STYLE, FONT_FAMILY, drawGdiText, gdiFont } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 框心（棋盘区坐标）—— 由屏幕坐标换算，见 gameui.ts */
 export const DIALOG_ANCHOR = toBoard(DIALOG_ANCHOR_SCREEN);
@@ -73,14 +82,76 @@ export const BOX_SCREEN: Rect = { x: 0xdc - 123, y: 0x8c - 101, w: 249, h: 170 }
  */
 const INNER = { dx: 12, dy: 41, w: 219, h: 120 } as const;
 
-const LINE_H = 20;
+/**
+ * 正文行距 —— **22 = 字号 16 + 6（近似，D-DIALOG-1）**。
+ *
+ * 原版的多行排版**全交给 GDI**：`rich4_draw_text`（VA 0x0044fabc）把整串（含 `\n`）
+ * 一次交给 `DrawTextA`（IAT `[0x4622e4]`）——先 `0x0044fba9 push 0x400`（DT_CALCRECT）量框，
+ * 再 `0x0044fe70 push 1`（DT_CENTER，flag 4/7）或 `0x0044fe8c push 0`（DT_LEFT）真画；
+ * 函数里**没有**自己拆 `\n`、也没有逐行加的常量，flags 里也没有 DT_EXTERNALLEADING。
+ * ⇒ 行距 = 所选字体（細明體，`CreateFontA(cHeight = −16)`，见 `font.ts`）的 `tmHeight`，
+ *   那是**字体文件**的度量，exe 里读不到。故按本项目多行字的既定近似「字号 + 6」
+ *   （同 `event-box-screen.ts` 的 D-EVENT-3），登记为偏离。
+ */
+const LINE_H = 22;
+/** 同一个行距给其他 `draw_text(…, flag 4)` 的屏共用（`god-slot.ts` 的气泡）*/
+export const DIALOG_LINE_H = LINE_H;
 const TITLE_H = 24;
 const BTN_H = 24;
 const BTN_GAP = 5;
 const BTN_MIN_W = 56;
 
-const FONT_TITLE = `bold 16px ${FONT_FAMILY}`;
-const FONT_BODY = `14px ${FONT_FAMILY}`;
+const TITLE_SIZE = 16;
+/**
+ * 框里正文 16 号、`#f0f0f0`、**粗体 + 右下 1 px `#101010` 阴影**。
+ * @source 两扇框同一句 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`：
+ *   询问框 0x00440baf..0x00440bbf、訊息框 0x00440d06..0x00440d16。
+ *   ★ 2026-09-23 订正：第 4 参 3 = bit0 阴影 + bit1 粗体（不是「描边」，描边是 bit2），
+ *   逐位取证见 `font.ts` 的 `GdiTextStyle`；画法统一走 `drawGdiText(BOX_TEXT_STYLE)`。
+ */
+const BODY_SIZE = BOX_TEXT_STYLE.size;
+const BODY_FILL = BOX_TEXT_STYLE.color;
+/** 排版量宽用的字（与画的时候同一套：粗体）*/
+const FONT_BODY = gdiFont(BOX_TEXT_STYLE);
+/** 自排按钮列的字（⚠️ 我们的做法，原版那几屏各有专屏）—— 保持原先的 14 号 */
+const FONT_BUTTON = `14px ${FONT_FAMILY}`;
+
+/**
+ * 框里每一行字的**竖直中线**（棋盘区坐标）—— 整块字的墨迹框竖直居中在 `anchorY`。
+ *
+ * @source `rich4_draw_text`（VA 0x0044fabc）flag 2/3/4 那一支：
+ * ```asm
+ * 0044feef  call 0x44f70c              ; 扫离屏面非 0 像素 → 墨迹框 [x0,y0,x1,y1]
+ * 0044ff00  mov ebx, [y1] / sub ebx, [y0] / inc ebx   ; 高 = y1 − y0 + 1
+ * 0044ff2a  x −= 宽 >> 1
+ * 0044ff35  y −= 高 >> 1               ; ★ 竖直也居中（flag 2/3/4 落到同一段）
+ * ```
+ * 墨迹只看有字的行：首尾的空行（`\n\n` 拆出来的）不占墨迹高度，中间的照样占行距。
+ * 每行的墨迹按「行中线 ± 字号/2」近似（本引擎画字用 `textBaseline = 'middle'`）。
+ */
+export function dialogRowMiddles(
+  rows: readonly { h: number; size: number; blank: boolean }[],
+  anchorY: number,
+): number[] {
+  const mids: number[] = [];
+  let top = 0;
+  for (const r of rows) {
+    mids.push(top + r.h / 2);
+    top += r.h;
+  }
+  let first = -1;
+  let last = -1;
+  rows.forEach((r, i) => {
+    if (r.blank) return;
+    if (first < 0) first = i;
+    last = i;
+  });
+  if (first < 0) return mids;
+  const inkTop = mids[first]! - rows[first]!.size / 2;
+  const inkBottom = mids[last]! + rows[last]!.size / 2;
+  const shift = Math.round(anchorY - (inkTop + inkBottom) / 2);
+  return mids.map((m) => m + shift);
+}
 
 
 // ============================================================
@@ -173,7 +244,7 @@ export function drawAdvance(
   // `pos` 已经是棋盘画布坐标（原版那个全局是屏幕坐标，换算在 `GoButton` 里做过了）
   const at = pos;
   const go = sprite('Panel.mkf', GO_RESOURCE, goImage, true);
-  if (go !== null) ctx.drawImage(go.bitmap, at.x, at.y);
+  if (go !== null) drawSprite(ctx, go, at.x, at.y);
 
   for (let i = 0; i < maxDice; i++) {
     const pair = DICE_TOGGLE_IMAGE[i];
@@ -183,7 +254,7 @@ export function drawAdvance(
     const img = sprite('Panel.mkf', GO_RESOURCE, lit ? pair[1] : pair[0], true);
     if (img === null) continue;
     const r = diceToggleRect(i, pos, traffic);
-    ctx.drawImage(img.bitmap, r.x, r.y);
+    drawSprite(ctx, img, r.x, r.y);
   }
 }
 
@@ -216,7 +287,7 @@ export function drawDice(
     const img = sprite('Panel.mkf', DICE_RESOURCE, diceImage(i, dice[i] ?? 1), true);
     if (img === null) continue;
     // ★ 锚点在精灵里（`Sprite.anchorX/Y` = 资源自己的 x/y），按它反推左上角
-    ctx.drawImage(img.bitmap, at.x - img.anchorX, at.y - img.anchorY);
+    drawSprite(ctx, img, at.x - img.anchorX, at.y - img.anchorY);
   }
 }
 
@@ -246,9 +317,12 @@ export function drawDiceFlic(
   ctx: CanvasRenderingContext2D,
   frame: ImageBitmap,
   screenDir: number,
+  /** 影片的逻辑尺寸；不给就当原图（像素 = 逻辑）*/
+  size: { width: number; height: number } | null = null,
 ): void {
   const at = diceFlicOrigin(screenDir);
-  ctx.drawImage(frame, at.x, at.y);
+  // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+  drawSprite(ctx, { bitmap: frame, width: size?.width ?? frame.width, height: size?.height ?? frame.height }, at.x, at.y);
 }
 
 /** 一次点击可能落在哪 */
@@ -264,7 +338,12 @@ export type DialogHit =
    * ★ 2026-09-16 加（B-5(i)/B-6(i)）：把命中交给 `AMOUNT_SLOT_BY_ID`
    *   那套语义（数字/退格/C/M/Enter/金额栏光标），而不是自己排五颗钮。
    */
-  | { kind: 'amountSlot'; id: number };
+  | { kind: 'amountSlot'; id: number }
+  /**
+   * 按在填数窗里、但不是 2..0xf 那几颗钮：id 图上的 `0`（空白）/ `1`（拖窗把手）/ `0x10`（金额栏）等。
+   * 只在载到 id 图时出现（`getAmountHitMap`）；抬手什么都不办，按下要不要响由 `amountButtonDownSound` 定。
+   */
+  | { kind: 'amountPad'; id: number };
 
 /** 正在填数的那一页；`null` 表示还在选项页 */
 export interface AmountPage {
@@ -425,6 +504,8 @@ export function layoutDialog(
   //   （见 `amount-keys.ts` 头部：ESC 是全局钩子补成 `0x205` 关的窗）。
   //   所以 `labels` 里保留一颗「取消」以便鼠标也能退，其余交给键盘窗。
   if (page !== null && amount !== undefined) {
+    // ★ 落点是**此刻**的（可拖，原版 `[0x48cab8]/[0x48cab6]`），不是开窗初值
+    const at = amountWindowPos();
     const slots: { label: string; rect: Rect; hit: DialogHit }[] = [];
     for (let id = 0; id < AMOUNT_KEY_RECTS.length; id++) {
       const r = AMOUNT_KEY_RECTS[id];
@@ -438,16 +519,17 @@ export function layoutDialog(
       if (slot.kind === 'cursorLeft' || slot.kind === 'cursorRight') continue;
       slots.push({
         label: '',
-        rect: boardRect({ x: AMOUNT_WINDOW.x + r.x, y: AMOUNT_WINDOW.y + r.y, w: r.w, h: r.h }),
+        rect: boardRect({ x: at.x + r.x, y: at.y + r.y, w: r.w, h: r.h }),
         hit: amountHitForSlot(slot, amount.step, id),
       });
     }
-    // 取消那颗由我们自己加（原版没有：它靠 ESC / 右键）
+    // 取消那颗由我们自己加（原版没有：它靠 ESC / 右键）—— 跟着窗走；窗拖到底下放不下就挪到窗上方
+    const below = at.y + AMOUNT_WINDOW.h + 4;
     slots.push({
       label: '取消',
       rect: boardRect({
-        x: AMOUNT_WINDOW.x,
-        y: AMOUNT_WINDOW.y + AMOUNT_WINDOW.h + 4,
+        x: at.x,
+        y: below + 20 <= 480 ? below : at.y - 24,
         w: AMOUNT_WINDOW.w,
         h: 20,
       }),
@@ -457,7 +539,7 @@ export function layoutDialog(
   }
 
   // ——— 其余：框下面排一列按钮（⚠️ 我们的做法，不是原版）———
-  ctx.font = FONT_BODY;
+  ctx.font = FONT_BUTTON;
   const widths = labels.map((l) => Math.max(BTN_MIN_W, Math.ceil(ctx.measureText(l.label).width) + 18));
   const rowW = box.w;
   const rows: number[][] = [];
@@ -497,6 +579,121 @@ export function layoutDialog(
   return { box, inner, title: ui.title, lines, yesNo: false, buttons };
 }
 
+/**
+ * 通用填数窗（`fcn_00453544`）上鼠标的「**按下记账、抬手动作**」—— 原版 `[0x48cac2]` 那一个字节。
+ *
+ * @source `fcn_00452c02`：
+ *   - `WM_LBUTTONDOWN`/`DBLCLK`（`loc_00452d0e`）：记下按在第几号（`0x00452d5e`）、**放按键音 7**
+ *     （`0x00452d8e..0x00452d95`，见 `amountButtonDownSound`）、贴按下图 —— **不动数值**；
+ *   - `WM_LBUTTONUP`（`loc_00452fce`）：`[0x48cac2]` 为 0 ⇒ 什么都不做；否则照**它**（不是抬手处的坐标）
+ *     查跳表 `0x452bca` 接数字 / C / 退格 / M / Enter，**不再放音**，最后清 0。
+ *
+ * ★ 浏览器在 `mouseup` 之后还会补一个 `click`（触屏的点按由 `touch-input.ts` 派 `down → up → click`
+ *   三连）。抬手已经办过的这一下，紧跟的 `click` 必须**吞掉** —— 不然「確定」关了填数页之后，
+ *   同一点落到底下那页的选项钮上，就成了一下点两件事（`swallowClick`）。
+ *
+ * 纯状态、不碰 DOM：`main.ts`（棋盘 / 銀行 / 股市三处的填数页）与 `board-screen.ts`（公佈欄出价）各持一个。
+ */
+export class AmountPressLatch {
+  private pressed: DialogHit | null = null;
+  private swallow = false;
+  /** 按在拖窗把手（id 1）上：窗内抓点（原版 `[0x48caba]/[0x48cabe]`，0x00452d67..0x00452d6d）*/
+  private grab: { x: number; y: number } | null = null;
+
+  /**
+   * 左键按下。`hit` 是 `hitDialog` 在按下点的结果；`at` 是按下点的**舞台坐标**（拖窗要记抓点）。
+   * @returns `consumed` = 这一下落在填数窗上（调用方不要再往下传）；`sound` = 此刻要放的音
+   */
+  down(hit: DialogHit | 'inside' | null, at?: { x: number; y: number }): { consumed: boolean; sound: number | null } {
+    this.pressed = null;
+    this.swallow = false;
+    this.grab = null;
+    // ★ id 1 = 拖窗把手：记下窗内抓点，之后 `WM_MOUSEMOVE` 跟着挪（`drag`）
+    //   @source 0x00452d63 `cmp al,1 / jne` → 0x00452d67 `mov [0x48caba], lx` / `mov [0x48cabe], ly`
+    if (hit !== null && hit !== 'inside' && hit.kind === 'amountPad' && hit.id === 1 && at !== undefined) {
+      const w = amountWindowPos();
+      this.grab = { x: Math.trunc(at.x) - w.x, y: Math.trunc(at.y) - w.y };
+    }
+    if (hit === null) return { consumed: false, sound: null };
+    if (hit === 'inside') return { consumed: true, sound: null };
+    switch (hit.kind) {
+      case 'amountSlot':
+        this.pressed = hit;
+        return { consumed: true, sound: amountButtonDownSound(hit.id) };
+      case 'amountPad':
+        // 0 = 空白：照样响 7（0x00452d8e 之前只拦 1 和 0x10）；1 = 拖窗、0x10 = 金额栏：不响。
+        // 抬手（`loc_00452fce`）只认 2..0xf ⇒ 这几号都不记，抬手不办事。
+        return { consumed: true, sound: amountButtonDownSound(hit.id) };
+      case 'amountStep':
+      case 'amountMax':
+      case 'amountOk':
+      case 'amountCancel':
+        // 本引擎自己补的那颗「取消」等：原版没有这几颗 ⇒ 不放音，但同样抬手才办
+        this.pressed = hit;
+        return { consumed: true, sound: null };
+      default:
+        return { consumed: false, sound: null };
+    }
+  }
+
+  /**
+   * 光标移动（`WM_MOUSEMOVE`）：按着拖窗把手就把窗挪过去（`amountDragTo`，夹在 0..0x200 × 0..0x120）。
+   * @returns 窗挪了（要重画）
+   */
+  drag(at: { x: number; y: number }): boolean {
+    if (this.grab === null) return false;
+    const next = amountDragTo(at, this.grab);
+    const cur = amountWindowPos();
+    if (next.x === cur.x && next.y === cur.y) return false;
+    setAmountWindowPos(next.x, next.y);
+    return true;
+  }
+
+  /** 此刻在拖窗吗 */
+  get dragging(): boolean {
+    return this.grab !== null;
+  }
+
+  /** 键盘按了一颗键：原版先清 `[0x48cac2]`（0x00452e4b），拖到一半的窗就此停下 */
+  stopDrag(): void {
+    this.grab = null;
+  }
+
+  /** 左键抬手：返回**按下时记下的**那一颗（要办的事）；没有就 `null`。办了就吞掉紧跟的 `click` */
+  up(): DialogHit | null {
+    const p = this.pressed;
+    this.pressed = null;
+    // 抬手清 `[0x48cac2]`（`loc_0045310a`）⇒ 拖窗结束
+    this.grab = null;
+    if (p !== null) this.swallow = true;
+    return p;
+  }
+
+  /** 浏览器补来的 `click`：`true` = 抬手已经办过，吞掉 */
+  click(): boolean {
+    const s = this.swallow;
+    this.swallow = false;
+    return s;
+  }
+
+  /** 新的一次按下开始：上一次抬手留下的「吞掉 click」作废 */
+  newGesture(): void {
+    this.swallow = false;
+  }
+
+  /** 填数页收掉 / 换页时清账 */
+  reset(): void {
+    this.pressed = null;
+    this.swallow = false;
+    this.grab = null;
+  }
+
+  /** 此刻按着哪一颗（画按下图 / 单测用）*/
+  get held(): DialogHit | null {
+    return this.pressed;
+  }
+}
+
 /** 棋盘区坐标 → 点中了什么 */
 export function hitDialog(
   ctx: CanvasRenderingContext2D,
@@ -506,7 +703,29 @@ export function hitDialog(
   y: number,
 ): DialogHit | 'inside' | null {
   const l = layoutDialog(ctx, ui, page);
+  // ★ 填数窗：载到 `Panel.mkf` #0x16 那张逐像素 id 图时，**照 exe 取号**（`amountPixelId`）——
+  //   窗内（闭区间 0..0x80 × 0..0xc0）一律以那一个字节为准；没载到就走下面的矩形表。
+  //   本引擎自己补的「取消」钮在窗下方、不在这一块里，仍由按钮表接。
+  if (l.amountWindow === true) {
+    const map = getAmountHitMap();
+    if (map !== null) {
+      const id = amountPixelId(map, x + LAYOUT.board.x, y + LAYOUT.board.y);
+      if (id !== null) return id >= 2 && id <= 0xf ? { kind: 'amountSlot', id } : { kind: 'amountPad', id };
+    }
+  }
   for (const b of l.buttons) if (inRect(x, y, b.rect)) return b.hit;
+  // 没载到 id 图：窗内没中钮的地方照真素材的样子分 —— 金额栏那片是 0x10，其余整片是 1（拖窗把手；
+  //   真图里没有 0，见 `amountPixelId`）。范围与 exe 同为闭区间 0..0x80 × 0..0xc0。
+  if (l.amountWindow === true) {
+    const at = amountWindowPos();
+    const lx = Math.floor(x + LAYOUT.board.x - at.x);
+    const ly = Math.floor(y + LAYOUT.board.y - at.y);
+    if (lx >= 0 && lx <= 0x80 && ly >= 0 && ly <= 0xc0) {
+      const bar = AMOUNT_BAR_RECT;
+      const onBar = lx >= bar.x && lx < bar.x + bar.w && ly >= bar.y && ly < bar.y + bar.h;
+      return { kind: 'amountPad', id: onBar ? 0x10 : 1 };
+    }
+  }
   // ★ 落在框上但没中按钮：也要**吃掉**这一次点击，否则会穿透到棋盘上
   //   去选格子 —— 那正是「点了个按钮结果棋子动了」这类怪事的来源。
   return inRect(x, y, l.box) ? 'inside' : null;
@@ -538,34 +757,37 @@ export function drawDialog(
   // ——— 框：原版的 Data.mkf 资源 517 图 5 ———
   const skin = sprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true);
   if (skin !== null) {
-    ctx.drawImage(skin.bitmap, l.box.x, l.box.y);
+    drawSprite(ctx, skin, l.box.x, l.box.y);
   } else {
     ctx.fillStyle = '#6b4a21';
     ctx.fillRect(l.box.x, l.box.y, l.box.w, l.box.h);
   }
 
   // ——— 文字 ———
-  const cx = l.inner.x + l.inner.w / 2;
-  let y = l.inner.y + 4;
+  // ★ 第十三份試玩回報（「获得点券的文本提示框的文字应该上下居中，现在太偏上了」）：
+  //   原版两扇框（询问 0x00440c3f / 訊息 0x00440dac）都是 `draw_text(…, 0xdc, 0x8c, flag 4)`
+  //   —— flag 4 = **整块字的墨迹框以 (x,y) 为中心**（`0x44ff2a`：x −= 宽/2、y −= 高/2，
+  //   宽高由 `0x44f70c` 扫离屏面上非 0 像素得来），而 (0xdc,0x8c) 正是框皮的锚点。
+  //   先前从框内顶边往下排（`inner.y + 4`），单行的「得點券１０點」就贴在上沿。
+  const mids = dialogRowMiddles(
+    [
+      ...(l.title !== '' ? [{ h: TITLE_H, size: TITLE_SIZE, blank: false }] : []),
+      ...l.lines.map((t) => ({ h: LINE_H, size: BODY_SIZE, blank: t === '' })),
+    ],
+    DIALOG_ANCHOR.y,
+  );
+  const cx = DIALOG_ANCHOR.x;
+  let row = 0;
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  // 金框上的字要够亮，且描一圈黑边才压得住底纹
-  const line = (text: string, font: string, fill: string): void => {
-    ctx.font = font;
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-    ctx.strokeText(text, cx, y);
-    ctx.fillStyle = fill;
-    ctx.fillText(text, cx, y);
+  ctx.textBaseline = 'middle';
+  // ★ 2026-09-23 订正：字效照 `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)` 的 **3 = 粗体 + 右下 1 px 阴影**
+  //   （`font.ts` 的 `drawGdiText`，逐位读法见那里的取证块）—— 先前是「描 3 px 黑边、不加粗」。
+  const line = (text: string, fill: string): void => {
+    const y = mids[row++] ?? DIALOG_ANCHOR.y;
+    drawGdiText(ctx, text, cx, y, { ...BOX_TEXT_STYLE, color: fill });
   };
-  if (l.title !== '') {
-    line(l.title, FONT_TITLE, '#ffe8a5');
-    y += TITLE_H;
-  }
-  for (const t of l.lines) {
-    line(t, FONT_BODY, '#fff6e0');
-    y += LINE_H;
-  }
+  if (l.title !== '') line(l.title, '#ffe8a5');
+  for (const t of l.lines) line(t, BODY_FILL);
 
   // ——— 按钮 ———
   if (l.yesNo) {
@@ -582,7 +804,7 @@ export function drawDialog(
       y: YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2,
       ...YESNO_SIZE,
     });
-    if (img !== null) ctx.drawImage(img.bitmap, at.x, at.y);
+    if (img !== null) drawSprite(ctx, img, at.x, at.y);
   } else {
     for (const b of l.buttons) {
       const on = hot !== null && JSON.stringify(hot) === JSON.stringify(b.hit);
@@ -592,7 +814,7 @@ export function drawDialog(
       ctx.lineWidth = 1;
       ctx.strokeRect(b.rect.x + 0.5, b.rect.y + 0.5, b.rect.w - 1, b.rect.h - 1);
       ctx.fillStyle = '#2a1d0e';
-      ctx.font = FONT_BODY;
+      ctx.font = FONT_BUTTON;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(b.label, b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2 + 1);

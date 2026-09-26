@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { decideAction } from '../ai/policy.ts';
 import {
   FACILITY_MAX_LEVEL,
   FACILITY_NAMES,
@@ -32,7 +33,7 @@ import { reduce, type MapTopology } from '../state/reduce.ts';
 import { FACILITY_TYPE_MIN } from './land.ts';
 import { RELEASE_PENDING } from './blocking.ts';
 import { toolCount } from './tools.ts';
-import { WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
+import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN, WHO_PLAYS_RELOCATED, type GameState } from '../state/types.ts';
 import { evaluateTurnStart } from './turn-start.ts';
 import { NPC } from './npc-actions.ts';
 import { runNpc, spyTollAt } from './npc-walk.ts';
@@ -230,6 +231,43 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     expect(built.players[0]?.cash).toBe(97_000);
   });
 
+  it('★ 审计补：首建被小衰神挡下 ⇒ 钱与等级不动，但**种类已经写上**（0x0041a239 在 0x0041a261 衰神闸之前）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const s0 = standing({ facilityOwner: owner });
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, godInfo: 7 } : p)) };
+    const asked = reduce(s, { type: 'settle' }, topo);
+    expect(asked.pending?.kind).toBe('buildFacility');
+    const blocked = reduce(asked, { type: 'buildFacility', facilityType: FACILITY_TYPE.mall }, topo);
+    expect(blocked.notices.map((n) => n.key)).toEqual(['god.blockPurchase']);
+    expect(blocked.players[0]?.cash).toBe(100_000);
+    expect(blocked.facilityLevel[FAC_ID]).toBe(0);
+    expect(blocked.facilityType[FAC_ID]).toBe(FACILITY_TYPE.mall);
+    // 电脑那一支（0x0041a257）同样先写种类
+    const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_COMPUTER } : p)) };
+    const aiBlocked = reduce(ai, { type: 'settle' }, topo);
+    expect(aiBlocked.facilityLevel[FAC_ID]).toBe(0);
+    expect([1, 2, 3, 4]).toContain(aiBlocked.facilityType[FAC_ID]);
+  });
+
+  it('★★ 选种类窗开着时被托管（座位变成 1|4）：AI 代答 `facilityType: null` ⇒ reducer 走电脑支 rand()%4+1（0x0041a23e）', () => {
+    const owner = [...standing().facilityOwner];
+    owner[FAC_ID] = 1;
+    const asked = reduce(standing({ facilityOwner: owner }), { type: 'settle' }, topo);
+    // 真人座位不收 null
+    expect(reduce(asked, { type: 'buildFacility', facilityType: null }, topo)).toBe(asked);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const a = decideAction({ state: piloted, map: { nodes: [], lands: [], facilities: [], commercials: [], landscapes: [], dataSize: 0 } as never });
+    expect(a).toEqual({ type: 'buildFacility', facilityType: null });
+    const built = reduce(piloted, a!, topo);
+    const rng = new WatcomRng();
+    rng.setState(piloted.rngState);
+    expect(built.facilityType[FAC_ID]).toBe((rng.next() % 4) + 1);
+    expect(built.rngState).toBe(rng.getState());
+    expect(built.facilityLevel[FAC_ID]).toBe(1);
+    expect(built.players[0]?.cash).toBe(97_000);
+  });
+
   it('★ 电脑的空地不弹窗：当场 rand()%4+1 定种类', () => {
     const owner = [...standing().facilityOwner];
     owner[FAC_ID] = 1;
@@ -347,8 +385,26 @@ describe('★ 走到設施上：買 / 首建 / 加蓋 / 收費', () => {
     // days − 1，为 0 时挂 0x80
     expect(b.inHotel).toBe(days === 1 ? RELEASE_PENDING : days - 1);
     expect(r.players[0]!.totalWinterSleepDays).toBe(days);
-    // 本月支出 = 住宿費（pay_money 已累计）+ 那笔 2000×天×物價 的損失记账
-    expect(r.players[0]!.monthlyPaid).toBe(paid + hotelStayLoss(days, 1));
+    // ★ 审计订正：本月支出**只有**住宿費（pay_money 累计的那一笔）。原版写 `+0x5c` 的只有 pay_money
+    //   （`xref 0x496bc4`），`0x44ba63` 保險理賠也不碰它 —— 先前多记的「2000×天×物價」是自拟的
+    expect(r.players[0]!.monthlyPaid).toBe(paid);
+    // 敌意：旅館**只有**落点这一句 `0x0041a7bc` 的 20×天×物價（主语 = 当前玩家，对象 = 主人）
+    //   —— 收費那句 `0x0041a5c0`（費/100）被 `0x0041a5d5 cmp byte [設施+0x18], 1 / je 0x41a63d` 跳过
+    expect(r.players[0]!.hostility[1]).toBe(20 * days);
+  });
+
+  it('★ 审计订正：死神顯靈换成**主人自己**付 ⇒ 不付钱、不记這一筆，但旅館照住（0x0041a709 je 0x41a761）', () => {
+    const s0 = othersFacility(FACILITY_TYPE.hotel, 1);
+    // 主人 1 号身上是死神（god_info 0xe：不在 0x41d559 的免收里，但 0x40fbb8 会点到他）
+    const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 1 ? { ...p, godInfo: 0xe } : p)) };
+    const lastBefore = s.facilityLastToll[FAC_ID];
+    const r = reduce(s, { type: 'settle' }, topo);
+    expect(r.players[0]!.cash).toBe(100_000);
+    expect(r.players[1]!.monthlyPaid).toBe(0);
+    expect(r.players[1]!.monthlyReceived).toBe(0);
+    expect(r.players[1]!.moneyInBank).toBe(s.players[1]!.moneyInBank);
+    expect(r.facilityLastToll[FAC_ID]).toBe(lastBefore);
+    expect(r.players[1]!.blocking.inHotel).not.toBe(0); // 主人自己住进去
   });
 
   it('★★ 住店时**贴图位置**挪到旅館設施坐标上（第 88 条）', () => {
@@ -515,8 +571,12 @@ describe('★ 間諜：取走這塊地上一次收的過路費', () => {
     expect(spyTollAt(s, landNode)).toEqual({ landlord: 1, amount: 8000 });
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, rng);
+    // ★★ 2026-09-24（provenance 审计）：只在**停下来的那一格**取（`0x0041c447`）⇒ 走 2 步停在地块上
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, spyTopo, (f) => f + 1, rng);
     expect(w.events).toContainEqual({ kind: 'toll', landlord: 1, amount: 8000 });
+    // 路过（走 3 步、停在后一格）不取
+    const passing = runNpc(NPC.spy, releaseNpc(1, 0, 3), s, spyTopo, (f) => f + 1, new WatcomRng(1));
+    expect(passing.events.filter((e) => e.kind === 'toll')).toEqual([]);
   });
 
   it('从没收过租的地取不到；主人自己的地不取', () => {
@@ -590,27 +650,47 @@ describe('★ 研究所：选項目 → 5 天 → 道具到手', () => {
     expect(reduce(other, { type: 'research', facilityId: LAB, project: 1 }, labTopo)).toBe(other);
   });
 
-  it('★ 只在業主自己的回合倒数；第 5 个回合开始时道具到手（項目 + 8）', () => {
+  /**
+   * 回合交接给 `who`（`0x00419039 call 0x41c84f(who)`）—— 审计 2026-09-24：研究所倒数在这里走，
+   * 不在 `startTurn`（被挡的業主也走，见 `state/reduce.ts` 的 `tickActorDay`）。
+   */
+  const handTo = (s: GameState, who: number): GameState => {
+    const n = s.players.length;
+    return reduce({ ...s, currentPlayer: (who + n - 1) % n, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, labTopo);
+  };
+
+  it('★ 只在業主自己的回合倒数（`0x41cdc6 owner == 游标 + 1`）；第 5 次交接给業主时道具到手（項目 + 8）', () => {
     let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
     const owner = 0;
     for (let turn = 1; turn <= 4; turn++) {
-      s = reduce({ ...s, currentPlayer: 1, phase: 'turnStart' }, { type: 'startTurn' }, labTopo); // 对手回合：不动
+      s = handTo(s, 1); // 对手回合：不动
       expect(s.facilityResearchDays[LAB]).toBe(5 - (turn - 1));
-      s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+      s = handTo(s, owner);
       expect(s.facilityResearchDays[LAB]).toBe(5 - turn);
     }
     expect(toolCount(s.tools, owner, 11)).toBe(0);
-    s = reduce({ ...s, currentPlayer: owner, phase: 'turnStart' }, { type: 'startTurn' }, labTopo);
+    s = handTo(s, owner);
     expect(s.facilityResearchDays[LAB]).toBe(0);
     expect(toolCount(s.tools, owner, 11)).toBe(1); // 傳送機
+    // ★ 2026-09-23：到手那一拍先弹「%s開發完成！」（`0x0041ce0e`，道具名 `[項目*8+0x47ff1a]`）
+    expect(s.notices).toContainEqual({ key: 'research.done', args: ['傳送機'] });
+  });
+
+  it('★ 审计 2026-09-24：業主被挡（坐牢）也照样倒数 —— `0x41c84f` 那一段不看阻碍计数', () => {
+    let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
+    s = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, blocking: { ...p.blocking, inPrison: 5 } } : p)) };
+    s = handTo(s, 0);
+    expect(s.facilityResearchDays[LAB]).toBe(4);
+    // 这一回合他被挡：startTurn 不再走第二次
+    s = reduce(s, { type: 'startTurn' }, labTopo);
+    expect(s.facilityResearchDays[LAB]).toBe(4);
   });
 
   it('★ 拆到等级不够，研發作废（不是暂停）', () => {
     let s = reduce(lab(3), { type: 'research', facilityId: LAB, project: 3 }, labTopo);
     const facilityLevel = [...s.facilityLevel];
     facilityLevel[LAB] = 2;
-    s = { ...s, facilityLevel, phase: 'turnStart' };
-    s = reduce(s, { type: 'startTurn' }, labTopo);
+    s = handTo({ ...s, facilityLevel }, 0);
     expect(s.facilityResearchDays[LAB]).toBe(0);
     expect(toolCount(s.tools, 0, 11)).toBe(0);
   });

@@ -16,18 +16,25 @@
  */
 
 import {
+  ACTOR_DOLL,
+  NPC_NAMES,
   PANEL_PAGE_COUNT,
+  SPECIAL_ACTOR_BASE,
   daysInMonth,
+  isAlive,
   isHoliday,
   sceneOfMonth,
   weekdayOf,
   type GameState,
   type Rich4Map,
 } from '@rich4/core';
-import { CHARACTERS, characterColorRgb } from '@rich4/data';
+import { CHARACTERS } from '@rich4/data';
 import { DeferredSpriteClose, portraitResource, type Sprite, type SpriteCache } from './assets.ts';
 import type { Camera } from './render.ts';
 import { FONT_FAMILY } from './font.ts';
+import { currency } from './panel.ts';
+import { MINIMAP_MARK_RESOURCE, drawMinimapMarks, minimapMarks } from './minimap-marks.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 侧栏整图尺寸 @source Panel.mkf 资源 0 的图 0 */
 export const PANEL_WIDTH = 200;
@@ -40,8 +47,8 @@ export const PANEL_HEIGHT = 280;
  * ```
  * RICH4.CFG  offset 5:  00 日曆   01 小地圖   02 兩者輪流
  * ```
- * （@source rich4-re/docs/rich4_cfg.txt —— 这是配置文件的字段说明，
- *   不涉及规则，属可信的一类线索。）
+ * （@source rich4-re/docs/rich4_cfg.txt —— 配置文件的字段说明。
+ *   ⚠️ 其中「02 兩者輪流」是猜错的：02 是設定屏的「組合畫面」，三块同屏，见 `sidebarLayout`。）
  *
  * 日曆那一面的底图就在 `Panel.mkf` 资源 2：
  * - 图 0..3 四季实景，**不带**日曆框（另有他用）
@@ -258,11 +265,278 @@ export function monthCells(year: number, month: number): MonthCell[] {
 }
 
 /**
- * 右下角显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流。
- *   「日曆」这一面自己又分**日曆**与**月曆**两个版式（见 `CAL`）。
+ * 日曆那一面的两个版式 —— 原版 `[0x497164]`（= `RICH4.CFG` +12）：0 日曆 / 1 月曆，
+ * 由太阳/月亮两颗钮切换（见 `CAL_TOGGLE_HIT`）。**与 `cfg+5`（視窗）互相独立**：
+ * 視窗决定「日曆那一面在不在屏上」，这一格决定「在的时候画哪个版式」。
  */
-export type SidebarView = 'calendar' | 'month' | 'map';
+export type CalendarPage = 'calendar' | 'month';
+
+// ============================================================
+//  視窗三态（設定屏「視 窗」三选一 / 熱鍵「切換視窗組」）
+// ============================================================
+
+/**
+ * `cfg+5`（`[0x49715d]`）三态下，小地图那 200×200 的**顶边**（屏幕 y；0 = 这一态不画小地图）。
+ *
+ * @source 表 `0x4752aa`（3 × dword）= `[0, 0x118, 0x50]` = `[0, 280, 80]`，
+ *   `fcn_00416e6d` 开头 `movzx ebp, byte [cfg+5] / mov ebp, [ebp*4 + 0x4752aa] / test ebp, ebp / je ret`；
+ *   命中（`0x00418436`）、箭头（`0x004184d5`）、拖动（`0x0041895b`）都查同一张表。
+ */
+export const MINIMAP_TOP_BY_VIEW = [0, 0x118, 0x50] as const;
+
+/**
+ * 右栏在某一个「視窗」取值下的版式。
+ *
+ * @source 棋盘窗口过程 WM_PAINT 那一支（VA **0x00418bcd**）按 `cfg+5` 三路分派：
+ * ```asm
+ * 00418bcd  mov al, [cfg+5]
+ * ;  0 日、月曆  → 00418be2  fcn_00415f69(0)  整版四页面板（200×280）
+ * ;                00418bee  fcn_004169bc(0)  日曆/月曆 @ (440,280)
+ * ;  1 縮小地圖  → 00418bf5  fcn_00415f69(0)  整版四页面板
+ * ;                00418c01  fcn_00416e6d(0)  小地图   @ (440,280)
+ * ;  2 組合畫面  → 00418c08  fcn_004166f8(0)  ★ 窄版面板（200×80）
+ * ;                00418c14  fcn_00416e6d(0)  ★ 小地图 @ (440, 80)
+ * ;                00418c1e  fcn_004169bc(0)  ★ 日曆/月曆 @ (440,280)
+ * ```
+ * 三个画函数各自再守一道闸：`fcn_00415f69` 在 `cfg+5 == 2` 时直接 ret（`0x00415f83`），
+ * `fcn_004166f8` 只在 `== 2` 时画（`0x0041670d`），`fcn_004169bc` 在 `== 1` 时 ret（`0x004169c3`）。
+ *
+ * ★ 所以「組合畫面」= **窄版面板 + 小地图 + 日曆三块同屏**（80 + 200 + 200 = 480），
+ *   不是「日曆与小地图轮流」—— `RICH4.CFG` 说明里那句「02 兩者輪流」是**猜的**，exe 里
+ *   没有任何按时间换面的代码（`[cfg+5]` 的 26 处引用里只有热键 `0x0040122e` 与設定屏会写它）。
+ */
+export interface SidebarLayout {
+  /** 上面那块：`full` = 200×280 四页面板（`Panel.mkf` 0 图 0..3）；`compact` = 200×80 窄版（图 4） */
+  panel: 'full' | 'compact';
+  /** 小地图 200×200 的顶边（侧栏局部 y，侧栏原点 y = 0）；`null` = 这一态没有小地图 */
+  minimapTop: number | null;
+  /** 日曆/月曆那 200×200（恒在 y = 280）画不画 */
+  calendar: boolean;
+}
+
+/** `cfg+5` → 版式。0 / 1 / 2 之外的值（坏档）按 0 处理 —— 原版会查表越界，这里不照抄 */
+export function sidebarLayout(windowView: number): SidebarLayout {
+  if (windowView === 1) return { panel: 'full', minimapTop: MINIMAP_TOP_BY_VIEW[1], calendar: false };
+  if (windowView === 2) return { panel: 'compact', minimapTop: MINIMAP_TOP_BY_VIEW[2], calendar: true };
+  return { panel: 'full', minimapTop: null, calendar: true };
+}
+
+/**
+ * 点在小地图那 200×200 里吗？在就返回**小地图局部坐标**，不在返回 null。
+ * 坐标是**侧栏局部**（侧栏原点 = 屏幕 (440, 0)）。
+ *
+ * @source VA 0x00418415（`fcn_00417e26` 的 WM_LBUTTONDOWN）：
+ * ```asm
+ * 00418415  mov ch, [cfg+5] / test ch, ch / je 不是小地图     ; 日、月曆那一态没有小地图
+ * 00418423  cmp esi, 0x1b8 / jle …                           ; x > 440
+ * 00418436  mov ecx, [cfg+5 × 4 + 0x4752aa]                  ; 顶边
+ * 0041843c  cmp edx, ecx / jle …                             ; y > 顶
+ * 00418444  lea ebx, [ecx + 0xc8] / cmp edx, ebx / jge …     ; y < 顶 + 200
+ * ```
+ */
+export function hitMinimapArea(
+  windowView: number,
+  x: number,
+  y: number,
+): { x: number; y: number } | null {
+  const top = sidebarLayout(windowView).minimapTop;
+  if (top === null) return null;
+  // 照 exe 的开闭：x > 440（`jle`）、顶 < y（`jle`）< 顶 + 200（`jge`）；右缘 640 是屏幕边，这里补上侧栏宽
+  if (x <= 0 || x >= SIDEBAR.w || y <= top || y >= top + SIDEBAR.h) return null;
+  return { x, y: y - top };
+}
+
+/**
+ * 「組合畫面」那块 200×80 窄版面板的版式 —— **全部**取自 `fcn_004166f8`（VA 0x004166f8）
+ * 与开局时往图 4 上烙字的那一段（VA 0x00418043..0x004180a5）。坐标都已减去侧栏原点 440。
+ *
+ * ```asm
+ * 00416748  blit(Panel.mkf 0 图4 = [0x48be0c]+0x3c, 0x1b8, 0)      ; 底图，不抠黑
+ * 004167fb  fill(0x211, 0x21, 0x6a, 4, 黑)                           ; 名牌色条的黑边 (529,33) 106×4
+ * 0041681f  fill(0x210, 0x20, 0x6a, 4, [0x496b6c + p×0x68] 角色色)         ; 色条 (528,32) 106×4
+ * 00416837  blit_keyed(头像 = 角色图集 图0, 0x1e2, 0x28)              ; 锚点落在 (482,40)，与整版同一处
+ * 00416898  font(0x14 = 20, 0x101010) ; draw(名字, 0x246, 0x10, 2)   ; (582,16) 正中
+ * 004168ca  font(0xc = 12, 0x101010)
+ * 004168de  num_to_currency(現金 [0x496b84 + p×0x68]) ; draw(…, 0x27a, 0x29, 1)   ; (634,41) 右上
+ * 0041690a  num_to_currency(存款 [0x496b88 + p×0x68]) ; draw(…, 0x27a, 0x3f, 1)   ; (634,63) 右上
+ * ; 开局烙在图 4 上的两个标签（`0x452946` 去掉串里的空格）：
+ * 00418053  strip("現  金") ; draw(图4, …, 0x5a, 0x28, 0)            ; (90,40) 左上、12 号
+ * 00418080  strip("存  款") ; draw(图4, …, 0x5a, 0x3e, 0)            ; (90,62)
+ * ```
+ * ★ 没有四个竖标签、没有物價指數、没有第三行 —— 这一态**不能换页**：
+ *   PgUp/PgDn（`0x004014b1 cmp [cfg+5],2 / je 吃掉`）与点竖条（`0x004182fa`）都被闸掉。
+ */
+export const COMPACT = {
+  /** `Panel.mkf` 资源 0 的图 4（200×80） */
+  image: 4,
+  w: 200,
+  h: 80,
+  barShadow: { x: 0x211 - 440, y: 0x21, w: 0x6a, h: 4 },
+  bar: { x: 0x210 - 440, y: 0x20, w: 0x6a, h: 4 },
+  portrait: { x: 0x1e2 - 440, y: 0x28 },
+  name: { x: 0x246 - 440, y: 0x10, size: 0x14 },
+  labels: [
+    { text: '現金', x: 0x5a, y: 0x28 },
+    { text: '存款', x: 0x5a, y: 0x3e },
+  ],
+  labelSize: 0xc,
+  valueRight: 0x27a - 440,
+  valueY: [0x29, 0x3f] as const,
+  valueSize: 0xc,
+} as const;
+
+/**
+ * 窄版面板那两行的文字：現金、存款 —— 与整版「資金」页前两行同一个格式函数
+ * （`num_to_currency_string` VA 0x00452793，见 `panel.ts` 的 `currency`）。
+ */
+export function compactRows(p: { cash: number; moneyInBank: number }): readonly [string, string] {
+  return [currency(p.cash), currency(p.moneyInBank)];
+}
+
+// ============================================================
+//  侧栏画的是谁：玩家 / 惡人（替身回合）
+// ============================================================
+
+/**
+ * 侧栏这一刻画谁 —— 两个面板（整版 `fcn_00415f69`、窄版 `fcn_004166f8`）开头**同一条判据**：
+ *
+ * ```asm
+ * 00415fc1  mov eax, [0x49910c]            ; 当前行动者（窄版 0x00416767 同形）
+ * 00415fc6  cmp eax, [0x499114] / jl 玩家   ; < 玩家数 ⇒ 玩家
+ * 00415fd2  cmp eax, 8 / je 玩家            ; 8 = 機器娃娃 ⇒ 也画玩家
+ * ;         —— 其余（4..7 四大惡人）走惡人那一版，见 `VILLAIN_PANEL`
+ * 0041610d  cmp ebx, 8 / jne               ; 玩家那一支：
+ * 00416118  movzx esi, byte [0x498e70]     ;   8 ⇒ 画替身记录 +8（主人）那位玩家
+ * ```
+ *
+ * ★★ 第二十六份 panel #1：`[0x49910c]` = 惡人的那一段**不止补间在走的那几格**。侧栏只在整窗重画时才画，
+ *   而惡人回合开头（`fcn_00418c55`，`0x00418d69 call 0x41d546` → `0x41906a(1)` → WM_PAINT）重画一次之后
+ *   就不再碰侧栏，直到下一位行动者回合开头那次重画 ⇒ 走完之后的「小偷偷得…」框、受害者台词、
+ *   **停留**不走的那一回合都画惡人那一版。本引擎一个惡人回合 = 一条 action，core 在那一条里交出
+ *   `GameState.lastNpcTurn`（只活一条 action，见 `NpcTurnHint`）⇒ 由 `panelActorSlot` 取槽号。
+ *   （先前按补间在走的那几格判 —— 走完就回到玩家、停留的惡人从不出现，已订正。）
+ *   保釋那一下只摆到门口、不走（原版保釋不动 `[0x49910c]`）；小地图白框仍跟着补间走（`minimapFrameCenter`）。
+ *
+ * ★ 機器娃娃（槽 4）画 `[0x498e70]` = 用道具的人（`0x00446b7b [0x498e70] = [0x49910c]`，道具只能在
+ *   自己回合用）⇒ 就是 `currentPlayer`。不读 `specialActors[4].owner`：core 走完那一趟就把娃娃
+ *   收回 `idleActor()`（owner 清 0），补间播放时那一格已经不是主人了。
+ *
+ * @param npcSlot 此刻的行动者若是替身，其槽号（actor − 4，见 `panelActorSlot`）；`null` = 轮的是玩家
+ */
+export type PanelSubject =
+  | { kind: 'player'; player: number }
+  | {
+      kind: 'villain';
+      /** actor 号 4..7 */
+      actor: number;
+      /** 名字 @source 表 `0x47ed5a[actor]`（→ `0x46662c` 起：小偷 / 強盜 / 流氓 / 間諜）*/
+      name: string;
+      /** 替身记录 +8 主人（保釋他出来的人）—— 小头像画的是**他的** @source `0x0041603d byte [actor×16 + 0x498df0]` */
+      owner: number;
+    };
+
+/**
+ * 侧栏此刻的行动者是不是惡人 —— 是就给槽号（actor − 4），否则 `null`（画玩家）。
+ *
+ * 取的是 core 交出来的 `lastNpcTurn`（这一条 action 轮到的惡人，只活一条 action ⇒ 从轮到他那一刻
+ * 起、到下一位行动者那条 action 为止 = 原版 `[0x49910c]` 停在他身上、侧栏没被重画走的那一段）。
+ * 单机 / 联机同一份状态、同一条判据（各端重放同一串 action ⇒ 同一份提示）。
+ */
+export function panelActorSlot(state: PanelActorState): number | null {
+  const actor = panelActorOf(state);
+  const slot = actor - SPECIAL_ACTOR_BASE;
+  return slot >= 0 && slot < NPC_NAMES.length ? slot : null;
+}
+
+type PanelActorState = Pick<GameState, 'lastNpcTurn' | 'lastPanelTurn'> & { currentPlayer?: number };
+
+/**
+ * ★★ 第二十六份 panel：侧栏此刻画的**行动者**（0..3 玩家 / 4..7 惡人）—— 原版「上一次整窗重画时的 `[0x49910c]`」。
+ *
+ * 1. `lastPanelTurn`（换人那条 action 演完之后）：`0x436a5a` 那次重画换成下一位；距还款日 > 3 天没有那次重画 ⇒ 留着上一位
+ *    （见 core `withTurnHandoff`）；
+ * 2. `lastNpcTurn`：惡人回合开头那次重画（`0x00418d69`）起就是他；
+ * 3. 否则当前玩家（他回合开头 `0x00418d5f` 那次重画）。
+ * 换人那一条逐段演时（`lastTurnBeats`），分界之前那一段的状态没有 1、只有 2 或离场者 ⇒ 自然画上一位。
+ */
+export function panelActorOf(state: PanelActorState): number {
+  const turn = state.lastPanelTurn?.actor;
+  if (turn !== undefined) return turn;
+  const npc = state.lastNpcTurn?.actor;
+  if (npc !== undefined) return npc;
+  return state.currentPlayer ?? 0;
+}
+
+/** 侧栏画哪位**玩家**（行动者是惡人时 = 当前玩家，惡人那一版不看它）*/
+export function panelPlayerOf(state: PanelActorState & { currentPlayer: number }): number {
+  const actor = panelActorOf(state);
+  return actor < SPECIAL_ACTOR_BASE ? actor : state.currentPlayer;
+}
+
+export function panelSubject(
+  state: GameState,
+  npcSlot: number | null | undefined,
+  player: number = state.currentPlayer,
+): PanelSubject {
+  if (npcSlot === null || npcSlot === undefined) return { kind: 'player', player };
+  const actor = SPECIAL_ACTOR_BASE + npcSlot;
+  // @source 0x00415fc6 `jl` / 0x00415fd2 `je 8`：替身号 ≥ 4 ≥ 玩家数，只剩娃娃那一格回到玩家
+  if (actor === ACTOR_DOLL || actor < state.players.length) {
+    return { kind: 'player', player };
+  }
+  return {
+    kind: 'villain',
+    actor,
+    name: NPC_NAMES[npcSlot] ?? '',
+    owner: state.specialActors[npcSlot]?.owner ?? 0,
+  };
+}
+
+/**
+ * 惡人回合的面板 —— 两版都**只有**底图、名字、主人的小头像，**不画任何数值行**。
+ *
+ * ```asm
+ * ; 整版 0x00415fdb..0x00416061
+ * 00415fdb  blit([0x48be0c]+0x48, 0x1b8, 0)     ; ★ Panel.mkf 0 的图 5（(0x48−0xc)/0xc；图 0 = +0xc）
+ * 00416004  font(0x16 = 22, 0x101010)
+ * 00416026  draw_text(表 0x47ed5a[actor], 0x246, 0x28, flag 2)    ; (582,40) 正中
+ * 0041605c  blit_keyed([0x498eb0 + 主人×0x34] + 0x18, 0x20c, 0x40) ; 主人图集图 1 → 锚点 (524,64)
+ * ; 窄版 0x00416779..0x004167e4（底图图 4 已在分支之前画了，`0x00416748`）
+ * 00416786  font(0x14 = 20, 0x101010)
+ * 004167a6  draw_text(同一张表, 0x246, 0x14, flag 2)              ; (582,20) 正中
+ * 004167dc  blit_keyed(同上小头像, 0x20c, 0x40)
+ * ```
+ * 图 5 = 200×280、三条横栏带图标、**没有**右缘四个竖标签；开局烙字（`0x00417eba`）只烙图 0..4，
+ * 图 5 上没有行标签。整版这一支也不画竖标签与物價指數（都在玩家那一支里）。
+ * 窄版的「現金 / 存款」两个标签是烙在图 4 上的，所以照样看得见，只是没有数。
+ */
+export const VILLAIN_PANEL = {
+  /** 整版底图 = `Panel.mkf` 资源 0 的图 5 @source 0x00415fe7 `add eax, 0x48` */
+  image: 5,
+  name: { x: 0x246 - 440, y: 0x28, size: 0x16 },
+  compactName: { x: 0x246 - 440, y: 0x14, size: 0x14 },
+} as const;
+
+/**
+ * (524,64) 那颗**小头像** = 角色图集（`map.mkf` 角色 + 0x1b）的**图 1**（约 30..41 × 30..35，`+0x18`）。
+ * 两处用它：惡人回合画主人的（见 `VILLAIN_PANEL`），玩家回合结盟期间画盟友的：
+ *
+ * ```asm
+ * ; 整版 0x00416256..0x00416285（窄版 0x0041685a..0x0041688b 逐字同形）
+ * 00416256  mov dl, byte [p×0x68 + 0x496ba9]   ; +0x41 allied_player（对方下标 + 1 = core `alliedPlayer`）
+ * 0041625c  test dl, dl / je 跳过
+ * 0041626b  dec eax / imul eax, 0x34 / mov eax, [eax + 0x498eb0] / add eax, 0x18
+ * 00416280  blit_keyed(…, 0x20c, 0x40)         ; 锚点 (524,64)
+ * ```
+ * 画在大头像与名牌色条**之后**、名字**之前**（名字压在它上面）。
+ */
+export const MINI_PORTRAIT = { image: 1, x: 0x20c - 440, y: 0x40 } as const;
+
+/** 结盟期间要画谁的小头像（`alliedPlayer` = 玩家号 + 1，0 = 没有）；没有返回 null */
+export function allyPortraitPlayer(p: { alliedPlayer: number } | undefined): number | null {
+  if (p === undefined || p.alliedPlayer === 0) return null;
+  return p.alliedPlayer - 1;
+}
 
 
 // ============================================================
@@ -340,9 +614,8 @@ const PANEL_TAG_COLOR_OTHER = '#404040';
  * 即：**最右 24px（局部 x∈[176,200)）、整条 280 高、每 70 一格**。
  * 四格的页号与四条竖条的中心（35 / 108 / 178 / 250）一一对得上。
  *
- * ⚠️ 原版这一支前面有 `cfg+5 == 2` 的闸门 —— 因为 `fcn_00415f69` 在
- *   `cfg+5 == 2`（兩者輪流）时**整块面板都不画**（VA 0x004166ed 直接 ret），
- *   没有竖条可点。本引擎任何一态都画面板，故这里不加那道闸门。
+ * ★ 原版这一支前面有 `cfg+5 == 2` 的闸门 —— 組合畫面画的是 200×80 窄版面板（`fcn_004166f8`），
+ *   没有竖条，那一段 y 是小地图。本函数只管几何，闸门在调用方（`main.ts` 按 `sidebarLayout(…).panel`）。
  */
 export const PANEL_TAG_HIT = { x: 176, h: 70, count: 4 } as const;
 
@@ -393,14 +666,34 @@ export interface HudInput {
   camera: Camera;
   /** 小地图底图（`map.mkf` 资源 `地图号+0x10` 图 0，200×200）；null 时只画节点 */
   minimapBg: ImageBitmap | null;
-  /** 右下角那 200×200 现在显示哪一面 */
-  sidebarView: SidebarView;
+  /**
+   * 設定屏「視 窗」三选一 = `RICH4.CFG` +5（`[0x49715d]`）：0 日、月曆 / 1 縮小地圖 / 2 組合畫面。
+   * 版式见 `sidebarLayout`。
+   */
+  windowView: number;
+  /** 日曆那一面画哪个版式（`[0x497164]`）；这一态没有日曆时不看 */
+  calendarPage: CalendarPage;
   /**
    * 小地图上的**标记点**（世界坐标）—— 点小地图留下的十字位置。
    * null 表示没有。
    * @source 原版 `[0x48be18]`（非 0 表示有标记）+ `[0x48be1c]`/`[0x48be20]`（坐标）
    */
   minimapMarker: { x: number; y: number } | null;
+  /**
+   * 此刻**正在走的替身**（娃娃 / 四大惡人）的世界坐标 —— 这时小地图白框框它，不框玩家
+   * （见 `minimapFrameCenter`）。`null` = 轮的是玩家。缺省按 `null`。
+   */
+  npcFrame?: { x: number; y: number } | null;
+  /**
+   * 此刻行动者（`[0x49910c]`）若是替身，其**槽**（actor − 4；0..3 四大惡人、4 機器娃娃）—— 侧栏据此换成
+   * 惡人那一版（见 `panelSubject`；`main.ts` 传 `panelActorSlot(state)`）。`null` / 缺省 = 轮的是玩家。
+   */
+  npcSlot?: number | null;
+  /**
+   * ★★ 第二十六份 panel：侧栏画哪位玩家（`panelPlayerOf`）—— 换人那次重画之前 / 距还款日 > 3 天时仍是上一位。
+   * 缺省 = `state.currentPlayer`。小地图等其余部分照旧按 `state`。
+   */
+  panelPlayer?: number;
   /** 正被按下的箭头（1 = 左，2 = 右）；没按返回 null */
   pressedMinimapArrow: MinimapArrowId | null;
   /** 鼠标悬停的箭头；没悬停返回 null */
@@ -669,10 +962,107 @@ export class Hud {
     const { width, height } = ctx.canvas;
     ctx.clearRect(0, 0, width, height);
 
-    this.#drawPanel(input);
-    if (input.sidebarView === 'calendar') this.#drawCalendar(input);
-    else if (input.sidebarView === 'month') this.#drawMonth(input);
-    else this.#drawMinimap(input, SIDEBAR.y);
+    // 顺序照 WM_PAINT 那一支（VA 0x00418bcd，见 `sidebarLayout`）：面板 → 小地图 → 日曆
+    const layout = sidebarLayout(input.windowView);
+    if (layout.panel === 'full') this.#drawPanel(input);
+    else this.#drawCompactPanel(input);
+    if (layout.minimapTop !== null) this.#drawMinimap(input, layout.minimapTop);
+    if (layout.calendar) {
+      if (input.calendarPage === 'month') this.#drawMonth(input);
+      else this.#drawCalendar(input);
+    }
+  }
+
+  /**
+   * 「組合畫面」那块 200×80 窄版面板 —— 照 `fcn_004166f8`（VA 0x004166f8），版式见 `COMPACT`。
+   *
+   * ★ 与整版（`#drawPanel`）画的是**同一个人**、同一张头像、同一处锚点 (482,40)；
+   *   只剩名字、名牌色条、現金、存款四样。
+   */
+  #drawCompactPanel(input: HudInput): void {
+    const ctx = this.#ctx;
+    const subject = panelSubject(input.state, input.npcSlot, input.panelPlayer ?? input.state.currentPlayer);
+
+    // 底图在分支**之前**画（惡人那一支也是图 4）@source 0x00416748
+    const bg = this.#sprite('Panel.mkf', 0, COMPACT.image);
+    if (bg !== null) drawSprite(ctx, bg, 0, 0, COMPACT.w, COMPACT.h);
+    else {
+      ctx.fillStyle = '#e8dcc0';
+      ctx.fillRect(0, 0, COMPACT.w, COMPACT.h);
+    }
+
+    if (subject.kind === 'villain') {
+      // ★ 惡人回合：名字 + 主人的小头像，没有色条、没有数 @source 0x00416779..0x004167e4
+      //   两个标签是开局烙进图 4 的（0x00418053 / 0x00418080），照样看得见
+      this.#drawCompactLabels();
+      ctx.fillStyle = '#101010';
+      ctx.font = `${VILLAIN_PANEL.compactName.size}px ${FONT_FAMILY}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(subject.name, VILLAIN_PANEL.compactName.x, VILLAIN_PANEL.compactName.y);
+      this.#drawMiniPortrait(input.state, subject.owner);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      return;
+    }
+    const me = input.state.players[subject.player];
+    if (me === undefined) return;
+
+    // 名牌色条：先 1px 错开的黑底，再角色色 @source 0x004167fb / 0x0041681f
+    const cc = CHARACTERS[me.character]?.color ?? 0xffffff;
+    const { barShadow: sh, bar } = COMPACT;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(sh.x, sh.y, sh.w, sh.h);
+    ctx.fillStyle = `rgb(${(cc >> 16) & 0xff},${(cc >> 8) & 0xff},${cc & 0xff})`;
+    ctx.fillRect(bar.x, bar.y, bar.w, bar.h);
+
+    // 头像（抠黑、按锚点）@source 0x00416852
+    const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
+    if (face !== null) {
+      drawSprite(ctx, face, COMPACT.portrait.x - face.anchorX, COMPACT.portrait.y - face.anchorY);
+    }
+    // 结盟期间盟友的小头像 @source 0x0041685a..0x0041688b
+    const ally = allyPortraitPlayer(me);
+    if (ally !== null) this.#drawMiniPortrait(input.state, ally);
+
+    // 名字：20 号、flag 2（正中）@source 0x00416898 / 0x004168b5
+    ctx.fillStyle = '#101010';
+    ctx.font = `${COMPACT.name.size}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(CHARACTERS[me.character]?.name ?? `角色${me.character}`, COMPACT.name.x, COMPACT.name.y);
+
+    this.#drawCompactLabels();
+
+    // 現金 / 存款：12 号、flag 1（右上）@source 0x004168de / 0x0041690a
+    const [cash, bank] = compactRows(me);
+    ctx.font = `${COMPACT.valueSize}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(cash, COMPACT.valueRight, COMPACT.valueY[0]);
+    ctx.fillText(bank, COMPACT.valueRight, COMPACT.valueY[1]);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * 窄版两个标签（原版开局烙进图 4 的，这里每帧照同样坐标画）@source 0x00418053 / 0x00418080。
+   * 画完 `textBaseline` 留在 `top`（后面的数值行接着用）。
+   */
+  #drawCompactLabels(): void {
+    const ctx = this.#ctx;
+    ctx.fillStyle = '#101010';
+    ctx.font = `${COMPACT.labelSize}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for (const l of COMPACT.labels) ctx.fillText(l.text, l.x, l.y);
+  }
+
+  /** (524,64) 的小头像 = 那位玩家角色图集的图 1（抠黑、按锚点）—— 见 `MINI_PORTRAIT` */
+  #drawMiniPortrait(state: GameState, player: number): void {
+    const p = state.players[player];
+    if (p === undefined) return;
+    const img = this.#sprite('map.mkf', portraitResource(p.character), MINI_PORTRAIT.image, true);
+    if (img !== null) drawSprite(this.#ctx, img, MINI_PORTRAIT.x - img.anchorX, MINI_PORTRAIT.y - img.anchorY);
   }
 
   /**
@@ -692,7 +1082,7 @@ export class Hud {
       ctx.drawImage(input.holidayArt, ox, oy, w, h);
     } else {
       const bg = this.#sprite('Panel.mkf', 2, sceneOfMonth(month));
-      if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+      if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
       else {
         ctx.fillStyle = '#7f9fbf';
         ctx.fillRect(ox, oy, w, h);
@@ -701,9 +1091,9 @@ export class Hud {
 
     // 太阳与月亮 —— 图 0..3 没有烤这两个，所以这里必须画
     const sun = this.#sprite('Panel.mkf', 2, SUN_IMAGE, true);
-    if (sun !== null) ctx.drawImage(sun.bitmap, ox + CAL.sun.x, oy + CAL.sun.y);
+    if (sun !== null) drawSprite(ctx, sun, ox + CAL.sun.x, oy + CAL.sun.y);
     const moon = this.#sprite('Panel.mkf', 2, MOON_IMAGE, true);
-    if (moon !== null) ctx.drawImage(moon.bitmap, ox + CAL.moon.x, oy + CAL.moon.y);
+    if (moon !== null) drawSprite(ctx, moon, ox + CAL.moon.x, oy + CAL.moon.y);
 
     const holiday = isHoliday(globalMapId, year, month, day);
     /**
@@ -787,7 +1177,7 @@ export class Hud {
     const { x: ox, y: oy, w, h } = SIDEBAR;
 
     const bg = this.#sprite('Panel.mkf', 2, MONTH_VIEW_BASE + sceneOfMonth(month));
-    if (bg !== null) ctx.drawImage(bg.bitmap, ox, oy, w, h);
+    if (bg !== null) drawSprite(ctx, bg, ox, oy, w, h);
     else {
       ctx.fillStyle = '#7f9fbf';
       ctx.fillRect(ox, oy, w, h);
@@ -846,14 +1236,19 @@ export class Hud {
 
   #drawPanel(input: HudInput): void {
     const ctx = this.#ctx;
-    const me = input.state.players[input.state.currentPlayer];
+    const subject = panelSubject(input.state, input.npcSlot, input.panelPlayer ?? input.state.currentPlayer);
+    if (subject.kind === 'villain') {
+      this.#drawVillainPanel(input.state, subject);
+      return;
+    }
+    const me = input.state.players[subject.player];
     if (me === undefined) return;
 
     // 背景：**该玩家当前那一页**（Panel.mkf 资源 0 的图 0..3）@source VA 0x00416123
     const page = input.panelPage % PANEL_PAGE_COUNT;
     const bg = this.#sprite('Panel.mkf', 0, page);
     if (bg !== null) {
-      ctx.drawImage(bg.bitmap, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+      drawSprite(ctx, bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
     } else {
       ctx.fillStyle = '#e8dcc0';
       ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
@@ -872,23 +1267,27 @@ export class Hud {
       chars.forEach((ch, k) => ctx.fillText(ch, PANEL_TAG_X, y0 + k * PANEL_TAG_LINE));
     });
 
-    // 头像
-    // ★ 头像也是 SMP，黑是抠图底色；不抠就会顶着一块黑框
-    const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
-    if (face !== null) {
-      // @source VA 0x0041618f `fcn_00456418(surface, 头像图, 0x1e2(482), 0x28(40))`
-      //   —— 那两数是**锚点**落点，故按锚点画（侧栏局部 = 屏幕 − 440）
-      ctx.drawImage(face.bitmap, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
-    }
-
     // 名字下面那条**角色色长条**（截图上那条红带）——
     // @source VA 0x004161f8 起两次 `fcn_004561be`（= 填充矩形）：
     //   黑 86×12 @(523,57)，再角色色 86×12 @(522,56) ⇒ 角色色块 + 1px 黑边
+    // ★ 先色条、后头像（0x00416234 才贴头像）—— 头像右缘 (525) 压在色条左端 (522) 上
     const cc = CHARACTERS[me.character]?.color ?? 0xffffff;
     ctx.fillStyle = '#000000';
     ctx.fillRect(0x20b - 440, 0x39 - 1, 0x56, 0xc + 2);
     ctx.fillStyle = `rgb(${(cc >> 16) & 0xff},${(cc >> 8) & 0xff},${cc & 0xff})`;
     ctx.fillRect(0x20a - 440, 0x38, 0x56, 0xc);
+
+    // 头像
+    // ★ 头像也是 SMP，黑是抠图底色；不抠就会顶着一块黑框
+    const face = this.#sprite('map.mkf', portraitResource(me.character), 0, true);
+    if (face !== null) {
+      // @source VA 0x0041624e `fcn_00456418(surface, 头像图, 0x1e2(482), 0x28(40))`
+      //   —— 那两数是**锚点**落点，故按锚点画（侧栏局部 = 屏幕 − 440）
+      drawSprite(ctx, face, 0x1e2 - 440 - face.anchorX, 0x28 - face.anchorY);
+    }
+    // 结盟期间盟友的小头像（在名字之前画）@source 0x00416256..0x00416285
+    const ally = allyPortraitPlayer(me);
+    if (ally !== null) this.#drawMiniPortrait(input.state, ally);
 
     // 姓名 ── @source VA 0x00416288 `draw_text(0, 名字, 0x234(564), 0x28(40), 2)`（flag 2 = 正中）
     ctx.fillStyle = '#101010';
@@ -935,14 +1334,38 @@ export class Hud {
   }
 
   /**
+   * 整版的惡人那一版：图 5 + 名字 + 主人的小头像，其余一概不画 @source 0x00415fdb..0x00416061
+   * （版式见 `VILLAIN_PANEL`）。
+   */
+  #drawVillainPanel(state: GameState, subject: Extract<PanelSubject, { kind: 'villain' }>): void {
+    const ctx = this.#ctx;
+    const bg = this.#sprite('Panel.mkf', 0, VILLAIN_PANEL.image);
+    if (bg !== null) drawSprite(ctx, bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+    else {
+      ctx.fillStyle = '#e8dcc0';
+      ctx.fillRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT);
+    }
+    // 22 号、0x101010、flag 2（正中）@source 0x00416004 / 0x00416026
+    ctx.fillStyle = '#101010';
+    ctx.font = `${VILLAIN_PANEL.name.size}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(subject.name, VILLAIN_PANEL.name.x, VILLAIN_PANEL.name.y);
+    this.#drawMiniPortrait(state, subject.owner);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
    * 小地图（侧栏右下角那 200×200）—— 全部照 `fcn_00416e6d`（VA 0x00416e6d）。
    *
    * 层次**按原版的绘制顺序**：
    * ```asm
    * 00416e78  底图 = [0x48badc] 图0（map.mkf 资源 地图号+0x10 的 200×200 成品图）
+   *           （工作面：`fcn_0040a4e1(0)` 已把**归属色块**烙在上面，见 minimap-marks.ts）
    * 00416e89  左箭头 = [0x48bad8]+0xfc（Data.mkf 517 图20）  画在 (443, 顶+3)
    * 00416e9c  右箭头 = [0x48bad8]+0x108（图21）              画在 (468, 顶+3)
-   * 00416fb9  各玩家的圆点（按 (世界×89)>>10 定位）
+   * 00416fb9  各玩家的小头像（map.mkf 角色+0x1b 图 6，按 (世界×89)>>10 定位）
    * 00417041  当前玩家：30×30 白框，中心在它的圆点上
    * 004170c7  标记点：30×30 红框（与当前玩家重合时不画）
    * ```
@@ -962,17 +1385,23 @@ export class Hud {
     ctx.fillRect(0, top, size, size);
     if (minimapBg !== null) ctx.drawImage(minimapBg, 0, top, minimapBg.width, minimapBg.height);
 
-    // 各格 —— 有主的格子用**地主的专属色**（同圆点那条，@source 0x00417021）
-    const ownerColor = (owner: number): string => {
-      if (owner === 0) return 'rgba(240,240,240,0.75)';
-      const who = state.players[owner - 1];
-      const rgb = characterColorRgb(CHARACTERS[who?.character ?? 0]?.color ?? 0xffffff);
-      return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-    };
-    for (const n of map.nodes) {
-      const owner = n.ref.kind === 'land' ? (state.landOwner[n.ref.index] ?? 0) : 0;
-      ctx.fillStyle = ownerColor(owner);
-      ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
+    // ★★ 第十三份試玩回報（「应该是用专属色块标注地图上已经被玩家购买的土地和建筑」）：
+    //   底图上烙**归属色块** —— 有主的地 / 設施 / 企業各一块地主色的方或菱
+    //   （原版 `fcn_0040a4e1(0)` 烙进工作面 `[0x48badc]`，本函数 0x00416ed7 贴的就是它；
+    //   细节见 `minimap-marks.ts`）。
+    //   先前这里给**每个节点**画一个 3×3 小方块（有主的地染地主色）—— 那是自己加的，
+    //   原版这一屏没有逐格画点，路网本来就画在底图里。只在底图还没到时留着当占位。
+    if (minimapBg !== null) {
+      drawMinimapMarks(
+        ctx,
+        (image) => this.#sprite('Data.mkf', MINIMAP_MARK_RESOURCE, image, true),
+        minimapMarks(state, map, 'small'),
+        0,
+        top,
+      );
+    } else {
+      ctx.fillStyle = 'rgba(240,240,240,0.75)';
+      for (const n of map.nodes) ctx.fillRect(minimapAt(n.x) - 1, top + minimapAt(n.y) - 1, 3, 3);
     }
 
     // 两颗箭头 —— 画在圆点之前（原版就是这个顺序），状态色见 #arrowImage
@@ -987,40 +1416,35 @@ export class Hud {
       );
       // ★ `fcn_00456418` 把图按**锚点**摆（VA 0x00455c64 `sub [ebp+0x18], anchorX`），
       //   所以「画在 (443, 顶+3)」指的是锚点落在那儿。
-      if (img !== null) ctx.drawImage(img.bitmap, r.x - img.anchorX, top + r.y - img.anchorY);
+      if (img !== null) drawSprite(ctx, img, r.x - img.anchorX, top + r.y - img.anchorY);
     }
 
-    // 棋子（圆点），并记下**当前玩家**的圆点位置
-    const me = state.players[state.currentPlayer];
-    let meDot: { x: number; y: number } | null = null;
+    // 棋子标记，并记下**当前玩家**那一枚的位置
+    // ★★ 第十三份試玩回報顺修：原版画的是**角色小头像**，不是自己画的圆：
+    //   ```asm
+    //   00416fc8  cmp  word [player + 0x08], 0 / je 跳过   ; ★ 判据 = xpos != 0
+    //   00416fd4  x = word [player + 0x08] × 89 >> 10 + 0x1b8
+    //   00416ff8  y = word [player + 0x0a] × 89 >> 10 + 顶
+    //   00417021  imul eax, ebx, 0x34
+    //   00417024  mov  eax, [eax + 0x498eb0]       ; = map.mkf 资源 角色 + 0x1b（portraitResource）
+    //   0041702a  add  eax, 0x54                   ; ★ 0xc + 12×6 ⇒ **图 6**（10×9 的小头像）
+    //   00417034  call 0x456418                    ; 按锚点、抠黑贴
+    //   ```
+    //   先前把 `+0x54` 读成「专属色」、画成一个彩色圆点（试玩 4 那次）。小头像本身就是
+    //   角色的主色，远看像一个色点 —— 那次回报说的「带颜色的圆点」就是它。
+    //   位置取 `xpos/ypos`（与 `big-map-screen.ts` 的 `bigMapMarkers` 同源：关押时在綠島/醫院）。
     for (const p of state.players) {
-      if (p.whoPlays === 0) continue;
-      const n = map.nodes[p.nodeId - 1];
-      if (n === undefined) continue;
-      const dx = minimapAt(n.x);
-      const dy = top + minimapAt(n.y);
-      if (p.index === me?.index) meDot = { x: dx, y: dy };
-      // ★★ 圆点用**角色自己的专属色**（`CharacterDef.color`），不是「按座位固定四色」。
-      //   原版读的是角色图素调色板 +0x54 那一项：
-      //   ```asm
-      //   00417021  imul eax, ebx, 0x34          ; 角色图素表，每项 0x34
-      //   00417024  mov  eax, [eax + 0x498eb0]
-      //   0041702a  add  eax, 0x54               ; ★ 该角色的专属色
-      //   00417034  call 0x456418                ; 画圆点
-      //   ```
-      //   （试玩 4：「小地图上的带颜色圆点好像和角色本身的专属色不一样」。）
-      const color = characterColorRgb(CHARACTERS[p.character]?.color ?? 0xffffff);
-      ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
-      ctx.beginPath();
-      ctx.arc(dx, dy, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#000';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      if (!isAlive(p) || p.xpos === 0) continue;
+      const dx = minimapAt(p.xpos);
+      const dy = top + minimapAt(p.ypos);
+      const head = this.#sprite('map.mkf', portraitResource(p.character), MINIMAP_HEAD_IMAGE, true);
+      if (head !== null) drawSprite(ctx, head, dx - head.anchorX, dy - head.anchorY);
     }
 
-    // 取景框：**当前玩家的圆点**上画 30×30 白框 @source VA 0x00417041
-    // 标记框：标记点上画 30×30 红框，与当前玩家重合时不画 @source VA 0x004170c7
+    // 取景框：**当前行动者**（玩家，或正在走的替身）上画 30×30 白框 @source VA 0x00417041
+    // 标记框：标记点上画 30×30 红框，与取景框重合时不画 @source VA 0x004170c7
+    const frame = minimapFrameCenter(state, input.npcFrame ?? null);
+    const meDot = frame === null ? null : { x: frame.x, y: top + frame.y };
     const box = (cx: number, cy: number, color: string): void => {
       ctx.strokeStyle = color;
       ctx.lineWidth = 1;
@@ -1036,6 +1460,40 @@ export class Hud {
     ctx.restore();
   }
 }
+
+/**
+ * 小地图白框的中心（**小地图局部坐标**）—— 框的是 `[0x49910c]` 那个**当前行动者**。
+ *
+ * @source `fcn_00416e6d` 的循环（`ebx` = 0..8，`0x00416faf inc ebx / cmp ebx, 9`）：
+ * ```asm
+ * ; ebx < 玩家数：玩家
+ * 00416fc8  cmp  word [ebx*0x68 + 0x496b70], 0 / je 0x416f9f   ; xpos == 0 ⇒ 不算
+ * 00416fd2  esi = xpos × 89 >> 10 + 0x1b8 / edi = ypos × 89 >> 10 + 顶
+ * ; ebx ≥ 玩家数：替身（表 `0x498de8 + ebx×16` = `0x498e28 + (ebx−4)×16`）
+ * 00416f42  cmp  byte [edx + 0x498df2], 0 / jne 0x416f9f     ; +10 place ≠ 0（監獄/醫院/未出场）⇒ 不算
+ * 00416f4b  cmp  ebx, [0x49910c] / jne 0x416f9f               ; 只算**当前行动者**那一个
+ * 00416f55  esi = word [+0] × 89 >> 10 + 0x1b8 / edi = word [+2] × 89 >> 10 + 顶
+ * ; 两支共用：
+ * 00416f9f  cmp  ebx, [0x49910c] / jne / mov [esp+0x10], esi / mov [esp+0x14], edi
+ * 00417045  test ecx, ecx / je …  0041704d test ebx, ebx / je …   ; 都非 0 才画框
+ * ```
+ * 替身那一趟 `[0x49910c]` = 4..8（`rules/special-actors.ts` 的文件头），坐标是逐 tick
+ * 走的插值点 —— 本引擎由 `render.ts` 的 `npcWalkWorld()` 交来（在走 = 在盘上）。
+ *
+ * @param npc 正在走的替身的世界坐标；`null` = 这一刻轮的是玩家
+ */
+export function minimapFrameCenter(
+  state: GameState,
+  npc: { x: number; y: number } | null,
+): { x: number; y: number } | null {
+  if (npc !== null) return { x: minimapAt(npc.x), y: minimapAt(npc.y) };
+  const me = state.players[state.currentPlayer];
+  if (me === undefined || !isAlive(me) || me.xpos === 0) return null;
+  return { x: minimapAt(me.xpos), y: minimapAt(me.ypos) };
+}
+
+/** 小地图上的棋子标记 = 角色图集（`map.mkf` 角色 + 0x1b）**图 6** @source 0x0041702a `add eax, 0x54` */
+export const MINIMAP_HEAD_IMAGE = 6;
 
 /**
  * 取景框是**白的**、标记框是**红的**。

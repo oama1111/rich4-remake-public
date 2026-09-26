@@ -417,7 +417,10 @@ describe('动效出口两条来源共用 @source Q-TOOL-5 ⑤14', () => {
     const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
     // 定义 1 处 + 调用 2 处（applyAction 与 scheduleAi 的直路）
     const hits = src.split('startActionFx(').length - 1;
-    expect(hits, 'startActionFx 应当有 1 处定义 + 2 处调用').toBe(3);
+    // ★ D-MAGIC-16（2026-09-23）：第 3 处调用是魔法屋逐人分段（`tickMagicSequence`）——
+    //   同一个出口按**每一段**的前后状态再走一遍，不是又一条绕开它的直路。
+    expect(hits, 'startActionFx 应当有 1 处定义 + 3 处调用').toBe(4);
+    expect(src).toContain('startActionFx(magicSeqAction ?? { type: \'settle\' }, beat.before);');
     // 两条来源都必须在
     expect(src).toContain('startActionFx(action, before);');
     // 三处旧钩子都收进 `startActionFx` 里了 —— 全文件只该有这 3 处**调用**。
@@ -448,7 +451,7 @@ describe('★ 真人走子也必须逐格滑（T-047 ④ 第 1 条，2026-09-16 
     expect(src).toContain('tweenStepIfMoved(action, before);');
     // ★ 第 87 条：**要不要起、起终点在哪**的判据搬进纯函数 `walkTweenFor`
     //   （`tween.ts`，有 5 条单测），这里只剩"按它的结论去 startWalk"。
-    expect(src).toContain("import { walkTweenFor } from './tween.ts';");
+    expect(src).toContain("import { walkTweenFor, type WalkTween } from './tween.ts';");
     expect(src).toContain('walkTweenFor(action.type, before, state,');
     // AI 那条仍在它自己的 `reduce` 直路上起走子补间（定义 1 处 + 调用 1 处）
     expect(src.split('startStepTween(').length - 1).toBe(2);

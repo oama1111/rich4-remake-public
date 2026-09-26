@@ -30,8 +30,11 @@
  * 让它落地之后还是朝着原来那个大方向走（见 `pickFacingAt`）。
  */
 
+import { syncEscortNodes } from './object-landing.ts';
 import type { GameState } from '../state/types.ts';
 import type { MapNode } from '../loaders/map.ts';
+import type { MapObject } from '../cards/summon.ts';
+import type { SpecialActor } from './special-actors.ts';
 import { placeOnNode } from './position.ts';
 import { directionOf, linkBlockedMask } from '../state/reduce.ts';
 
@@ -51,6 +54,80 @@ export type TeleportTarget =
   | { kind: 'facility'; index: number }
   | { kind: 'node'; nodeId: number }
   | null;
+
+/**
+ * 傳送機**来源**的编码 —— 与原版拾取器（`0x1200036`）返回的精灵码同形：
+ * - `0x7d0 + 地块` / `0xfa0 + 設施`（`decodeTeleport`）；
+ * - `0x8000 | (1 << 下标)`：玩家 0..3 / 四大惡人 4..7（`0x0044761c test [esp+0x1d],0x80` / `0x00447637 call 0x40d293`）；
+ * - `0x8000 | ((物件槽 + 1) << 8)`：地图物件（`0x004478cb test al,0x80 / test al,0x3f`）；
+ *   **附身中**的物件 ⇒ 改成搬它的附身者（`0x00447495..0x004474cd`：`[物件+5]` ≠ 0 ⇒ `1 << (附身者−1) | 0x8000`）；
+ * - 旧编码 `玩家下标 + 1`（1..4）仍收（电脑那一支 `0x00447478` 固定搬自己，策略层一直这么发）。
+ */
+export const TELEPORT_SPRITE = 0x8000;
+
+export type TeleportSource =
+  | { kind: 'land'; index: number }
+  | { kind: 'facility'; index: number }
+  | { kind: 'player'; index: number }
+  | { kind: 'actor'; actor: number }
+  | { kind: 'object'; slot: number };
+
+export function decodeTeleportSource(
+  v: number,
+  objects: readonly { nodeId: number; attached: number }[],
+): TeleportSource | null {
+  const inst = decodeTeleport(v);
+  if (inst !== null && inst.kind !== 'node') return inst;
+  if (v >= 1 && v <= 4) return { kind: 'player', index: v - 1 };
+  if ((v & TELEPORT_SPRITE) === 0 || v > 0xffff) return null;
+  const objSlot = (v & 0x3f00) >> 8;
+  if (objSlot !== 0) {
+    const o = objects[objSlot - 1];
+    if (o === undefined) return null;
+    if (o.attached !== 0) return { kind: 'player', index: o.attached - 1 };
+    return o.nodeId === 0 ? null : { kind: 'object', slot: objSlot - 1 };
+  }
+  const low = v & 0xff;
+  if (low === 0) return null;
+  let i = 0;
+  while ((low & (1 << i)) === 0) i++;
+  return i < 4 ? { kind: 'player', index: i } : { kind: 'actor', actor: i };
+}
+
+/**
+ * 把一个在场的**惡人**（4..7）搬到某一格 —— 与搬人同一段挑朝向，写惡人记录。
+ * @source `0x00447857..0x004478b5`：`+4` 所在格、`+6` 来路、`+9` 朝向、`+0/+2` 坐标，新格置占位位。
+ */
+export function teleportActorTo(
+  actors: readonly SpecialActor[],
+  nodes: readonly MapNode[],
+  actor: number,
+  targetNodeId: number,
+): SpecialActor[] | null {
+  const slot = actor - 4;
+  const a = actors[slot];
+  if (a === undefined || a.nodeId === 0 || a.nodeId === targetNodeId) return null;
+  const facing = pickFacingAt(nodes, targetNodeId, a.direction);
+  if (facing === null) return null;
+  return actors.map((x, i) =>
+    i === slot ? { ...x, nodeId: targetNodeId, lastNodeId: facing.from, direction: facing.direction } : x,
+  );
+}
+
+/**
+ * 把地上的一件物件搬到某一格。
+ * @source `0x004478df..0x004479ae`：清旧格物件位（`+0x26 = 0`）、写 `[物件+2]` = 新格、新格置物件位；
+ *   朝向（`[物件+1]` ← 第一个非 0 邻格的方位）只是画面，本引擎的物件表没有这一格 —— 不复刻。
+ */
+export function teleportObjectTo(
+  objects: readonly MapObject[],
+  slot: number,
+  targetNodeId: number,
+): MapObject[] | null {
+  const o = objects[slot];
+  if (o === undefined || o.nodeId === 0 || o.attached !== 0 || o.nodeId === targetNodeId) return null;
+  return objects.map((x, i) => (i === slot ? { ...x, nodeId: targetNodeId } : x));
+}
 
 /** 把选择器的编码解开 */
 export function decodeTeleport(v: number): TeleportTarget {
@@ -135,19 +212,28 @@ export function pickFacingAt(
  */
 export function teleportLand(state: GameState, from: number, to: number): GameState | null {
   if (from === to) return null;
+  // ★ 来源不看归属（拾取 `0x1200036` 的组字节 0 = 不设限）：无主的也照搬（搬走的是等级 / 种类 / 到期日）
   const owner = state.landOwner[from] ?? 0;
-  // 空地没什么好搬的
-  if (owner === 0) return null;
+  // ★ 目标必须是**无主、0 级**的空地（真人拾取子类 8：`0x0044658c` owner == 0 且 level == 0）
+  if ((state.landOwner[to] ?? 0) !== 0 || (state.landLevel[to] ?? 0) !== 0) return null;
   const landOwner = [...state.landOwner];
   const landLevel = [...state.landLevel];
   const landType = [...state.landType];
+  const landTenure = [...state.landTenure];
+  const landLastToll = [...state.landLastToll];
   landOwner[to] = owner;
   landLevel[to] = state.landLevel[from] ?? 0;
   landType[to] = state.landType[from] ?? 0;
+  // ★★ 到期日随地搬走、源的「上次過路費」清零 —— 先前漏了这两句
+  //   @source 0x00447546 mov ecx,[源+0x30] / 0x00447549 mov [标+0x30],ecx / 0x0044754c mov [源+0x30],0 /
+  //           0x00447553 mov dword [源+0x2c], 0
+  landTenure[to] = state.landTenure[from] ?? 0;
   landOwner[from] = 0;
   landLevel[from] = 0;
   landType[from] = 0;
-  return { ...state, landOwner, landLevel, landType };
+  landTenure[from] = 0;
+  landLastToll[from] = 0;
+  return { ...state, landOwner, landLevel, landType, landTenure, landLastToll };
 }
 
 /**
@@ -168,7 +254,8 @@ export function teleportLand(state: GameState, from: number, to: number): GameSt
 export function teleportFacility(state: GameState, from: number, to: number): GameState | null {
   if (from === to) return null;
   const owner = state.facilityOwner[from] ?? 0;
-  if (owner === 0) return null;
+  // ★ 目标同样要**无主、0 级**（拾取子类 8，`0x0044658c`）
+  if ((state.facilityOwner[to] ?? 0) !== 0 || (state.facilityLevel[to] ?? 0) !== 0) return null;
   const facilityOwner = [...state.facilityOwner];
   const facilityLevel = [...state.facilityLevel];
   const facilityType = [...state.facilityType];
@@ -204,12 +291,11 @@ export function teleportPlayer(
   if (p.nodeId === targetNodeId) return null;
   const facing = pickFacingAt(nodes, targetNodeId, p.direction);
   if (facing === null) return null;
+  const moved = placeOnNode({ ...p, lastNodeId: facing.from, direction: facing.direction }, node);
   return {
     ...state,
-    players: state.players.map((x, i) =>
-      i === playerIndex
-        ? placeOnNode({ ...x, lastNodeId: facing.from, direction: facing.direction }, node)
-        : x,
-    ),
+    players: state.players.map((x, i) => (i === playerIndex ? moved : x)),
+    // ★ 身上的神明 / 炸彈跟着搬（`0x00447844 call 0x40fc00`）
+    objects: syncEscortNodes(state.objects, moved),
   };
 }

@@ -60,6 +60,57 @@ export function shouldRetriggerVoice(
 }
 
 /**
+ * ★★ 第二十六份 panel：**语音只有一路**（原版的单一语音缓冲 `[0x47e750]`）。
+ *
+ * ```asm
+ * 0045442e  call 0x454493                 ; play_speech 起播前：先 Stop + Release 上一句（不管是谁放的）
+ * 00454443  call 0x450441 / 0x453dcf      ; 读 Speaking.mkf 那一段、建缓冲
+ * 00454456  mov  [0x47e750], eax / Play   ; 这一路现在是它
+ * 004544b9  … [0x47e750] GetStatus & DSBSTATUS_PLAYING   ; 「语音还在响吗」只问这一路
+ * ```
+ * 文本里的 `#NNNN`（`0x44fabc` → `0x45441a`）与角色台词（`_rich4_player_say` 画字时同一条 `0x44fabc`）
+ * 走的都是这一路 ⇒ 起一句新的，上一句当场停。本类就是那一个出口：`main.ts` 的 `#NNNN` sink 与台词队列
+ * 都经它放，`busy()` 就是 `0x4544b9`。同一句重起（Stop → Play）交给 `SoundPlayer.play` 自己的「同一路先停」。
+ */
+export class VoiceChannel {
+  #current: number | null = null;
+  readonly #out: {
+    play(resource: number): void;
+    stop(resource: number): void;
+    isPlaying(resource: number): boolean;
+  };
+
+  constructor(out: { play(resource: number): void; stop(resource: number): void; isPlaying(resource: number): boolean }) {
+    this.#out = out;
+  }
+
+  /** 起播一句 —— 先停掉这一路上正在响的另一句（`0x0045442e call 0x454493`）*/
+  play(resource: number): void {
+    const prev = this.#current;
+    if (prev !== null && prev !== resource && this.#out.isPlaying(prev)) this.#out.stop(prev);
+    this.#current = resource;
+    this.#out.play(resource);
+  }
+
+  /** 停掉这一路（`fcn_00454493`）*/
+  stop(): void {
+    const cur = this.#current;
+    if (cur !== null && this.#out.isPlaying(cur)) this.#out.stop(cur);
+  }
+
+  /** 这一路还在响吗（`fcn_004544b9`）*/
+  busy(): boolean {
+    const cur = this.#current;
+    return cur !== null && this.#out.isPlaying(cur);
+  }
+
+  /** 这一路最近起播的是哪一句（没放过 = null）*/
+  get current(): number | null {
+    return this.#current;
+  }
+}
+
+/**
  * 音效播放器。
  *
  * ⚠️ 浏览器要求 `AudioContext` 在**用户手势之后**才能出声。
@@ -104,6 +155,16 @@ export class SoundPlayer {
   /** 装载一个档案。可以只装 Effect.mkf —— Speaking.mkf 有 57MB，按需再装。 */
   addArchive(name: SoundArchive, data: Uint8Array): void {
     this.#archives.set(name, new MkfArchive(data));
+  }
+
+  /**
+   * ★ 第十九份（iPhone 发烫）：挂上一个**已经建好**的上下文（与背景音乐共用同一个）。
+   *   先前音效、音乐各建一个 AudioContext ⇒ 手机上两条音频渲染线程 / 两路硬件输出一直开着。
+   *   已经有上下文了就不换。
+   */
+  attach(ctx: AudioContext): void {
+    if (this.#ctx !== null) return;
+    this.#ctx = ctx;
   }
 
   /** 在用户手势里调用，建立 AudioContext */
@@ -253,6 +314,9 @@ export class SoundPlayer {
     //   所以它**必须**留在 `#voices` 里。
     src.addEventListener('ended', () => {
       if (this.#voices.get(key) === src) this.#voices.delete(key);
+      // ★ 第十九份：响完就从渲染图上拆下来（见 `music.ts` 的 `#track`）
+      src.disconnect();
+      gain.disconnect();
     });
     this.#voices.set(key, src);
     src.start();

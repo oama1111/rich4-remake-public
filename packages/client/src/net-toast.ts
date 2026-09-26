@@ -46,8 +46,15 @@ export function roomToasts(
   for (const s of after.seats) {
     const b = before?.seats.find((x) => x.seat === s.seat);
     if (s.kind !== 'human') continue;
-    // ① 新来的（之前没这号人，或者这一号原本是电脑）
-    if (b === undefined || b.kind !== 'human') {
+    // ★ 聯機存檔（v6）：存檔房裡沒人坐的座位不報「加入」；有人坐上 / 離座各報一句
+    if (s.vacant === true) {
+      if (b !== undefined && b.kind === 'human' && b.vacant !== true && !(b.connected === false)) {
+        lines.push({ seat: s.seat, text: `${b.name} 離座了` });
+      }
+      continue;
+    }
+    // ① 新来的（之前没这号人，或者这一号原本是电脑 / 存檔房裡原本沒人坐）
+    if (b === undefined || b.kind !== 'human' || b.vacant === true) {
       lines.push({ seat: s.seat, text: `${s.name} 加入了房間` });
       continue;
     }
@@ -73,6 +80,13 @@ export function roomToasts(
     //   「该座位自己发来一个合法 intent」或「`resume`」时清零 —— 而**自动归还**
     //   （第一次超时之后回合结束）**不清零**。这里照抄同一条规则，清零由
     //   `NetToasts.noteIntent()` 在「看见这个座位派了一条 action」时做。
+  }
+  // ★ 房主交接（v6）：房主換人了（原房主離開）
+  const hb = before?.hostSeat ?? 0;
+  const ha = after.hostSeat ?? 0;
+  if (before !== null && ha >= 0 && ha !== hb && !after.started) {
+    const h = after.seats.find((x) => x.seat === ha);
+    if (h !== undefined) lines.push({ seat: ha, text: `房主離開了，${h.name} 成為新房主` });
   }
   return { lines, strikes: next };
 }

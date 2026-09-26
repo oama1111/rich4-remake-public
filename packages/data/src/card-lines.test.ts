@@ -21,8 +21,14 @@ import {
   CARD_LINE_TABLE_VA,
   CARD_LINE_VOICE_BASE,
   CARD_LINE_VOICE_STRIDE,
+  FREE_CARD_ANSWER_LINES,
+  FREE_CARD_ANSWER_SLOT,
+  SCAPEGOAT_ANSWER_LINES,
+  SCAPEGOAT_ANSWER_SLOT,
+  scapegoatAnswerVoice,
   cardLine,
   cardLineVoice,
+  freeCardAnswerVoice,
 } from './card-lines.ts';
 
 const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
@@ -122,5 +128,40 @@ describe('卡牌台词表 · 已知的原版数据瑕疵', () => {
     // 不认这一段（会给出 U+FFFD），故生成脚本走 node 解码 —— 两条必须与运行时一致。
     expect(cardLine(6, 15)).toEqual([null, '晚安～\uECBF']);
     expect(cardLine(6, 16)).toEqual([null, '做個好夢吧～\uECBF']);
+  });
+});
+
+describe('★ 第十四份：免費卡之后地主回的那一句（槽 79，`0x00444b8e mov edi,[eax + 0x481376]`）', () => {
+  run('12 条逐条对 exe：文本 / 表情码 / 语音号 `426 + 52×角色 + 48`', () => {
+    const exe = readFileSync(EXE);
+    expect(CARD_LINE_TABLE_VA + FREE_CARD_ANSWER_SLOT * 4).toBe(0x481376);
+    expect(FREE_CARD_ANSWER_LINES).toHaveLength(CHARACTERS);
+    for (let c = 0; c < CHARACTERS; c++) {
+      const ptr = exe.readUInt32LE(dataOff(CARD_LINE_TABLE_VA + c * CARD_LINE_STRIDE_BYTES + FREE_CARD_ANSWER_SLOT * 4));
+      const raw = cstr(exe, ptr);
+      const m = /^#(\d{4})(.*)$/su.exec(raw);
+      expect(m, raw).not.toBeNull();
+      expect(Number(m![1])).toBe(freeCardAnswerVoice(c));
+      const [emoji, text] = FREE_CARD_ANSWER_LINES[c]!;
+      expect(text).toBe(m![2]);
+      expect(emoji).toBe(text.startsWith('@') ? Number(text.slice(1)) : null);
+    }
+  });
+});
+
+describe('★ 第十四份：嫁禍卡之后替死鬼回的那一句（槽 78，`0x00444a41 mov edi,[eax + 0x481372]`）', () => {
+  run('12 条逐条对 exe：文本 / 表情码 / 语音号 `426 + 52×角色 + 47`', () => {
+    const exe = readFileSync(EXE);
+    expect(CARD_LINE_TABLE_VA + SCAPEGOAT_ANSWER_SLOT * 4).toBe(0x481372);
+    expect(SCAPEGOAT_ANSWER_LINES).toHaveLength(CHARACTERS);
+    for (let c = 0; c < CHARACTERS; c++) {
+      const ptr = exe.readUInt32LE(dataOff(CARD_LINE_TABLE_VA + c * CARD_LINE_STRIDE_BYTES + SCAPEGOAT_ANSWER_SLOT * 4));
+      const m = /^#(\d{4})(.*)$/su.exec(cstr(exe, ptr));
+      expect(m).not.toBeNull();
+      expect(Number(m![1])).toBe(scapegoatAnswerVoice(c));
+      const [emoji, text] = SCAPEGOAT_ANSWER_LINES[c]!;
+      expect(text).toBe(m![2]);
+      expect(emoji).toBe(text.startsWith('@') ? Number(text.slice(1)) : null);
+    }
   });
 });

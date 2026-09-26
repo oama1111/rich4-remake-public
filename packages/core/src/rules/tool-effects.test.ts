@@ -239,12 +239,12 @@ describe('★ 13 个道具逐个点名', () => {
     expect(blastLand(2, 0, 0, 2, true).hostility).toBe(0);
   });
 
-  it('8 遙控骰子 —— 指定点数 1..18，越界不收', () => {
+  it('8 遙控骰子 —— 指定点数 1..6（`0x00446847 cmp esi,6`），越界不收', () => {
     expect(isToolImplemented(8)).toBe(true);
     expect(isValidRemoteDice(1)).toBe(true);
-    expect(isValidRemoteDice(18)).toBe(true);
+    expect(isValidRemoteDice(6)).toBe(true);
     expect(isValidRemoteDice(0)).toBe(false);
-    expect(isValidRemoteDice(19)).toBe(false);
+    expect(isValidRemoteDice(7)).toBe(false);
     expect(isValidRemoteDice(2.5)).toBe(false);
   });
 
@@ -341,5 +341,22 @@ describe('★ 13 个道具逐个点名', () => {
     expect(TOOLS).toHaveLength(13);
     // ★ 13 个**全部**实现 —— 这个数字掉下来就该更新文档
     expect(TOOLS.filter((t) => isToolImplemented(t.id))).toHaveLength(13);
+  });
+});
+
+describe('★★ 工程車（12）存下原座驾、按 (traffic&3)==3 判「已在开」（0x004479e2 / 0x00447a49 / 0x00447a55）', () => {
+  it('骑機車开工程車：機車退回道具、原交通方式 1 / 骰子 2 存进 engineSaved*', () => {
+    const p = makePlayer({ index: 0, trafficMethod: 1, ndices: 2 });
+    const r = useVehicleTool(p, new Array<number>(60).fill(0), 12);
+    expect(r.ok).toBe(true);
+    expect(r.player.trafficMethod).toBe(0x1f);
+    expect(r.player.ndices).toBe(1);
+    expect(r.player.engineSavedTraffic).toBe(1);
+    expect(r.player.engineSavedDice).toBe(2);
+    expect(r.tools[5]).toBe(1);
+  });
+  it('工程車过了一天（0x1b）再开 → 不生效、不消耗', () => {
+    const p = makePlayer({ index: 0, trafficMethod: 0x1b, ndices: 1 });
+    expect(useVehicleTool(p, new Array<number>(60).fill(0), 12).ok).toBe(false);
   });
 });

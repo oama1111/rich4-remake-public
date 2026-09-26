@@ -20,7 +20,7 @@ import {
   type SweptObject,
 } from '@rich4/core';
 import { CHARACTERS, characterColorRgb } from '@rich4/data';
-import { tweenTickCount, tweenTickExact, walkFramesFor } from './tween.ts';
+import { relocateVisible, tweenTickCount, tweenTickExact, walkFramesFor, type RelocateWalk } from './tween.ts';
 import {
   attachedFrameIndex,
   attachedImageIndex,
@@ -35,7 +35,16 @@ import {
 // ★ 機器工人建屋影片的落点/尺寸是 exe 里的**常数**（Q-TOOL-6）——
 //   屏幕 (0, 0x28) = 棋盘局部 (0, 0)，整块 440×440。见 `build-fx.ts`。
 import { BUILD_FX_BOARD_Y, BUILD_FX_H, BUILD_FX_W, BUILD_FX_X } from './build-fx.ts';
-import { WHO_PLAYS_WRECKED, type MapNode, type Rich4Map } from '@rich4/core';
+import { godAscendPoseAt } from './god-ascend-fx.ts';
+import { asleepSpriteOf, paintBrightness } from './sprite-brightness.ts';
+import { TOLL_FLASH_FULL_SCALE } from './toll-flash-fx.ts';
+import {
+  WHO_PLAYS_RELOCATED,
+  WHO_PLAYS_RETURN_TO_BOARD,
+  WHO_PLAYS_WRECKED,
+  type MapNode,
+  type Rich4Map,
+} from '@rich4/core';
 import {
   VIEW_CENTER,
   VIEW_COUNT,
@@ -61,11 +70,29 @@ import {
   toolbarIconImage,
   characterSetBase,
   characterBeggarSprite,
+  characterSleepwalkSprite,
   CHARACTER_POSE,
   directionalImage,
   screenDirection,
   DeferredSpriteClose,
+  groundLogicalSize,
 } from './assets.ts';
+import { drawSprite, hdRatio, surfaceScaleOf, type SpriteLike } from './hd-stage.ts';
+
+/**
+ * 精灵位图的**像素**尺寸：原图 = 逻辑尺寸（与改造前逐字相同）；超分图按位图实际像素
+ * （高清舞台，`hd-stage.ts`）—— 做灰版 / 剪影时不能按逻辑尺寸画，否则超分图先被压回 1×。
+ */
+function spritePixelSize(s: Sprite): { w: number; h: number } {
+  return hdRatio(s) === null ? { w: s.width, h: s.height } : { w: s.bitmap.width, h: s.bitmap.height };
+}
+
+/** 冬眠 / 冻住的灰版（`asleepSpriteOf`），仍按**逻辑**尺寸画；做不出来退回原精灵 */
+function asleepSprite(s: Sprite): SpriteLike {
+  const px = spritePixelSize(s);
+  const grey = asleepSpriteOf(s.bitmap, px.w, px.h);
+  return grey === null ? s : { bitmap: grey, width: s.width, height: s.height };
+}
 
 /**
  * 顶部工具栏的摆位 —— **等距 40，从 x=0 起铺满 440**。
@@ -188,8 +215,9 @@ const PLAYER_COLORS = ['#e8524a', '#4a90e8', '#4ae87c', '#e8d24a'] as const;
  *           or  byte [esi + 0x498ea0], 0x40            ; 记下「已转」
  * ```
  * ⇒ 判据是 `blocking.sleeping`（= `+0x36`）= **冬眠**，
- *   **不是** `sleepWalking`（`+0x37`）—— 夢遊走的是另一条视觉（换 `+3` 走姿图组，
- *   见 `specialActorImageSet`）。
+ *   **不是** `sleepWalking`（`+0x37`）—— 夢遊走的是另一条视觉：玩家换睡衣那套图
+ *   （`characterSleepwalkSprite`，@source 0x0040ba16）、替身换 `+3` 走姿图组（`specialActorImageSet`），
+ *   两者头上都再贴一张「ZZZ」（`SLEEPWALK_MARK_RESOURCE`，@source 0x00408870 / 0x00408acb）。
  */
 export function isAsleep(blocking: { sleeping: number }): boolean {
   return blocking.sleeping !== 0;
@@ -219,13 +247,14 @@ export function isActorAsleep(actor: { hibernating?: number; sleepwalkDays?: num
 }
 
 /**
- * 去色用的 canvas `filter` —— `fcn_004555eb` 那套 `(R+G+B+40)>>2` 的等价近似。
+ * 去色 —— `fcn_004555eb` 那套 `(R+G+B+40)>>2` 的等价近似（「去饱和 + 提亮 1.24」）。
  *
  * 原版把三个通道都写成同一个灰度值（保留最高位），并且因为 `+0x28` 那一下
- * 会整体**提亮**一点点，所以除了 `saturate(0)` 还要补一点 `brightness`。
+ * 会整体**提亮**一点点，所以除了去色还要补一点亮度。
  * ⚠️ 这是近似（canvas 的色彩空间与 RGB555 取整不完全一致），登记在 D-T047-4。
- */
-export const ASLEEP_FILTER = 'saturate(0) brightness(1.24)';
+ * ★★ 2026-09-24：**不再**用 `ctx.filter`（WebKit 不认 ⇒ iPhone 上从来不灰）——
+ *   改成逐像素算好一张灰版精灵（`sprite-brightness.ts` 的 `asleepSpriteOf`，与先前的 filter
+ *   在 Chromium 上逐像素相同）。
 
 /**
  * 视角模式。
@@ -288,6 +317,14 @@ export interface RenderInput {
    */
   characterPose?: number | null;
   /**
+   * `characterPose` 那一组图画**第几帧**（每向帧号）；不给就跟全局走路帧走。
+   *
+   * ★ 掷骰姿必须给：预动作从第 0 帧数起，滚骰 + 定格期间**定在最后一帧**（骰子已出手、
+   *   两手空空）—— 见 `dice-roll.ts` 文件头 ★★ 与 `DiceRollFx.poseFrame`
+   *   （@source `0x0040dee4` / `0x0040d975` / `fcn_00419572` 不重画棋盘）。
+   */
+  characterPoseFrame?: number | null;
+  /**
    * 棋盘区的尺寸。
    *
    * ★ 必须显式给出，**不能再从画布尺寸推**：原版的棋盘区是固定的
@@ -333,6 +370,14 @@ export interface RenderInput {
    */
   objectFlight?: ObjectFlight | null;
   /**
+   * 正在播的**神明升天**（第十二份试玩回报 #1）—— 纯表现，不进 state。
+   *
+   * ★ 原版 `god_detach`（VA 0x0040e32c）先把那尊神从主人身上摘掉重画一次，
+   *   再把它**直接贴屏幕**往上转着飞（不进绘制槽）；规格见 `god-ascend-fx.ts`。
+   *   `state` 是离身**之前**那一份（起点 = 那一尊附身时画在哪、画的第几张）。
+   */
+  godAscend?: { state: GameState; objectIndex: number; elapsed: number } | null;
+  /**
    * 正在播的**機器工人建屋影片**（Q-TOOL-6）—— 这一帧该贴的那张图，`null` = 没在播
    * （或影片还没解好）。
    *
@@ -357,13 +402,17 @@ export interface RenderInput {
    * 過路費閃爍（W-69）—— 這一幀要把**哪些地塊**調到多亮。
    *
    * ★ 原版 `fcn_00451985` 是改棋盤 **id 圖**上那幾格的像素（+`LEVEL[k]`，單位是
-   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時套一句
-   *   `ctx.filter = brightness(1 + level/32)`。差异登记在
+   *   5 位色分量）；本引擎按**精靈**近似：畫那幾塊地上的建築時疊成
+   *   `brightness(1 + level/32)`（`sprite-brightness.ts`，不靠 Safari 不支持的 `ctx.filter`）。差异登记在
    *   `docs/deviations/Q-TOLL-FX-1.md`。
    *
    * `level` = 0 或沒在播時整份給 `null`（= 不套）。
    */
-  landFlash?: { lands: ReadonlySet<number>; level: number } | null;
+  /**
+   * ★ 第二十二份（gap-audit #6）：新聞 18 / 19 的白闪也走这里（同一支 `fcn_00451985`）；
+   *   它们可能闪到**設施**（挑中設施那一支 `0x0044a8d3` / `0x0044aa9f`）⇒ 多一张 `facilities`（設施 id）。
+   */
+  landFlash?: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null;
 }
 
 /**
@@ -384,7 +433,20 @@ export function worldToScreen(
   //   连同 `fitCamera` 一并删掉（D-086-5 结案）。
   const p = projectWorld(cam.view, x, y, cam.tileX, cam.tileY, cam.subX ?? 0, cam.subY ?? 0);
   if (p === null) return null;
-  return { x: viewport.w / 2 + p.x, y: viewport.h / 2 + p.y };
+  const c = boardCenter(viewport);
+  return { x: c.x + p.x, y: c.y + p.y };
+}
+
+/**
+ * 棋盘区的投影中心（棋盘区局部坐标）。
+ *
+ * @source `fcn_0040829d`：`004083e1 add [esp+0x34], 0xdc` / `004083e9 add [esp+0x20], 0x104` ——
+ *   屏幕 (220, 260) = 棋盘区 (0, 40) 起的 (220, 220)。棋盘区是 **439** 宽（`LAYOUT.board.w`），
+ *   `w / 2` = 219.5 ⇒ 先前整块棋盘（地面 + 建筑 + 棋子）都画在 x 的**半像素**上、比原版左偏 0.5px
+ *   （第 24 份「公园没居中」那一轮的全图扫描查出来的）。取 `(w + 1) >> 1`：439 / 440 都是 220。
+ */
+export function boardCenter(viewport: { w: number; h: number }): { x: number; y: number } {
+  return { x: (viewport.w + 1) >> 1, y: (viewport.h + 1) >> 1 };
 }
 
 /** 兼容旧调用：地图节点的屏幕坐标（地图视角的平移缩放） */
@@ -513,7 +575,37 @@ export const DRAW_CLASS = {
    * ⇒ 同屏幕 Y 时替身排在玩家**下面**（0x8 < 0xc）。
    */
   npc: 0x8,
+  /**
+   * ★ 夢遊标记（「ZZZ」）：**非**当前行动者 0xe、当前行动者 0xf ——
+   *   同屏幕 Y 时压在棋子（0xc / 0xd）之上。
+   * @source `0x004088a3 cmp ebx, [0x49910c] / jne` → `or byte [..], 0xf` / `or byte [..], 0xe`
+   *   （替身那一段同形：`0x00408b02` / `0x00408b0a` / `0x00408b13`）
+   */
+  sleepwalkMark: 0xe,
+  currentSleepwalkMark: 0xf,
 } as const;
+
+/**
+ * 夢遊标记（「ZZZ」，6 张 = 6 帧，**不分方向**）的图组 = 物件图集表下标 **19**
+ * ⇒ `Data.mkf` 资源 `0x18c + 19 − 1 = 0x19e`（414；目视核过：黄色「zzz」六帧）。
+ *
+ * @source `fcn_0040829d` 玩家那一段（替身那一段 `0x00408b26` 同形）：
+ * ```asm
+ * 00408870  cmp  byte [player + 0x496b9f], 0     ; ★ +0x37 夢遊天數；0 ⇒ 不加这一槽
+ * 004088c7  mov  eax, [0x496978]                 ; ★ 0x496978 = 0x49692c + 19×4（物件图集表）
+ * 004088e8  mov  al, [player×0x34 + 0x498ea4]    ; 图号 = 这个人自己的「ZZZ 帧」（见 `SLEEPWALK_MARK_FRAMES`）
+ * 004088f5  坐标 = 棋子同一个屏幕点（[esp+0x30] / [esp+0x3c]）
+ * ```
+ */
+export const SLEEPWALK_MARK_RESOURCE = objectSpriteResource(19) ?? 0x19e;
+
+/**
+ * 「ZZZ」帧数：**走子时一 tick 进一帧**，数到 6 回零（不走就停在那一帧）。
+ * @source `fcn_0040c05c` 玩家那支 `0x0040c455..0x0040c47e`（`+0x37` 非 0 才进：
+ *   `inc byte [+0x498ea4] / cmp bh, 6 / jne / mov byte [+0x498ea4], 0`）；
+ *   替身那支 `0x0040c71f..0x0040c744`（看替身记录 `+13`）同形。
+ */
+export const SLEEPWALK_MARK_FRAMES = 6;
 
 /**
  * 原版绘制槽的排序键。
@@ -807,13 +899,150 @@ export function actorStepsLeft(
   return Math.max(0, rolled - done);
 }
 
+/** 一个世界坐标点（节点坐标与物件的浮点位置共用同一套单位） */
+export interface KnockPoint {
+  x: number;
+  y: number;
+}
+
 /**
- * 機器娃娃这一趟**扫掉的物件** —— 每一件「该在哪一刻消失」，外加画它要的记录。
+ * `+0x06`（物件记录的「存在/动画计时」）的起手值。
+ * @source VA 0x0040fb9b `mov byte [obj*24 + 0x496d0e], 0xff`
+ */
+export const OBJECT_KNOCK_TIMER0 = 0xff;
+
+/**
+ * 物件被打飞时写进记录的那份状态 —— 物件记录 `+0x06..+0x14`（**全 float32**）。
+ *
+ * @source `fcn_0040fafd(objIdx, fromNode, toNode)` VA 0x0040fafd（规格
+ *   `rich4-spec/docs/systems/tools.md` §6.1.0，通道 2 用例
+ *   `rich4-spec/tests/test_object_float_move.py` 13/13）：
+ * ```asm
+ * 0040fb3e  dx = from.x − to.x / fild / fmul qword [0x46352c] = 0.5
+ * 0040fb55  fstp [obj*24 + 0x496d18]            ; ★ +0x10 = Δx × 0.5
+ * 0040fb6c  fstp [obj*24 + 0x496d1c]            ; ★ +0x14 = Δy × 0.5
+ * 0040fb80  fstp [obj*24 + 0x496d10]            ; ★ +0x08 = from.x + 速度x（起手已推进半格）
+ * 0040fb94  fstp [obj*24 + 0x496d14]            ; ★ +0x0c = from.y + 速度y
+ * 0040fb9b  byte [obj*24 + 0x496d0e] = 0xff     ; ★ +0x06
+ * 0040fba3  dl = byte [obj*24 + 0x496d09]       ; +0x01 = 朝向
+ * 0040fbaa  byte [obj*24 + 0x496d0f] = dl       ; ★ +0x07 ← +0x01（朝向副本）
+ * ```
+ * ★ 落点一律 `fstp dword` = **IEEE-754 单精度**，故这里每一步都过 `Math.fround`。
+ */
+export interface ObjectKnock {
+  /** `+0x08` 世界 x */
+  x: number;
+  /** `+0x0c` 世界 y */
+  y: number;
+  /** `+0x10` x 速度 = (from.x − to.x) × 0.5 */
+  vx: number;
+  /** `+0x14` y 速度 = (from.y − to.y) × 0.5 */
+  vy: number;
+  /** `+0x06` 计时（起手 `0xFF`，**每画一拍 −1**，见 `objectKnockAt`） */
+  timer: number;
+  /** `+0x07` = `+0x01` 的**原样副本**（飞的时候按它取图；`and 7` 留到用的时候做） */
+  facing: number;
+}
+
+/**
+ * `fcn_0040fafd` 的起手：速度 = (from − to) × 0.5、位置 = from + 速度（**都已推进半格**）。
+ *
+ * @param from   打得那一格（娃娃脚下）—— 传的节点号是 `path[step]`
+ * @param to     娃娃**来的上一格** —— 传的节点号是 `path[step − 1]`；原版这两个参数
+ *               来自 `special_players_state + 68/70`（= 用道具那一刻玩家的
+ *               `nodeId` / `lastNodeId`，@source `rich4_tool_jiqiwawa.asm:37-39`），
+ *               在娃娃那一支里逐格就是「当前格 / 上一格」
+ * @param facing 物件记录 `+0x01` 的朝向 —— 原样抄进 `+0x07`
+ */
+export function objectKnockStart(from: KnockPoint, to: KnockPoint, facing = 0): ObjectKnock {
+  // fmul qword [0x46352c] → 常数就是 double 0.5，再 fstp dword（单精度落点）
+  const vx = Math.fround((from.x - to.x) * 0.5);
+  const vy = Math.fround((from.y - to.y) * 0.5);
+  return {
+    x: Math.fround(from.x + vx),
+    y: Math.fround(from.y + vy),
+    vx,
+    vy,
+    timer: OBJECT_KNOCK_TIMER0,
+    facing,
+  };
+}
+
+/**
+ * 走一拍 —— `+0x08 += +0x10` / `+0x0c += +0x14`（`fld`/`fadd`/`fstp dword`，单精度落点）。
+ * @source `rich4.asm` 0x00408d47 那一段（`:1805-1810`）
+ */
+export function objectKnockTick(k: ObjectKnock): ObjectKnock {
+  return { ...k, x: Math.fround(k.x + k.vx), y: Math.fround(k.y + k.vy) };
+}
+
+/**
+ * 第 `tick` 拍（0 = 起手那一拍）物件画在**世界坐标**的哪里。
+ *
+ * @source 逐 tick 的消耗 `rich4.asm:1746-1810`（`fcn_0040829d` 的物件循环）：
+ * ```asm
+ * 00408cd9  cmp byte [obj + 6], 0 / je 0x408e0e   ; 计时到 0 ⇒ 走静态那支（本物件 node 已清 0 ⇒ 不画）
+ * 00408cf4  fx = trunc(+0x08) ; fy = trunc(+0x0c) ; fld/fistp（__round_toward_zero）
+ * 00408d0e  esi = (fx >> 5) − camTileX + 0xe      ; 列：0..0x1c = 29 格窗口
+ * 00408d1a  edi = (fy >> 5) − camTileY + 0xe      ; 行：同上
+ * 00408d23  if (esi < 0 || esi > 0x1c || edi < 0 || edi > 0x1c) {
+ * 00408d32      byte [obj + 6] = 0 ; jmp 下一件    ; ★ 越出窗口 ⇒ 停，而且**这一拍不画**
+ *           }
+ * 00408d47  dec byte [obj + 6]                    ; ★ 先减
+ *           … 算屏幕落点（下面才 += 速度）
+ * 00408db1  fld [+0x10] / fadd [+0x08] / fstp [+0x08]
+ * 00408dc5  fld [+0x14] / fadd [+0x0c] / fstp [+0x0c]
+ * ```
+ * ⇒ 一拍 = **先判窗口 → 再 `dec +0x06` → 画当时的坐标 → 最后才推进位置**。
+ *   计时耗尽（`+0x06` 减到 0 之后的下一拍）物件落回静态那支，而娃娃扫掉的物件
+ *   `nodeId` 已经被清 0 ⇒ **不再画**。
+ *
+ * @param tick      已经过去几拍（0 = 起手/娃娃刚走到那一格）
+ * @param inWindow  这个**截断后的整数**坐标在不在 29×29 窗口里（绘制侧传 `worldToScreen` 那一问）
+ * @returns 这一拍的记录；`null` = 这一拍**不画**（越界 / 计时耗尽 / tick 越界）
+ */
+export function objectKnockAt(
+  from: KnockPoint,
+  to: KnockPoint,
+  facing: number,
+  tick: number,
+  inWindow: (x: number, y: number) => boolean = () => true,
+): ObjectKnock | null {
+  if (!Number.isFinite(tick) || tick < 0) return null;
+  // +0x06 从 0xFF 起逐拍 −1：可画的是第 0..0xFE 拍（第 0xFF 拍时计时已归 0）
+  if (tick >= OBJECT_KNOCK_TIMER0) return null;
+  let s = objectKnockStart(from, to, facing);
+  for (let t = 0; ; t++) {
+    if (s.timer === 0) return null;
+    // ★ 先判窗口，用的是**截断后**的整数坐标（`__round_toward_zero` + `sar 5`）
+    if (!inWindow(Math.trunc(s.x), Math.trunc(s.y))) return null;
+    s = { ...s, timer: s.timer - 1 };
+    if (t === tick) return s;
+    s = objectKnockTick(s);
+  }
+}
+
+/** 娃娃扫掉的一件物件 —— 「该在哪一刻打飞」+ 打飞用的方向（纯数据） */
+export interface SweptObjectDraw {
+  /** 走**之前**那一件的记录（`nodeId` 已按 `path[step]` 补回，见下） */
+  o: MapObject;
+  /** 娃娃走到那一格（= 打飞开始）的时刻，毫秒，自这趟起步算 */
+  hideAt: number;
+  /**
+   * 打飞的方向与朝向 —— `from` = 被打飞的那一格、`to` = 娃娃来的上一格。
+   * `null` = 没有方向可用（`step ≤ 0`，即物件在**出发格**上；`runDoll` 的循环
+   * 第一步就 `path.push`，故它交出来的 `step` 恒 ≥ 1，这一支只是防御）。
+   */
+  knock: { from: KnockPoint; to: KnockPoint; facing: number } | null;
+}
+
+/**
+ * 機器娃娃这一趟**扫掉的物件** —— 每一件「该在哪一刻被打飞」，外加画它要的记录。
  *
  * ★ 出处与判据（试玩3 #11）：原版是**逐格 tick** 走的，落点处理
- *   `0x0041b4f1` 在娃娃**走到那一格**时才把物件打飞并释放
+ *   `0x0041b4e7` 那一支在娃娃**走到那一格**时才把物件打飞并释放
  *   （`@source 0x0041b4e7` 那一段，见 `core/rules/special-actors.ts` 的
- *   `dollSweepNode`）。所以「消失时刻」= 补间走到 `path[step]` 那一格**走完**的时刻，
+ *   `dollSweepNode`）。所以「打飞时刻」= 补间走到 `path[step]` 那一格**走完**的时刻，
  *   也就是 `steps[step - 1].at + steps[step - 1].ms`。
  *
  *   ⚠️ 本引擎 core 一次把九格走完，交出来的 `state.objects` 里那几件已经
@@ -822,19 +1051,27 @@ export function actorStepsLeft(
  *   `path[step]`（`dollSweepNode` 找的正是 `o.nodeId === cur`）。
  *   这不是猜：`cleared[].step` 由 `runDoll` 按同一次循环写下。
  *
+ * ★ **打飞**（本轮补，`docs/deviations/Q-TOOL-1.md` 表格第 3 行原登记「没做」）：
+ *   同一对节点就是 `fcn_0040fafd` 的两个参数 —— `from = path[step]`（娃娃脚下）、
+ *   `to = path[step − 1]`（来路）。原版在 `0x0041b519` 依次
+ *   `call fcn_0040fafd`（0x0041b519）+ `call remove_object`（0x0041b529）（@source `rich4_player_core_actions.asm:2663-2681`），
+ *   速度写成 `(from − to) × 0.5` ⇒ **顺着娃娃前进的方向被轰出去**（像扫帚推着走）。
+ *
  * @param steps     `actorWalkSteps(path, …)` 的产物
  * @param objects   这一趟**之后**的 `state.objects`（下标与走之前一一对应 ——
  *                  `dollSweepNode` 只改内容不挪位置）
  * @param path      `runDoll` 交出来的整趟路径（含起点）
  * @param cleared   `runDoll` 交出来的「下标 + 在哪一格」
+ * @param nodes     地图节点表（下标 = 节点号 − 1）—— 取打飞的起终点坐标与物件朝向
  */
 export function sweptObjectHideTimes(
   steps: readonly ActorWalkStep[],
   objects: readonly MapObject[],
   path: readonly number[],
   cleared: readonly SweptObject[],
-): { o: MapObject; hideAt: number }[] {
-  const out: { o: MapObject; hideAt: number }[] = [];
+  nodes: readonly MapNode[],
+): SweptObjectDraw[] {
+  const out: SweptObjectDraw[] = [];
   for (const c of cleared) {
     const o = objects[c.index];
     if (o === undefined) continue;
@@ -844,9 +1081,50 @@ export function sweptObjectHideTimes(
     // 「走到那一格」= 那一步走完；`step === 0`（出发格）没有步，故立刻算走完
     const prev = c.step <= 0 ? null : steps[c.step - 1];
     const hideAt = prev === null || prev === undefined ? 0 : prev.at + prev.ms;
-    out.push({ o: { ...o, nodeId }, hideAt });
+    // ★ 打飞方向：from = 这一格、to = 来路那一格。朝向照抄物件自己的
+    //   `+0x01`（原版 `+0x07 ← +0x01`；本引擎不存朝向，按同一条规则现推）。
+    const fromNode = nodes[nodeId - 1];
+    const toId = c.step > 0 ? (path[c.step - 1] ?? 0) : 0;
+    const toNode = toId > 0 ? nodes[toId - 1] : undefined;
+    const knock =
+      fromNode === undefined || toNode === undefined
+        ? null
+        : {
+            from: { x: fromNode.x, y: fromNode.y },
+            to: { x: toNode.x, y: toNode.y },
+            facing: objectFacing(fromNode, nodes, directionOf),
+          };
+    out.push({ o: { ...o, nodeId }, hideAt, knock });
   }
   return out;
+}
+
+/**
+ * 娃娃那趟的一件物件在**这一刻**画在哪 —— 纯函数（`#objectSlots` 与
+ * `#drawSweptFlights` 共用，判据全在上面两个函数里）。
+ *
+ * - `{ kind: 'ground' }`：娃娃还没走到那一格 ⇒ 照旧画在 `s.o.nodeId` 那一格上；
+ * - `{ kind: 'fly', … }`：**已经打飞** ⇒ 按飞行位置画（世界坐标，已截断成整数，
+ *   与原版 `__round_toward_zero` 同）；
+ * - `null`：这一拍不画（越出 29×29 窗口 / 计时耗尽 / 没有方向）。
+ */
+export type SweptObjectFrame =
+  | { kind: 'ground' }
+  | { kind: 'fly'; x: number; y: number; facing: number }
+  | null;
+
+export function sweptObjectFrameAt(
+  s: SweptObjectDraw,
+  elapsedMs: number,
+  tickMs: number,
+  inWindow: (x: number, y: number) => boolean,
+): SweptObjectFrame {
+  if (elapsedMs < s.hideAt) return { kind: 'ground' };
+  if (s.knock === null) return null;
+  const ms = tickMs > 0 ? tickMs : 1;
+  const tick = Math.floor((elapsedMs - s.hideAt) / ms);
+  const k = objectKnockAt(s.knock.from, s.knock.to, s.knock.facing, tick, inWindow);
+  return k === null ? null : { kind: 'fly', x: Math.trunc(k.x), y: Math.trunc(k.y), facing: k.facing };
 }
 
 
@@ -880,6 +1158,11 @@ export interface ActorToken {
    * 与「夢遊走姿」（`+13`）是**两个不同的字段**：冬眠画成灰、夢遊换走姿图组。
    */
   frozen: boolean;
+  /**
+   * ★ **夢遊中**（替身记录 `+13`）—— 棋子上方再贴一张「ZZZ」（`SLEEPWALK_MARK_RESOURCE`）。
+   * @source `0x00408acb cmp byte [rec + 0x498e35], 0` → `0x00408b26 mov eax, [0x496978]`
+   */
+  sleepwalking: boolean;
   /** 绘制槽类别：当前行动者 0xd，其余 0x8 */
   klass: number;
 }
@@ -1032,6 +1315,7 @@ export function actorTokens(
       walking,
       /** ★ 冬眠中 —— 绘制时套 `ASLEEP_FILTER`（原版 `_rich4_convert_sprite`）*/
       frozen,
+      sleepwalking: asleep,
       klass: current === actor ? DRAW_CLASS.currentPlayer : DRAW_CLASS.npc,
     });
   }
@@ -1364,6 +1648,8 @@ export interface BuildingArtItem {
    *   必须能认出每一件是哪个地块。其它三张表与过路费无关，故可缺省。
    */
   landId?: number;
+  /** 设施那一支带上**自己的設施 id**（新聞 18 / 19 的白闪按它认，见 `RenderInput.landFlash`） */
+  facilityId?: number;
 }
 
 /**
@@ -1461,6 +1747,7 @@ export function buildingArtItems(
         y: f.y,
         res: EMPTY_LAND_LOGO_RESOURCE,
         img: state.players[owner - 1]?.character ?? 0,
+        facilityId: f.id,
       });
       continue;
     }
@@ -1471,6 +1758,7 @@ export function buildingArtItems(
       res: base + facilitySlot(type, level),
       // @source VA 0x004093c3：与建筑同一算式，朝向在 facility +0x1b
       img: buildingImageIndex(f.facing, view),
+      facilityId: f.id,
       // @source VA 0x004093f9 `mov al,[ebp+0x19] / mov [槽+0x48a852],al` —— 原值照抄，0 也照抄
       ...withRing(ringColor(state, owner)),
     });
@@ -1515,6 +1803,13 @@ interface DrawSlot {
 }
 
 
+/**
+ * 相邻两格补间的衔接窗口（毫秒）：下一格在上一格理论结束后这么久之内起步，
+ * 就当作原版那样「同一个 tick 首尾相接」，起点回拨到上一格的结束时刻。
+ * 超过它说明中间真的停过（等玩家、开了窗），照常从现在起算。见 `startWalk`。
+ */
+export const WALK_CHAIN_MS = 150;
+
 export class BoardRenderer {
   readonly #ctx: CanvasRenderingContext2D;
   readonly #sprites: SpriteCache;
@@ -1544,6 +1839,14 @@ export class BoardRenderer {
    */
   #walkFrame = 0;
   /**
+   * 夢遊标记（「ZZZ」）的帧号 —— **每人一份**（原版 `[0x498ea4 + 编号×0x34]`），
+   * 键同 `#held`：玩家 `p0..p3`、替身 `a0..a4`。只在**这个人夢遊着走子**时一 tick 进一帧
+   * （见 `SLEEPWALK_MARK_FRAMES`），不走就停在那一帧。纯表现，不进 state。
+   */
+  readonly #sleepwalkMarkFrame = new Map<string, number>();
+  /** 这一帧谁在夢遊（`draw` 开头从 state 抄一份，补间推帧那里要用）：键同上 */
+  #sleepwalkingNow: ReadonlySet<string> = new Set();
+  /**
    * 正在播的走子补间 —— 世界坐标的起终点 + 起始时刻 + 这一格几个 tick。
    * ★ 纯表现：不进 state，丢了只是少一段平滑（C-DET-4）。
    */
@@ -1560,7 +1863,20 @@ export class BoardRenderer {
     start: number;
     /** 已经推过几次「走路帧」——渲染一帧可能跨多个 tick */
     ticked: number;
+    /** ★ 审计 #17：「被挪」那两支（走进旅館 / 走回棋盘）的显隐与朝向；普通走子为 null */
+    relocate: RelocateWalk | null;
   } | null = null;
+  /**
+   * ★ 审计 #17：住进旅館**走完**、已经隐去的人 —— core 的 `+0x15 & 0x20` 要到他回合收尾才清
+   *   （原版在走路例程半程就清了，`0x0040c3dc`），这段空档里 `confinedPlayerDrawn` 仍会放行，这里挡住。
+   */
+  readonly #enteredHidden = new Set<number>();
+  /**
+   * ★ 审计 #17：「站在这里等着走进旅館」—— core 已把贴图位写成設施坐标，但原版要等落点例程
+   *   （訊息框 / 台词 / 理賠框）全部收完才起步（`0x41a85e` 是落点例程**最后**一件事，
+   *   走路在之后的 tick 里），这段时间人还站在旅館格上。键 = 玩家、值 = 世界坐标。
+   */
+  readonly #parked = new Map<number, { x: number; y: number }>();
   /**
    * 正在播的替身走子补间 —— **一个替身一条、一条串多格**（T-047）。
    *
@@ -1569,6 +1885,9 @@ export class BoardRenderer {
    *   （`fcn_0040c05c` 的 actor ≥ 4 分支，VA 0x0040c489）。
    *   ★ 纯表现，不进 state（C-DET-4）；丢了只是少一段平滑。
    */
+  /** 押着没起步的替身槽（见 `holdActorWalk`）*/
+  readonly #heldActorSlots = new Set<number>();
+
   readonly #actorWalks = new Map<
     number,
     {
@@ -1582,10 +1901,11 @@ export class BoardRenderer {
        * 这一趟沿途**扫掉的物件**（機器娃娃）+ 各自该在第几毫秒消失。
        *
        * ★ 试玩3 #11：`o` 是**走之前**那一件的记录（节点号还在，见
-       *   `sweptObjectHideTimes`），所以补间还没走到它那一格时照常画它；
-       *   `now - start >= hideAt` 之后不再画（= 逐格消失）。
+       *   `sweptObjectHideTimes`），所以补间还没走到它那一格时照常画它
+       *   （`#objectSlots`）；走到之后改画**打飞**那一段
+       *   （`#drawSweptFlights`，`sweptObjectFrameAt` 判）。
        */
-      swept: { o: MapObject; hideAt: number }[];
+      swept: SweptObjectDraw[];
     }
   >();
 
@@ -1605,6 +1925,18 @@ export class BoardRenderer {
    * 宿主没喂 `actorWalks` 时，只有这个变化能告诉我们「他刚走过」。
    */
   readonly #actorSeen = new Map<number, number>();
+  /**
+   * **正在飞的物件**（機器娃娃打飞的那几件）—— 与替身补间**分开存**。
+   *
+   * ★ 为什么不能挂在 `#actorWalks` 上：原版那颗 `+0x06` 计时是**物件自己的**，
+   *   娃娃那一趟走完（补间被 `#actorWalkScreen` 删掉）之后物件照样继续飞
+   *   （`0x408cd9` 那一支每帧照跑）。挂在替身补间上会有一个可见缺口：
+   *   被扫在**最后一格**上的那一件，`hideAt` 正好等于整趟的总时长，
+   *   那一拍补间刚被删 ⇒ 它一辈子也画不出「飞出去」。
+   *
+   * ⚠️ 纯表现、不进 state（C-DET-4）；飞行结束（越出 29×29 / 计时耗尽）即从表里掉。
+   */
+  #sweptFlights: { s: SweptObjectDraw; start: number; tickMs: number }[] = [];
   /**
    * 解码落地时叫一声。
    *
@@ -1686,15 +2018,33 @@ export class BoardRenderer {
     special = false,
     tickMs = 20,
     now = performance.now(),
+    relocate: RelocateWalk | null = null,
   ): void {
     const ticks = tweenTickCount(to.x - from.x, to.y - from.y, traffic, special);
     // ★★ 每拍位移除的是**未截断**的 N_f（原版 `0x0040c2ae`），只有末拍吸附落点
     const exactTicks = tweenTickExact(to.x - from.x, to.y - from.y, traffic, special);
-    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start: now, ticked: 0 };
+    // ★★ 接着上一格走的，从上一格的**理论结束时刻**起算，不从「这一帧才发现走完」起算。
+    //   原版是同一个 tick 里上一格收尾、下一格起步（`0x0040d936..0x0040d950`），缝是 0；
+    //   本引擎要等一帧画完、再经 setTimeout 才派下一步，缝约等于一帧。帧一慢（高清舞台
+    //   实测 30 帧时缝中位 49 ms），每格多等一截，人物整体就慢了。起点回拨后补间时间轴
+    //   首尾相接，走子速度与帧率无关（缝只让这一格开头少画一两帧）。
+    //   ⚠️ 只接**同一个人、首尾相接、缝在窗口内**的那一段 —— 停下来再走（等 GO、开窗）不能回拨。
+    // 上一趟若是「走进旅館」且已隐去，换下一趟之前把结论记下（见 `#enteredHidden`）
+    const prev = this.#walk;
+    if (prev !== null && prev.relocate?.kind === 'enter' && !relocateVisible('enter', prev.ticks, prev.ticks + 1)) {
+      this.#enteredHidden.add(prev.player);
+    }
+    let start = now;
+    if (prev !== null && prev.player === player && prev.to.x === from.x && prev.to.y === from.y) {
+      const gap = now - (prev.start + prev.ticks * prev.tickMs);
+      if (gap >= 0 && gap <= WALK_CHAIN_MS) start = now - gap;
+    }
+    this.#parked.delete(player);
+    this.#walk = { player, from, to, ticks, exactTicks, tickMs, start, ticked: 0, relocate };
     // ★ W-66-b 的量测口径：这一段的**理论结束时刻**（`start + ticks × tickMs`）。
     //   下一段起步时拿它相减就是「格与格之间的缝」——原版同一个 tick 里收尾并起步，
     //   缝是 0。只给 DEV 量测读，正常路径不用它（见 `lastWalkEndAt`）。
-    this.#lastWalkEndAt = now + ticks * tickMs;
+    this.#lastWalkEndAt = start + ticks * tickMs;
     this.#dirty = true;
   }
 
@@ -1724,6 +2074,78 @@ export class BoardRenderer {
   /** 丢掉没播完的补间（读档、换屏时用） */
   cancelWalk(): void {
     this.#walk = null;
+    this.#parked.clear();
+    this.#enteredHidden.clear();
+  }
+
+  /** ★ 审计 #17：新局 / 读档 —— 旧局「被挪」那两支的站位与隐去记录一并作废 */
+  clearRelocate(): void {
+    this.#parked.clear();
+    this.#enteredHidden.clear();
+    if (this.#walk?.relocate) this.#walk = null;
+  }
+
+  /** ★ 审计 #17：这一位先原地站在 `at`（世界坐标），等 `startWalk` 起步（见 `#parked`）*/
+  parkPlayer(player: number, at: { x: number; y: number }): void {
+    this.#parked.set(player, at);
+    this.#dirty = true;
+  }
+
+  /** 放掉 `parkPlayer`（不起步就作废时用）*/
+  unparkPlayer(player: number): void {
+    if (this.#parked.delete(player)) this.#dirty = true;
+  }
+
+  /**
+   * ★ 审计 #17：「被挪」那两支的**显隐** —— `true`/`false` = 由这里说了算，`null` = 照常（`confinedPlayerDrawn`）。
+   *
+   * - 走进旅館（`0x20`）：过半之前画、之后隐；走完隐到 core 把 0x20 清掉为止（`#enteredHidden`）。
+   * - 走回棋盘（`0x10`）：过半之前隐、之后画。**起步之前**也隐：原版释放 `0x43d7bf`/… 不写计数，
+   *   计数停在 0x80（`blocking.ts` 的 `tickBlockingCounter`），`0x00408691` 照样不画；复刻在释放时
+   *   已把计数清 0（D-CONFINE-1 折叠），故以「0x10 还挂着、贴图位还不在所在格上」代之。
+   *
+   * @source 半程判据 `0x0040c3b4..0x0040c3dc`，画不画 `0x00408691` / `0x0040869a`（见 `tween.ts` 的 `relocateToggleTick`）
+   */
+  relocateDrawn(
+    pl: { index: number; whoPlays: number; nodeId: number; xpos: number; ypos: number },
+    node: { x: number; y: number } | undefined,
+    now = performance.now(),
+  ): boolean | null {
+    const w = this.#walk;
+    if (w !== null && w.player === pl.index && w.relocate !== null) {
+      const k = Math.floor((now - w.start) / w.tickMs) + 1;
+      const vis = relocateVisible(w.relocate.kind, w.ticks, k);
+      if (k <= w.ticks) return vis;
+      // 走完了
+      if (w.relocate.kind === 'enter') {
+        if (!vis && (pl.whoPlays & WHO_PLAYS_RELOCATED) !== 0) return false;
+        return null;
+      }
+    }
+    if (this.#enteredHidden.has(pl.index)) {
+      if ((pl.whoPlays & WHO_PLAYS_RELOCATED) !== 0) return false;
+      this.#enteredHidden.delete(pl.index);
+    }
+    if (
+      (pl.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0 &&
+      node !== undefined &&
+      (pl.xpos !== node.x || pl.ypos !== node.y) &&
+      !this.#parked.has(pl.index)
+    ) {
+      return false;
+    }
+    return null;
+  }
+
+  /**
+   * ★ 审计 #17：「被挪」那一趟摆的朝向（`null` = 照 state）。走出来那一趟一直摆到 0x10 被清
+   * （原版 `0x418ebd` 的 `0x00418f3c` 才把 `+0x1b` 存的原朝向写回 `+0x10`）。
+   */
+  relocateFacing(pl: { index: number; whoPlays: number }, now = performance.now()): number | null {
+    const w = this.#walk;
+    if (w === null || w.player !== pl.index || w.relocate === null) return null;
+    if (now - w.start < w.ticks * w.tickMs) return w.relocate.facing;
+    return w.relocate.kind === 'emerge' && (pl.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0 ? w.relocate.facing : null;
   }
 
   /** 上一条补间要播多久（毫秒）—— 宿主拿它当走一步的节拍 */
@@ -1774,6 +2196,38 @@ export class BoardRenderer {
    *   而补间要等下一次 `draw()` 才起得来，所以 `lastWalkMs()` 帮不上忙 ——
    *   宿主得在 dispatch **之后**再问这个（见 `docs/deviations/T-047.md`）。
    */
+  /**
+   * ★ 第十四份：**押着**这一格的下一趟替身补间（機器娃娃要等用道具那句台词说完才上路）。
+   *   押着期间那一趟照常「登记」（沿途要被扫掉的物件照旧画在原地），但起点定在 +∞：
+   *   替身不画、物件不飞；`releaseActorWalks(now)` 那一刻才从头走。
+   *
+   * @source 機器娃娃 `0x00446b2e call 0x44ef41`（台词，同步）在娃娃上路（`fcn_0040dd1f`）之前。
+   */
+  holdActorWalk(slot: number): void {
+    this.#heldActorSlots.add(slot);
+  }
+
+  /** 放开 `holdActorWalk` 押着的那几趟：起点改成 `now`（沿途物件的打飞计时一起挪）。返回放开了几趟 */
+  releaseActorWalks(now = performance.now()): number {
+    let n = 0;
+    for (const slot of this.#heldActorSlots) {
+      const w = this.#actorWalks.get(slot);
+      if (w === undefined || Number.isFinite(w.start)) continue;
+      w.start = now;
+      for (const f of this.#sweptFlights) if (w.swept.includes(f.s)) f.start = now;
+      n++;
+    }
+    this.#heldActorSlots.clear();
+    this.#dirty = true;
+    return n;
+  }
+
+  /** 这一格的补间是不是还押着没起步（见 `holdActorWalk`）*/
+  actorWalkHeld(slot: number): boolean {
+    const w = this.#actorWalks.get(slot);
+    return this.#heldActorSlots.has(slot) || (w !== undefined && !Number.isFinite(w.start));
+  }
+
   actorWalkRemainingMs(now = performance.now()): number {
     let best = 0;
     for (const w of this.#actorWalks.values()) {
@@ -1820,11 +2274,24 @@ export class BoardRenderer {
     this.#actorWalks.clear();
     this.#actorSeen.clear();
     this.#actorFrame.clear();
+    this.#sweptFlights.length = 0;
   }
 
   /** 一条替身补间播完/被丢掉 */
   #forgetActorWalk(slot: number): void {
     this.#actorWalks.delete(slot);
+  }
+
+  /**
+   * 还有**打飞的物件**在飞吗 —— 宿主拿它续帧。
+   *
+   * ★ 为什么需要：这一族动画与替身补间**不同寿**（物件那颗 `+0x06` 计时自己跑，
+   *   娃娃走完它照样飞，见 `#sweptFlights`）。而本引擎是**按需重绘**的，走完
+   *   那一拍之后若没有别的演出，就没人再要帧了 —— 最后那几拍会冻在屏上。
+   *   只影响「要不要再画一帧」，**不**进 `stageBusy`（原版物件飞行不挡回合）。
+   */
+  sweptFlightActive(): boolean {
+    return this.#sweptFlights.length > 0;
   }
 
   /**
@@ -1847,14 +2314,20 @@ export class BoardRenderer {
     if (path.length < 2) return;
     const steps = actorWalkSteps(path, nodes, tickMs);
     if (steps.length === 0) return;
+    const swept = sweptObjectHideTimes(steps, objects, path, cleared, nodes);
+    // ★ 第十四份：押着的那一格起点定在 +∞（`releaseActorWalks` 再改成放开那一刻）
+    const start = this.#heldActorSlots.has(slot) ? Number.POSITIVE_INFINITY : now;
     this.#actorWalks.set(slot, {
       steps,
       rolled: rolled ?? steps.length,
-      start: now,
+      start,
       tickMs,
       ticked: 0,
-      swept: sweptObjectHideTimes(steps, objects, path, cleared),
+      swept,
     });
+    // ★ 打飞那几件的**飞行**另起一份（`#sweptFlights`）—— 它们的时长由物件自己的
+    //   `+0x06` 决定，与娃娃这一趟的补间无关（见那一处字段说明）。
+    for (const s of swept) this.#sweptFlights.push({ s, start, tickMs });
     // @source VA 0x0040deed：起步（`fcn_0040dd1f` 尾）把走路帧清零
     this.#actorFrame.set(slot, 0);
     this.#dirty = true;
@@ -1900,6 +2373,8 @@ export class BoardRenderer {
     const w = this.#actorWalks.get(slot);
     if (w === undefined) return null;
     const elapsed = now - w.start;
+    // ★ 第十四份：押着还没起步（`holdActorWalk`）⇒ 这一帧不画替身
+    if (elapsed < 0) return null;
     if (elapsed >= actorWalkTotalMs(w.steps)) {
       this.#actorWalks.delete(slot);
       return null;
@@ -1919,6 +2394,7 @@ export class BoardRenderer {
     const absolute = step.tickAt + k;
     if (absolute > w.ticked) {
       this.#actorFrame.set(slot, (this.#actorFrame.get(slot) ?? 0) + (absolute - w.ticked));
+      this.#advanceSleepwalkMark(`a${slot}`, absolute - w.ticked);
       w.ticked = absolute;
     }
     const p = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[k - 1];
@@ -1927,6 +2403,39 @@ export class BoardRenderer {
     if (s === null) return null;
     // @source 逐格前进时写 `+9 direction`（`_rich4_calculate_direction`，VA 0x00454fb4）
     return { x: s.x, y: s.y, nodeId: step.toNode, direction: actorWalkDirection(step) };
+  }
+
+  /**
+   * 此刻**正在走的替身**（娃娃 / 四大惡人）的插值世界坐标；没有替身在走 = `null`。
+   *
+   * 原版那一趟 `[0x49910c]` = 替身号（4..8），坐标在替身记录 `+0x00/+0x02`
+   * （`fcn_0040dd1f` 那一族逐 tick 写）。镜头（`actorCenterWorld`）与侧栏小地图的
+   * 白框（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d 那一支）都认它。
+   *
+   * `slot` = actor − 4（0..3 四大惡人、4 機器娃娃）。⚠️ 侧栏面板**不**按它换（那是惡人的整个回合，
+   * 不只补间在走的这几格 —— 见 `hud.ts` 的 `panelActorSlot` / core 的 `lastNpcTurn`）。
+   */
+  npcWalkWorld(now: number): { x: number; y: number; slot: number } | null {
+    for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
+      const w = this.#actorWalks.get(slot);
+      if (w === undefined) continue;
+      const elapsed = now - w.start;
+      if (elapsed >= actorWalkTotalMs(w.steps)) {
+        this.#actorWalks.delete(slot);
+        continue;
+      }
+      let step = w.steps[w.steps.length - 1]!;
+      for (const st of w.steps) {
+        if (elapsed < st.at + st.ms) {
+          step = st;
+          break;
+        }
+      }
+      const kk = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
+      const pt = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[kk - 1];
+      if (pt !== undefined) return { x: pt.x, y: pt.y, slot };
+    }
+    return null;
   }
 
   /**
@@ -1948,25 +2457,8 @@ export class BoardRenderer {
    */
   actorCenterWorld(now: number): { x: number; y: number } | null {
     // ① 替身（娃娃 / 四大惡人）—— 槽位小的优先（原版游标 4..7 依次走）
-    for (const slot of [...this.#actorWalks.keys()].sort((a, b) => a - b)) {
-      const w = this.#actorWalks.get(slot);
-      if (w === undefined) continue;
-      const elapsed = now - w.start;
-      if (elapsed >= actorWalkTotalMs(w.steps)) {
-        this.#actorWalks.delete(slot);
-        continue;
-      }
-      let step = w.steps[w.steps.length - 1]!;
-      for (const st of w.steps) {
-        if (elapsed < st.at + st.ms) {
-          step = st;
-          break;
-        }
-      }
-      const kk = Math.min(step.ticks, Math.floor((elapsed - step.at) / w.tickMs) + 1);
-      const pt = walkFramesFor(step.from, step.to, step.ticks, step.exactTicks)[kk - 1];
-      if (pt !== undefined) return { x: pt.x, y: pt.y };
-    }
+    const npc = this.npcWalkWorld(now);
+    if (npc !== null) return npc;
     // ② 玩家走子补间（`#walkScreen` 内部自己管那一段的推进）
     const w = this.#walk;
     if (w !== null) {
@@ -2002,6 +2494,7 @@ export class BoardRenderer {
     const k = Math.min(w.ticks, Math.floor((now - w.start) / w.tickMs) + 1);
     if (k > w.ticked) {
       this.#walkFrame = (this.#walkFrame + (k - w.ticked)) & 0xff;
+      this.#advanceSleepwalkMark(`p${playerIndex}`, k - w.ticked);
       w.ticked = k;
     }
     const frames = walkFramesFor(w.from, w.to, w.ticks, w.exactTicks);
@@ -2099,10 +2592,13 @@ export class BoardRenderer {
 
     const { map, state, camera, hoverNode } = input;
     const ctx = this.#ctx;
+    this.#sleepwalkingNow = sleepwalkingKeys(state);
     const width = input.viewport.w;
     const height = input.viewport.h;
-    // 棋盘画进一块 1:1 的离屏画布，缩放交给舞台统一做
-    const dpr = 1;
+    // 棋盘画进一块离屏画布，缩放交给舞台统一做。
+    // ★ 高清舞台下这块画布挂着 `s` 倍的基础变换（`hd-stage.ts` 的 `sizeSurface`），
+    //   而底图那段要逐块 `setTransform` —— 会把基础变换顶掉，故把 `s` 取出来自己乘回去。
+    const dpr = surfaceScaleOf(ctx);
 
     ctx.fillStyle = '#0e1016';
     ctx.fillRect(0, 0, width, height);
@@ -2135,19 +2631,21 @@ export class BoardRenderer {
     //   还是「走」、画在哪个插值点上。首帧只记账不播（见 `#syncActorWalks`）。
     const nowMs = performance.now();
     this.#syncActorWalks(state, map.nodes, input.actorWalks, input.tickMs ?? 20, nowMs);
+    // 升天中的那一尊不进静态绘制槽（见 `RenderInput.godAscend`）
+    const ascendHidden = input.godAscend?.objectIndex ?? null;
 
     const slots: DrawSlot[] = [
       ...this.#buildingSlots(map, state, camera, vp, input.landFlash ?? null),
       // ★ 棋盘上的**物件**（神明、路障、地雷、定時炸彈…）—— 原版与建筑同属
       //   类别 0 那一段（`fcn_0040829d` 的对象分支不 or 类别位，VA 0x00408efd），
       //   故一起排序、一起贴。先前**整个漏了**（需求方：「放置后看不到」）。
-      ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null, nowMs),
+      ...this.#objectSlots(map, state, camera, vp, input.objectFlight ?? null, nowMs, ascendHidden),
       // ★ **附身于人**的物件（神明 / 被请上身的东西）—— 原版同一个循环的另一支
       //   （`test dh,dh / je` 的反面，VA 0x00408fa5），画在**主人身上**：
       //   位置 = 主人的屏幕坐标（走子补间时用插值点）+ 8 向偏移表，
       //   帧号 = 8 − 视角 + **主人**朝向 + 4。同样与建筑同一档排序。
-      ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null),
-      ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null),
+      ...this.#attachedObjectSlots(map, state, camera, vp, input.objectFlight ?? null, ascendHidden),
+      ...this.#playerSlots(map, state, camera, vp, input.characterPose ?? null, input.characterPoseFrame ?? null),
       ...this.#actorSlots(map, state, camera, vp, input.currentActor ?? null, nowMs),
     ];
     // 原版用 qsort 比低 16 位 int16；这里用稳定排序，键相同时保持压入顺序（不影响观感）
@@ -2158,6 +2656,15 @@ export class BoardRenderer {
     //   根本不进绘制槽（所以飞着的物件能盖过比它高的建筑）。@source VA 0x0040e669
     const flight = input.objectFlight ?? null;
     if (flight !== null) this.#drawObjectFlight(flight, camera, nowMs);
+
+    // ★ 神明升天同样直接贴屏幕（`god_detach` 的 `0x0040e57c call 0x456770`），画在清单之上
+    this.#godAscendEnded = false;
+    const ascend = input.godAscend ?? null;
+    if (ascend !== null) this.#drawGodAscend(map, ascend, camera, vp, nowMs);
+
+    // ★ 機器娃娃**打飞**的那些物件同样画在清单**之上**（`0x408cd9` 那一支也是
+    //   拿着 `+0x08/+0x0c` 直接贴屏幕的），见 `#drawSweptFlights`。
+    this.#drawSweptFlights(camera, vp, nowMs);
 
     // ★ 建屋影片（機器工人）画在**最后**：原版 `fcn_0045144f` 把 FLIC 直接贴到
     //   后台面/屏幕上（`[0x48c882]` bit0），根本不进绘制槽，位置是常数
@@ -2174,13 +2681,9 @@ export class BoardRenderer {
     //   原版也是直接贴屏幕。落点/尺寸由宿主按规格给（已是棋盘局部坐标）。
     const boardFrame = input.boardFilm ?? null;
     if (boardFrame !== null) {
-      this.#ctx.drawImage(
-        boardFrame.bitmap,
-        boardFrame.x,
-        boardFrame.y,
-        boardFrame.w,
-        boardFrame.h,
-      );
+      // 影片帧不是精灵：落点与**目标尺寸**都由宿主给死，位图多大都塞进这个框
+      const { bitmap: film, x, y, w, h } = boardFrame;
+      this.#ctx.drawImage(film, x, y, w, h);
     }
 
     // 调试层画在清单之上（它只是排错用的参考图形，不该被建筑挡住）——
@@ -2197,7 +2700,7 @@ export class BoardRenderer {
    */
   drawToolbarTo(ctx: CanvasRenderingContext2D, x: number, y: number, hot: number | null): void {
     const strip = this.#sprite('Panel.mkf', TOOLBAR_RESOURCE, TOOLBAR_STRIP_IMAGE);
-    if (strip !== null) ctx.drawImage(strip.bitmap, x, y);
+    if (strip !== null) drawSprite(ctx, strip, x, y);
     for (let i = 0; i < TOOLBAR_ICON_COUNT; i++) {
       // ★ 图标是 SMP，黑色是抠图底色，不抠的话每个图标都顶着一块黑底
       const icon = this.#sprite(
@@ -2206,8 +2709,9 @@ export class BoardRenderer {
       if (icon === null) continue;
       // 原版是 `fcn_00456418`（带锚点）—— 落点 = 画点 − 图自带的 x/y
       const at = toolbarIconAt(i);
-      ctx.drawImage(
-        icon.bitmap,
+      drawSprite(
+        ctx,
+        icon,
         Math.round(x + at.x - icon.anchorX),
         Math.round(y + at.y - icon.anchorY),
       );
@@ -2258,11 +2762,18 @@ export class BoardRenderer {
     dpr: number,
   ): void {
     const ctx = this.#ctx;
-    const tilesAcross = ground.width >> 5;
-    const tilesDown = ground.height >> 5;
+    // ★ 按**逻辑**尺寸数格子：超分过的底图位图更大，但还是那么多格
+    const logical = groundLogicalSize(ground);
+    const tilesAcross = logical.width >> 5;
+    const tilesDown = logical.height >> 5;
+    // 位图上一格占几像素（原图 32；超分图按实际倍率）
+    const tileW = (32 * ground.width) / logical.width;
+    const tileH = (32 * ground.height) / logical.height;
+    const hd = ground.width !== logical.width || ground.height !== logical.height;
 
     ctx.save();
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = hd;
+    if (hd) ctx.imageSmoothingQuality = 'high';
     // ★ 镜头的亚格余量：整层地面的角点一律**加**上镜头余量过矩阵的那一对偏移。
     //   @source `fcn_0040829d`：`004083cc call fcn_00407a2c(camX, camY, …)` 得 (oX, oY)，
     //   `004083e1 add [esp+0x34],0xdc / add [esp+0x20],0x104` 并进棋盘区中心，
@@ -2271,8 +2782,9 @@ export class BoardRenderer {
     //   `setTransform` 会把它整个顶掉 ⇒ 地面其实从不跟余量走，镜头逐像素动时
     //   地面按整格跳、棋子与建筑却在滑 —— 两层错位最多一格。
     const camOff = subtileOffset(cam.view, (cam.subX ?? 0) & 0x1f, (cam.subY ?? 0) & 0x1f);
-    const cx = vp.w / 2 + camOff.x;
-    const cy = vp.h / 2 + camOff.y;
+    const center = boardCenter(vp);
+    const cx = center.x + camOff.x;
+    const cy = center.y + camOff.y;
     // 表是 29×29，取相邻角点故只能铺 28×28 格
     // ⚠️ 余量存在时要多铺一圈：可见范围会跨界（`subX/subY != 0` 时最多偏一格）
     for (let row = 0; row < VIEW_SPAN - 1; row++) {
@@ -2296,7 +2808,7 @@ export class BoardRenderer {
           (cx + tl.x) * dpr,
           (cy + tl.y) * dpr,
         );
-        ctx.drawImage(ground, tx * 32, ty * 32, 32, 32, -0.01, -0.01, 1.02, 1.02);
+        ctx.drawImage(ground, tx * tileW, ty * tileH, tileW, tileH, -0.01, -0.01, 1.02, 1.02);
       }
     }
     ctx.restore();
@@ -2318,8 +2830,9 @@ export class BoardRenderer {
       if (sp === null) continue;
       const p = worldToScreen(n.x, n.y, cam, vp);
       if (p === null) continue;
-      ctx.drawImage(
-        sp.bitmap,
+      drawSprite(
+        ctx,
+        sp,
         p.x - sp.anchorX * k,
         p.y - sp.anchorY * k,
         sp.width * k,
@@ -2372,22 +2885,29 @@ export class BoardRenderer {
     vp: { w: number; h: number },
     flight: ObjectFlight | null,
     now: number,
+    ascendHidden: number | null = null,
   ): DrawSlot[] {
     const slots: DrawSlot[] = [];
-    const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null);
+    const tokens = objectTokens(state, map.nodes, cam.view, flight?.objectIndex ?? null).filter(
+      (t) => t.index !== ascendHidden,
+    );
     /**
      * ★ 试玩3 #11：**还没被娃娃走到的那几件** —— 它们已经不在 `state.objects`
      * 的图上（`dollSweepNode` 清掉了 `nodeId`），所以 `objectTokens` 不画它们。
-     * 这里按**补间还没到那一刻**把它们补回原地，走到哪一格就消失哪一件。
+     * 这里按**补间还没到那一刻**把它们补回原地；娃娃走到哪一格就打飞哪一件。
      *
-     * 出处：原版是逐格 tick 走的，落点处理 `0x0041b4f1` 在娃娃**到达那一格**时
+     * 出处：原版是逐格 tick 走的，分派器 `0x0041b4e7` 那一支在娃娃**到达那一格**时
      * 才把物件打飞并释放（`@source 0x0041b4e7`）。「哪一件对应哪一格」由 core
      * 的 `runDoll` 给出（`cleared[].step`），时刻由 `sweptObjectHideTimes` 算。
+     *
+     * ★ **打飞那一段不在这里**（`elapsed >= hideAt` 之后）：原版那几拍是把物件
+     *   按 `+0x08/+0x0c` 直接贴屏幕的（`0x408cd9` 那一支），本引擎照
+     *   `#drawObjectFlight` / `buildFx` 的成法画在**清单最后**（`#drawSweptFlights`）。
      */
     for (const w of this.#actorWalks.values()) {
       const elapsed = now - w.start;
       for (const s of w.swept) {
-        if (elapsed >= s.hideAt) continue; // 已经走到那一格 = 消失
+        if (elapsed >= s.hideAt) continue; // 已经走到那一格 = 开始打飞（画在清单最后）
         const node = map.nodes[s.o.nodeId - 1];
         if (node === undefined) continue;
         const resource = objectSpriteResource(s.o.type);
@@ -2424,8 +2944,9 @@ export class BoardRenderer {
         // 物件图是 SPR（索引 0 透明），不需要抠黑
         const sp = this.#sprite('Data.mkf', resource, image);
         if (sp === null) return;
-        ctx.drawImage(
-          sp.bitmap,
+        drawSprite(
+          ctx,
+          sp,
           p.x - sp.anchorX * k,
           p.y - sp.anchorY * k,
           sp.width * k,
@@ -2456,12 +2977,15 @@ export class BoardRenderer {
     cam: Camera,
     vp: { w: number; h: number },
     flight: ObjectFlight | null,
+    ascendHidden: number | null = null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const k = 1;
     const nowMs = performance.now();
     const slots: DrawSlot[] = [];
     for (const t of attachedObjectTokens(state, cam.view, flight?.objectIndex ?? null)) {
+      // ★ 升天中的那一尊：`0x0040e3ba` 把它的 `+2` 清 0 再重画 ⇒ 主人身上不画它
+      if (t.index === ascendHidden) continue;
       const owner = state.players[t.owner];
       if (owner === undefined) continue;
       const node = map.nodes[owner.nodeId - 1];
@@ -2477,8 +3001,9 @@ export class BoardRenderer {
         paint: () => {
           const sp = this.#sprite('Data.mkf', t.resource, t.frame);
           if (sp === null) return;
-          ctx.drawImage(
-            sp.bitmap,
+          drawSprite(
+            ctx,
+            sp,
             x - sp.anchorX * k,
             y - sp.anchorY * k,
             sp.width * k,
@@ -2503,6 +3028,64 @@ export class BoardRenderer {
    *   （`fcn_00456469` / `_rich4_rect_union`）—— 那是因为它直接往主表面画。
    *   本引擎每帧整幅重绘，用不上。
    */
+  /**
+   * 神明升天这一帧 —— 起点取离身**之前**那一份 state 里这尊神附身时画在哪、画第几张
+   * （原版 `0x0040e3b0 call 0x40b066` 从绘制槽里取 `+8/+0xa/+7`），逐帧上升、转图。
+   * 演完（帧数到顶或整张图高过棋盘顶边）记下 `#godAscendEnded`，宿主据此收摊。
+   */
+  #drawGodAscend(
+    map: Rich4Map,
+    a: { state: GameState; objectIndex: number; elapsed: number },
+    cam: Camera,
+    vp: { w: number; h: number },
+    now: number,
+  ): void {
+    const t = attachedObjectTokens(a.state, cam.view).find((x) => x.index === a.objectIndex);
+    if (t === undefined) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const owner = a.state.players[t.owner];
+    const node = owner === undefined ? undefined : map.nodes[owner.nodeId - 1];
+    if (owner === undefined || node === undefined) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const p = this.#walkScreen(owner.index, cam, vp, now) ?? worldToScreen(node.x, node.y, cam, vp);
+    if (p === null) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const k = 1;
+    const x = p.x + t.offsetX * k;
+    const y = p.y + t.offsetY * k;
+    const pose = godAscendPoseAt(a.elapsed, y, t.frame, (img) => {
+      const sp = this.#sprite('Data.mkf', t.resource, img);
+      return sp === null ? null : { anchorY: sp.anchorY * k, height: sp.height * k };
+    });
+    if (pose === null) {
+      this.#godAscendEnded = true;
+      return;
+    }
+    const sp = this.#sprite('Data.mkf', t.resource, pose.image);
+    if (sp === null) return;
+    drawSprite(
+      this.#ctx,
+      sp,
+      x - sp.anchorX * k,
+      y + pose.dy * k - sp.anchorY * k,
+      sp.width * k,
+      sp.height * k,
+    );
+  }
+
+  /** 上一帧画的升天已经演完了（帧数到顶 / 高过棋盘顶边 / 起点找不到）*/
+  godAscendEnded(): boolean {
+    return this.#godAscendEnded;
+  }
+
+  #godAscendEnded = false;
+
   #drawObjectFlight(flight: ObjectFlight, cam: Camera, now: number): void {
     const at = flightPosAt(flight, now);
     if (at === null) return;
@@ -2518,13 +3101,67 @@ export class BoardRenderer {
     // 原版每帧先向零截断再贴（`__round_toward_zero`，VA 0x0040e808 那一段）
     const x = Math.trunc(at.x);
     const y = Math.trunc(at.y);
-    this.#ctx.drawImage(
-      sp.bitmap,
+    drawSprite(
+      this.#ctx,
+      sp,
       x - sp.anchorX * k,
       y - sp.anchorY * k,
       sp.width * k,
       sp.height * k,
     );
+  }
+
+  /**
+   * **機器娃娃打飞的物件**这一帧画在哪 —— 动画本体在纯函数里，这里只管贴图。
+   *
+   * 判据（`docs/deviations/Q-TOOL-1.md` 本轮补的表格第 3 行）：
+   * - 起手 `fcn_0040fafd`：速度 = (本格 − 上一格) × 0.5、位置 = 本格 + 速度、
+   *   `+0x06 = 0xFF`、`+0x07 ← +0x01`（= `objectKnockStart`）；
+   * - 逐 tick：判 29×29 窗口 → `dec +0x06` → 按当时的 `+0x08/+0x0c` 贴图 →
+   *   最后才 `+= 速度`（= `objectKnockAt` / `sweptObjectFrameAt`，出处 `rich4.asm:1746-1810`）；
+   * - 越出窗口 ⇒ `+0x06 = 0`（飞行结束），而这一件的 `nodeId` 已被清 0 ⇒ 不再画。
+   *
+   * ⚠️ 原版这一支的落点其实也走 `[0x48a44c]` 那份绘制槽（`loc_00408f15`），
+   *   但**位置是 `+0x08/+0x0c` 那对浮点**、与格心无关；本引擎按需求方口径照
+   *   `#drawObjectFlight` 的成法画在**清单最后**（不进槽、不受建筑遮挡）。
+   *   原本那套「擦上一帧矩形」的脏矩形处理同样用不上（每帧整幅重绘）。
+   */
+  #drawSweptFlights(cam: Camera, vp: { w: number; h: number }, now: number): void {
+    if (this.#sweptFlights.length === 0) return;
+    const ctx = this.#ctx;
+    const k = 1;
+    const live: { s: SweptObjectDraw; start: number; tickMs: number }[] = [];
+    for (const f of this.#sweptFlights) {
+      const elapsed = now - f.start;
+      // 飞行最长 = 计时 0xFF 拍（`+0x06` 从 0xFF 逐拍减到 0）—— 过了就收掉
+      if (elapsed > f.s.hideAt + OBJECT_KNOCK_TIMER0 * f.tickMs) continue;
+      // ★ 窗口那一问就是绘制时那一问（`worldToScreen` 返回 null = 越出 29×29）
+      const frame = sweptObjectFrameAt(f.s, elapsed, f.tickMs, (x, y) =>
+        worldToScreen(x, y, cam, vp) !== null,
+      );
+      // null = 越出窗口 / 计时耗尽 ⇒ 这一件的飞行结束（原版把 `+0x06` 清 0，不再画）
+      if (frame === null) continue;
+      live.push(f);
+      if (frame.kind !== 'fly') continue; // 还没到那一格：地面那一段由 `#objectSlots` 画
+      const res = objectSpriteResource(f.s.o.type);
+      if (res === null) continue;
+      // 位置已经是**截断后的整数世界坐标**（与原版 `__round_toward_zero` 同）
+      const p = worldToScreen(frame.x, frame.y, cam, vp);
+      if (p === null) continue;
+      // ★ 图号按 `+0x07`（朝向副本）算 —— 与放地上时同一张图
+      //   （@source VA 0x00408ee2 `8 − 视角 + 朝向`，这里用飞行分支的 `+0x07`）
+      const sp = this.#sprite('Data.mkf', res, objectImageIndex(frame.facing, cam.view));
+      if (sp === null) continue;
+      drawSprite(
+        ctx,
+        sp,
+        Math.trunc(p.x) - sp.anchorX * k,
+        Math.trunc(p.y) - sp.anchorY * k,
+        sp.width * k,
+        sp.height * k,
+      );
+    }
+    this.#sweptFlights = live;
   }
 
   /**
@@ -2541,7 +3178,7 @@ export class BoardRenderer {
     state: GameState,
     cam: Camera,
     vp: { w: number; h: number },
-    flash: { lands: ReadonlySet<number>; level: number } | null = null,
+    flash: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null = null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const k = 1;
@@ -2552,21 +3189,35 @@ export class BoardRenderer {
       if (p === null) continue;
       // ★ W-69：算进这笔过路费的地块这一帧要调亮（原版是 id 图上逐像素加）。
       //   level 为 0 时 `landFlash` 整份是 null，所以这里不必再判。
-      const lit = flash !== null && it.landId !== undefined && flash.lands.has(it.landId);
+      const lit =
+        flash !== null &&
+        ((it.landId !== undefined && flash.lands.has(it.landId)) ||
+          (it.facilityId !== undefined && flash.facilities?.has(it.facilityId) === true));
       slots.push({
         key: drawKey(p.y, DRAW_CLASS.building),
         paint: () => {
           const sp = this.#sprite('map.mkf', it.res, it.img, true, it.ring);
           if (sp === null) return;
-          if (lit) ctx.filter = `brightness(${1 + flash.level / 32})`;
-          ctx.drawImage(
-            sp.bitmap,
-            p.x - sp.anchorX * k,
-            p.y - sp.anchorY * k,
-            sp.width * k,
-            sp.height * k,
-          );
-          if (lit) ctx.filter = 'none';
+          const dx = p.x - sp.anchorX * k;
+          const dy = p.y - sp.anchorY * k;
+          drawSprite(ctx, sp, dx, dy, sp.width * k, sp.height * k);
+          // ★ 不用 `ctx.filter`：WebKit（iPhone / iPad / Mac Safari）不支持，赋值被静默忽略
+          //   ⇒ 需求方在 iPhone 上看不到闪（2026-09-24）。改成叠一层，见 `sprite-brightness.ts`。
+          //   剪影按位图**像素**尺寸做（高清舞台下超分图比逻辑尺寸大，见 `spritePixelSize`）。
+          if (lit) {
+            const px = spritePixelSize(sp);
+            paintBrightness(
+              ctx,
+              sp.bitmap,
+              dx,
+              dy,
+              sp.width * k,
+              sp.height * k,
+              flash.level / TOLL_FLASH_FULL_SCALE,
+              px.w,
+              px.h,
+            );
+          }
         },
       });
     }
@@ -2636,6 +3287,7 @@ export class BoardRenderer {
     cam: Camera,
     vp: { w: number; h: number },
     poseOverride: number | null,
+    poseFrame: number | null,
   ): DrawSlot[] {
     const ctx = this.#ctx;
     const slots: DrawSlot[] = [];
@@ -2654,8 +3306,10 @@ export class BoardRenderer {
       //   @source 棋子绘制 `0x00408691 cmp dword [player+0x32],0 / je 画` —— 四个计数字节合成一个 dword 比；
       //   非 0 时只有 `0x0040869a test byte [player+0x15],0x20 / jne` 才画（位置被外力挪过那一支）。
       //   先前一律画：被綁架的人还站在地图上、住院的人站在醫院大樓上。
-      if (!confinedPlayerDrawn(pl)) continue;
-      const world = playerAnchorWorld(pl);
+      // ★ 审计 #17：走进旅館 / 走回棋盘那一趟的半程显隐（原版同一段机器码，见 `relocateDrawn`）
+      const relocated = this.relocateDrawn(pl, map.nodes[pl.nodeId - 1], nowMs);
+      if (relocated === false || (relocated === null && !confinedPlayerDrawn(pl))) continue;
+      const world = this.#parked.get(pl.index) ?? playerAnchorWorld(pl);
       if (world === null) continue;
       const key = `${world.x},${world.y}`;
       const seen = perNode.get(key) ?? 0;
@@ -2689,11 +3343,17 @@ export class BoardRenderer {
       //   `deferred-board.ts` 挂上）—— 原版 `0x40b93b` 见 `who_plays == 0 || & 0x40` 就只装 +18 那 8 张
       //   （@source 0x0040b972 / 0x0040b976 / 0x0040b9b7），没有走姿与骰子姿。
       const beggar = pl.whoPlays === 0 || (pl.whoPlays & WHO_PLAYS_WRECKED) !== 0;
-      const res = beggar ? characterBeggarSprite(pl.character) : characterSetBase(pl.character, pl.trafficMethod) + pose;
+      // ★ 夢遊：换睡衣那套（`characterSleepwalkSprite`，@source 0x0040ba16）—— 排在乞丐之后、交通方式之前
+      const sleepwalking = pl.blocking.sleepWalking !== 0;
+      const res = beggar
+        ? characterBeggarSprite(pl.character)
+        : sleepwalking
+          ? characterSleepwalkSprite(pl.character, pose)
+          : characterSetBase(pl.character, pl.trafficMethod) + pose;
       const count = this.#imageCount('Data.mkf', res);
-      const dir = screenDirection(pl.direction, cam.view);
+      const dir = screenDirection(this.relocateFacing(pl, nowMs) ?? pl.direction, cam.view);
       /**
-       * ★ 夢遊/冬眠中的棋子**画成灰的**（外部审查 D-T047-4）。
+       * ★ **冬眠**中的棋子**画成灰的**（外部审查 D-T047-4）。夢遊不变灰 —— 换睡衣 + ZZZ（见上面 `res` 与下面的标记槽）。
        *
        * @source `_rich4_convert_sprite`（VA 0x004555c5 → `fcn_004555eb`）：
        * ```asm
@@ -2706,12 +3366,19 @@ export class BoardRenderer {
        * 即**逐像素去色**。触发条件：**玩家** `+0x36`（`days_sleeping`）非 0
        * （@source VA 0x004087d7）/ 替身 `record + 0x12` 非 0（@source 0x004089f6）。
        *
-       * 本引擎用 canvas 的 `filter` 做等价去色（`saturate(0)` + 一次提亮对齐
-       * `+0x28 >> 2` 那一下），省掉逐像素重写位图。
+       * 本引擎做等价去色（去饱和 + 一次提亮对齐 `+0x28 >> 2` 那一下）：逐像素算好一张灰版精灵、
+       * 按位图缓存（`asleepSpriteOf`）。★ 不用 `ctx.filter` —— WebKit 不认。
        * ⚠️ **近似**：原版在 RGB555 上取整平均，canvas 走自己的色彩空间 ——
        * 登记在 deviations D-T047-4。
        */
       const asleep = isAsleep(pl.blocking);
+      // ★ 盖了姿态（掷骰）且给了帧号 ⇒ 按那一帧画，不跟全局走路帧（第十四份试玩回报 #3）。
+      //   帧号钳在 `每向帧数 − 1` 以内：原版帧号 `[+0x498ea3]` 在掷骰姿里只到 N−1（数到 N 就去掷）。
+      const perDir = Math.max(1, count >> 3);
+      const fixedFrame =
+        override !== null && poseFrame !== null ? Math.min(perDir - 1, Math.max(0, poseFrame)) : null;
+      const frameNow = fixedFrame ?? this.#walkFrame;
+      const frameNext = fixedFrame ?? this.#walkFrame + 1;
       // ★ 图号一 tick 换一张（`#walkFrame`）——新图号没解好时**退回本槽上一张**，
       //   不许整帧不画（否则走子/掷骰预动作时人物一闪一灭，见 `#spriteHeld`）。
       const token =
@@ -2720,8 +3387,8 @@ export class BoardRenderer {
               `p${pl.index}`,
               'Data.mkf',
               res,
-              directionalImage(count, dir, this.#walkFrame),
-              directionalImage(count, dir, this.#walkFrame + 1),
+              directionalImage(count, dir, frameNow),
+              directionalImage(count, dir, frameNext),
             )
           : (this.#held.get(`p${pl.index}`) ?? null);
       if (token !== null) {
@@ -2736,11 +3403,14 @@ export class BoardRenderer {
             // ★ 第七份试玩回报 #2：这里原先给当前玩家脚下垫了一圈黄色光晕 —— **原版没有**
             //   （棋子绘制 `fcn_0040829d` 只贴精灵；「轮到谁」原版靠的是绘制次序 0xd 压在别人之上 + 側欄头像）。
             //   是早期为了好认自己加的，已删。
-            if (asleep) ctx.filter = ASLEEP_FILTER;
-            ctx.drawImage(token.bitmap, x, y, w, h);
-            if (asleep) ctx.filter = 'none';
+            drawSprite(ctx, asleep ? asleepSprite(token) : token, x, y, w, h);
           },
         });
+        // ★ 夢遊中：棋子上再贴一张「ZZZ」（与棋子同一个屏幕点、类别 0xe / 0xf）@source 0x00408870
+        if (sleepwalking) {
+          const mark = this.#sleepwalkMarkSlot(`p${pl.index}`, p.x + off, p.y - off, p.y, pl.index === state.currentPlayer);
+          if (mark !== null) slots.push(mark);
+        }
         continue;
       }
 
@@ -2835,23 +3505,71 @@ export class BoardRenderer {
       slots.push({
         key: drawKey(p.y, t.klass),
         paint: () => {
-          // ★ 冬眠中画成灰 —— 与玩家那一条同一套 filter，且必须在 drawImage
-          //   **两侧**设/清，免得漏到后面所有绘制（建筑、别的棋子）
+          // ★ 冬眠中画成灰 —— 与玩家那一条同一张灰版（`asleepSpriteOf`，不靠 WebKit 不认的 `ctx.filter`）
           //   @source VA 0x004089c6 的 `_rich4_convert_sprite`
-          if (t.frozen) ctx.filter = ASLEEP_FILTER;
-          ctx.drawImage(
-            sp.bitmap,
+          drawSprite(
+            ctx,
+            t.frozen ? asleepSprite(sp) : sp,
             p.x - sp.anchorX * k,
             p.y - sp.anchorY * k,
             sp.width * k,
             sp.height * k,
           );
-          if (t.frozen) ctx.filter = 'none';
         },
       });
+      // ★ 夢遊中的替身同样贴「ZZZ」@source 0x00408acb / 0x00408b26
+      if (t.sleepwalking) {
+        const mark = this.#sleepwalkMarkSlot(`a${t.slot}`, p.x, p.y, p.y, t.klass === DRAW_CLASS.currentPlayer);
+        if (mark !== null) slots.push(mark);
+      }
     }
     return slots;
   }
+
+  /** 夢遊着走子：这个人的「ZZZ」帧跟着 tick 走（数到 6 回零）@source 0x0040c455 / 0x0040c71f */
+  #advanceSleepwalkMark(key: string, ticks: number): void {
+    if (ticks <= 0 || !this.#sleepwalkingNow.has(key)) return;
+    this.#sleepwalkMarkFrame.set(key, nextSleepwalkMarkFrame(this.#sleepwalkMarkFrame.get(key) ?? 0, ticks));
+  }
+
+  /**
+   * 「ZZZ」那一槽：贴在棋子**同一个屏幕点**上（图自带锚点），类别 0xe / 0xf。
+   * 图还没解好就不画（这一槽原版也是常驻指针，晚到一帧只是少画一帧标记）。
+   */
+  #sleepwalkMarkSlot(key: string, x: number, y: number, sortY: number, current: boolean): DrawSlot | null {
+    const count = this.#imageCount('Data.mkf', SLEEPWALK_MARK_RESOURCE);
+    if (count <= 0) return null;
+    const frame = (this.#sleepwalkMarkFrame.get(key) ?? 0) % count;
+    const sp = this.#spriteHeld(`z${key}`, 'Data.mkf', SLEEPWALK_MARK_RESOURCE, frame, (frame + 1) % count);
+    if (sp === null) return null;
+    const ctx = this.#ctx;
+    return {
+      key: drawKey(sortY, current ? DRAW_CLASS.currentSleepwalkMark : DRAW_CLASS.sleepwalkMark),
+      paint: () => {
+        drawSprite(ctx, sp, x - sp.anchorX, y - sp.anchorY, sp.width, sp.height);
+      },
+    };
+  }
+}
+
+/**
+ * 这一帧**谁在夢遊** —— 键同 `#held`：玩家 `p0..p3`（`+0x37`）、替身 `a0..a4`（记录 `+13`）。
+ * 纯函数，单测直接钉。
+ */
+export function sleepwalkingKeys(state: GameState): ReadonlySet<string> {
+  const out = new Set<string>();
+  state.players.forEach((p, i) => {
+    if (p.blocking.sleepWalking !== 0) out.add(`p${i}`);
+  });
+  state.specialActors.forEach((a, i) => {
+    if ((a?.sleepwalkDays ?? 0) !== 0) out.add(`a${i}`);
+  });
+  return out;
+}
+
+/** 「ZZZ」帧走 `ticks` 拍之后是第几帧（`inc / cmp 6 / 归零`）@source 0x0040c465..0x0040c47e */
+export function nextSleepwalkMarkFrame(frame: number, ticks: number): number {
+  return (frame + ticks) % SLEEPWALK_MARK_FRAMES;
 }
 
 /**

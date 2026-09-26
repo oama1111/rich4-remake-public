@@ -71,6 +71,59 @@ export function weekdayOf(year: number, month: number, day: number): number {
   return (dayNumberSince1998(year, month, day) + 4) % 7;
 }
 
+/**
+ * 天号 → 打包日期（`日 | 月<<8 | 年<<16`）—— `dayNumberSince1998` 的逆。
+ *
+ * @source VA 0x0045201f：
+ * ```asm
+ * ecx = 0x7ce（1998）; esi = 1; edx = 0x16d
+ * 0045203a  cmp ebx, edx / jl → ebx -= edx; ecx++        ; 逐年扣
+ *           edx = 0x16d + (ecx % 4 == 0)                  ; 下一年的天数
+ *           cmp ebx, edx / jge 0x45203a
+ * 00452069  cmp ebx, edx / jl → ebx -= edx; esi++        ; 逐月扣（2 月闰年 0x1d，余查 0x47638f）
+ * 00452095  eax = (ecx << 16) + (esi << 8) + ebx + 1
+ * ```
+ * 只对 `n >= 0` 有意义（原版的调用点都是「今天 + 正数」）。
+ */
+export function packedFromDayNumber(n: number): number {
+  let rest = n;
+  let year = EPOCH_YEAR;
+  while (rest >= (isLeapYear(year) ? 366 : 365)) {
+    rest -= isLeapYear(year) ? 366 : 365;
+    year++;
+  }
+  let month = 1;
+  while (rest >= daysInMonth(year, month)) {
+    rest -= daysInMonth(year, month);
+    month++;
+  }
+  return ((year << 16) | (month << 8) | (rest + 1)) >>> 0;
+}
+
+/** 打包日期 → 天号（`0x451f8c` 就是拆包后走 `dayNumberSince1998`）*/
+export function dayNumberOfPacked(packed: number): number {
+  return dayNumberSince1998(packed >>> 16, (packed >>> 8) & 0xff, packed & 0xff);
+}
+
+/**
+ * 打包日期 + `n` 天。
+ * @source VA 0x0045218f：`push date / call 0x451f8c / add eax, [esp+8] / push eax / call 0x45201f`
+ */
+export function addDaysPacked(packed: number, n: number): number {
+  return packedFromDayNumber(dayNumberOfPacked(packed) + n);
+}
+
+/**
+ * 两个打包日期的天数差 **`b − a`**。
+ * @source VA 0x004521aa：`0x451f8c(a)` 存 ebx，`0x451f8c(b)`，`sub eax, ebx`
+ *
+ * ⚠️ 打包值 0（「没有到期日」）按原版照算：年 0 < 1998 ⇒ 年循环一次不走、月循环一次不走、
+ *   `日 − 1 = −1` ⇒ 天号 −1（`dayNumberSince1998(0, 0, 0)` 同样给 −1）。
+ */
+export function packedDayDiff(a: number, b: number): number {
+  return dayNumberOfPacked(b) - dayNumberOfPacked(a);
+}
+
 // ============================================================
 //  底图
 // ============================================================
@@ -285,13 +338,17 @@ export function holidayIndexOf(
       const l = lunarOf(dayNumberSince1998(year, month, day));
       // 表走完了就判不了 —— 原版会读到表外，这里直接跳过
       if (l === null) continue;
-      if (l.month === e.month && l.day === e.day) return e.index;
+      // ★ 2026-09-25 审计：命中后同样要过 0x80 那道（见下）
+      if (l.month === e.month && l.day === e.day && (e.holiday & 0x80) === 0) return e.index;
       continue;
     } else if (e.kind === 2) {
       const d = nthWeekdayOfMonth(year, e.month, e.day, e.weekday);
       match = d === null ? 0 : (e.month << 8) | d;
     }
-    if (match !== 0 && match === want) return e.index;
+    // ★ 2026-09-25 审计补：命中的记录若首字节带 0x80 就**跳过**、接着往下找 ——
+    //   @source `0x004523b3 test byte [记录 + 0x47ff4a], 0x80 / 0x004523bb jne 0x452205`。
+    //   地图 0 的 10/31 有两条（12 号 0x80、13 号 0x01）⇒ 原版取 13 号（节日图不同；算不算假日两条都一样）。
+    if (match !== 0 && match === want && (e.holiday & 0x80) === 0) return e.index;
   }
   return -1;
 }
@@ -441,3 +498,35 @@ export function holidayArtResource(globalMapId: number, holidayIndex: number): n
 
 /** 插画的边长 —— 原版备的是一个 200×200 的 `graph_st` @source VA 0x00451a5a `allocate_graph_st(0xc8, 0xc8, 0, 0)` */
 export const HOLIDAY_ART_SIZE = 0xc8;
+
+// ============================================================
+//  節日送卡（節日表旗标 & 8）
+// ============================================================
+
+/**
+ * 每张地图**送卡**的那一条節日（節日表 `0x0047ff4a` 记录 `+5` 旗标的 bit3）——稀疏表，实 dump：
+ * | 地图 | 槽 | 節日 |
+ * |---|---|---|
+ * | 0 / 1 / 2 / 3 | 15 / 10 / 18 / 19 | 聖誕節 12/25 |
+ * | 4 / 5 / 6 / 7 | 7 / 9 / 12 / 9 | 銀河系和平日 / 恐龍蛋節 / 除夕 / 聖誕節 |
+ * 其余 184 条 bit3 都是 0。
+ */
+const HOLIDAY_CARD_GIFT_SLOT: readonly number[] = [15, 10, 18, 19, 7, 9, 12, 9];
+
+/**
+ * 今天这条節日送不送卡。
+ *
+ * @source `sub_00452444`（日推进 `0x0041d07b` 调，在股市收盘 `0x0041d076` 之后、分紅/開獎之前）：
+ * ```asm
+ * 00452637  test byte [记录 + 5], 8 / je 结束
+ * 00452645  for (esi = 0; esi < 人数; esi++)
+ * 00452656    cmp byte [esi + 0x15], 0 / je 下一位          ; 出局者不送
+ * 00452664    call 0x441e12(esi)                          ; 按牌堆加权抽一张（袋空返回 0、不掷）
+ * 00452670    test eax,eax / je 下一位
+ * 0045268e    call 0x41d476（镜头）→ 00452740 call 0x441f73（按地图选框文）
+ * 00452753    call 0x44f230(esi, 卡價)                    ; 「好消息」台词（50 < 價 ≤ 100 掷一次 rand）
+ * ```
+ */
+export function holidayGivesCard(globalMapId: number, holidayIndex: number): boolean {
+  return holidayIndex >= 0 && HOLIDAY_CARD_GIFT_SLOT[globalMapId] === holidayIndex;
+}

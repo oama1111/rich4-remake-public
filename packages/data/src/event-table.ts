@@ -4,7 +4,8 @@
  *
  * ★ 由 rich4.exe 的两张函数指针表提取：
  *   新聞 `events_calls_table[]`  @ VA 0x00475e24（36 项）
- *   命運 `fortune_call_table[]`  @ VA 0x00475ef0（37 项）
+ *   命運 `fortune_call_table[]`  @ VA 0x00475ef0（前 37 项；实有 49 项，
+ *     37..48 是 33..36 按地图换文案的那一套，见 `FORTUNE_MAP_JAIL_EVENTS`）
  *   复核：`python3 tools/disasm.py scan news all` / `scan fortune all`
  *
  * `factor`：该事件的金额 = `物价指数 × factor`。
@@ -440,7 +441,12 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 1, va: 0x0044bfb1, factor: null, effects: ['give'], textVa: 0x46592b, text: "#0186強制徵收土地一處", literal: null },
   { id: 2, va: 0x0044c0e8, factor: 10000, effects: ['loan'], textVa: 0x465941, text: "#0187人頭被盜用冒貸%d元", literal: null, blessing: 'penalty' },
   { id: 3, va: 0x0044c229, factor: null, effects: ['bankBan'], textVa: 0x465959, text: "#0188支票跳票\n銀行拒絕往來一個月", literal: null, blessing: 'penalty' },
-  { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: null },
+  // ★★ 2026-09-22（第十份试玩回报）：`literal` 先前是 null ⇒ 文案里的 `%d` 被渲染成「？」
+  //   （`event-box-screen.ts` 的 `eventBoxDescription`：literal→factor×物价→都没有就 '？'）。
+  //   原版这个 `%d` 是**硬编码 10**（`@source 0x0044c2d4 mov ecx,0xa`；
+  //   `rich4-spec/docs/systems/fortune.md:490-513`，`bank.md:1030-1032` 同）。
+  //   ⚠️ **不能改用 `factor`** —— 那会变成 `10 × 物價指數`，与原版不符。
+  { id: 4, va: 0x0044c2c2, factor: null, effects: ['pay'], textVa: 0x46597a, text: "#0189侵入銀行電腦\n挪用其他人存款%d％", literal: 10 },
   { id: 5, va: 0x0044c3b7, factor: null, effects: ['birthdayCard'], textVa: 0x4659a4, text: "#0190今天是你生日\n向每人收取一張卡片", literal: null },
   { id: 6, va: 0x0044c5d8, factor: null, effects: ['disappear'], textVa: 0x4659d8, text: "#0191強迫出國觀光%d天", literal: 3, blessing: 'misfortune' },
   { id: 7, va: 0x0044c6ed, factor: null, effects: ['disappear'], textVa: 0x4659ee, text: "#0192被外星人綁架%d天", literal: 3, blessing: 'misfortune' },
@@ -452,10 +458,12 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 10, va: 0x0044ca46, factor: null, effects: [], textVa: 0x465a3e, text: "#0195機車被偷遺失", literal: null, blessing: 'misfortune' },
   { id: 11, va: 0x0044cb53, factor: null, effects: [], textVa: 0x465a50, text: "#0196汽車撞電線桿全毀", literal: null, blessing: 'misfortune' },
   { id: 12, va: 0x0044cc53, factor: null, effects: ['hospital'], textVa: 0x465a66, text: "#0197掉進水溝就醫%d天", literal: 3, blessing: 'misfortune' },
-  { id: 13, va: 0x0044cd6c, factor: null, effects: ['hospital'], textVa: 0x465a7c, text: "#0198騎機車摔傷住院%d天", literal: 3 },
+  // ★ 第十四份：13 是跳板（`0x0044cd7e jne 0x44ccd4`）进 12 的施加段 ⇒ 同样先问 `fcn_0044b896(1,1)`
+  { id: 13, va: 0x0044cd6c, factor: null, effects: ['hospital'], textVa: 0x465a7c, text: "#0198騎機車摔傷住院%d天", literal: 3, blessing: 'misfortune' },
   { id: 14, va: 0x0044cd99, factor: 3000, effects: ['pay'], textVa: 0x465a94, text: "#0199行人闖越馬路罰款%d元", literal: null, blessing: 'penalty' },
   { id: 15, va: 0x0044cf1e, factor: 3000, effects: ['pay'], textVa: 0x465aae, text: "#0200騎機車未戴安全帽\n罰款%d元", literal: null, blessing: 'penalty' },
-  { id: 16, va: 0x0044d06d, factor: 3000, effects: ['pay'], textVa: 0x465acd, text: "#0201汽車超速罰款%d元", literal: null },
+  // ★ 第十四份：`0x0044d0a4 jne 0x44cfdf` → `0x0044cfe3 call 0x44b896(0,1)`（罰金域，与 15 同一段）
+  { id: 16, va: 0x0044d06d, factor: 3000, effects: ['pay'], textVa: 0x465acd, text: "#0201汽車超速罰款%d元", literal: null, blessing: 'penalty' },
   { id: 17, va: 0x0044d0d6, factor: 6000, effects: ['pay'], textVa: 0x465ae3, text: "#0202請所有人吃大餐\n花費%d元", literal: null, blessing: 'penalty' },
   { id: 18, va: 0x0044d1a5, factor: 600, effects: ['pay'], textVa: 0x465b00, text: "#0203亂丟垃圾罰款%d元", literal: null, blessing: 'penalty' },
   { id: 19, va: 0x0044d1e0, factor: 1500, effects: ['pay'], textVa: 0x465b16, text: "#0204你家小狗亂大小便\n罰款%d元", literal: null, blessing: 'penalty' },
@@ -473,9 +481,11 @@ export const FORTUNE_EVENTS: readonly EventEntry[] = [
   { id: 31, va: 0x0044d636, factor: 5000, effects: ['give'], textVa: 0x465c0f, text: "#0216領取保險金%d元", literal: null, blessing: 'reward' },
   { id: 32, va: 0x0044d677, factor: null, effects: [], textVa: 0x465c23, text: "#0217變賣所有卡片道具", literal: null, blessing: 'misfortune' },
   { id: 33, va: 0x0044d783, factor: null, effects: ['prison'], textVa: 0x465c39, text: "#0218酒醉大鬧警局坐牢%d天", literal: 3, blessing: 'misfortune' },
-  { id: 34, va: 0x0044d8cf, factor: null, effects: ['prison'], textVa: 0x465c53, text: "#0219防礙風化坐牢%d天", literal: 5 },
-  { id: 35, va: 0x0044d8fd, factor: null, effects: ['prison'], textVa: 0x465c69, text: "#0220走私毒品坐牢%d天", literal: 7 },
-  { id: 36, va: 0x0044d92b, factor: null, effects: ['prison'], textVa: 0x465c7f, text: "#0221販賣大補帖坐牢%d天", literal: 9 },
+  // ★ 第十四份：34/35/36 是跳板（`0x0044d8e1` / `0x0044d90f` / `0x0044d93d jne 0x44d80b`）进 33 的
+  //   施加段 `0x0044d80f call 0x44b896(1,1)`
+  { id: 34, va: 0x0044d8cf, factor: null, effects: ['prison'], textVa: 0x465c53, text: "#0219防礙風化坐牢%d天", literal: 5, blessing: 'misfortune' },
+  { id: 35, va: 0x0044d8fd, factor: null, effects: ['prison'], textVa: 0x465c69, text: "#0220走私毒品坐牢%d天", literal: 7, blessing: 'misfortune' },
+  { id: 36, va: 0x0044d92b, factor: null, effects: ['prison'], textVa: 0x465c7f, text: "#0221販賣大補帖坐牢%d天", literal: 9, blessing: 'misfortune' },
 ];
 
 export function newsEvent(id: number): EventEntry | undefined {
@@ -484,6 +494,84 @@ export function newsEvent(id: number): EventEntry | undefined {
 
 export function fortuneEvent(id: number): EventEntry | undefined {
   return FORTUNE_EVENTS.find((e) => e.id === id);
+}
+
+// ============================================================
+//  ★ 第十三份試玩回報（「遺失錢包損失2000元的配圖怎麼是高興的圖」）：
+//    命運的**插画**与 33..36 的**文案**都要经「表槽」查，不是直接拿事件号
+// ============================================================
+
+/**
+ * 命運插画表 —— `Data.mkf` 资源号，49 个 word。
+ *
+ * @source `0x475fb4`（`python3 tools/disasm.py dump 0x475fb4 49 2`），
+ *   读表的两处：
+ * ```asm
+ * 0044dc06  cmp   ebp, 0x21 / jge 0x44dc4d            ; 事件号 v < 33 ?
+ * 0044dc11  movsx eax, word [eax + 0x475fb4]          ; eax = 2v ⇒ 表[v]
+ * 0044dc53  movsx esi, word [0x4991b8]                ; 地图号低位（0..3）
+ * 0044dc5a  movsx eax, word [eax + esi*8 + 0x475fb4]  ; ⇒ 表[v + 4×低位]
+ * ```
+ * ★ **不是等差**：20/21/22（路邊撿錢）共用 497，23/24（遺失錢包）共用 498，
+ *   27/28/29（發票中獎）共用 501。先前按 `0x1dd + v` 取，v ≥ 23 全部错位 ——
+ *   24「遺失錢包損失」画的是 501 = 發票中獎那张笑脸（`0x1dd + 24 = 501`）。
+ */
+export const FORTUNE_ART_TABLE: readonly number[] = [
+  477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492,
+  493, 494, 495, 496, 497, 497, 497, 498, 498, 499, 500, 501, 501, 501, 502, 503,
+  504, 505, 506, 507, 508, 505, 509, 510, 511, 512, 506, 507, 513, 514, 515, 510,
+  516,
+];
+
+/**
+ * 命運 33..36（坐牢那四条）在**地图低位 1..3** 上换成的另一套 —— `fortune_call_table[37..48]`。
+ *
+ * @source 分派 `0x0044dc87 movsx esi, word [0x4991b8] / shl esi, 4 /
+ *   call [esi + eax*4 + 0x475ef0]` ⇒ 槽 = `v + 4×低位`；函数指针表 `0x475ef0`
+ *   实有 **49** 项（到插画表 `0x475fb4` 为止 = 0xc4 字节），不是 37。
+ *   12 支都是 46 字节的跳板：`mov esi, 天数 / push esi / push 文案 / jmp 0x44d7a8`
+ *   （与 34..36 一样落回 fortune[33] 的生效段）⇒ **天数、效果与 33..36 逐一相同**
+ *   （3/5/7/9 天），**只有文案与插画不同**。故 core 照旧只认 33..36，
+ *   本表只给画面用（`fortuneDisplayEntry`）。
+ *
+ * 每条的 `va` / `textVa` / `literal` 都由 `event-table.test.ts` 对 exe 逐字节核过。
+ */
+export const FORTUNE_MAP_JAIL_EVENTS: readonly EventEntry[] = [
+  { id: 37, va: 0x0044d959, factor: null, effects: ['prison'], textVa: 0x465c97, text: "#0222酒醉大鬧警局坐牢%d天", literal: 3 },
+  { id: 38, va: 0x0044d987, factor: null, effects: ['prison'], textVa: 0x465cb1, text: "#0223違法聚眾示威坐牢%d天", literal: 5 },
+  { id: 39, va: 0x0044d9b5, factor: null, effects: ['prison'], textVa: 0x465ccb, text: "#0224獵捕保育動物坐牢%d天", literal: 7 },
+  { id: 40, va: 0x0044d9e3, factor: null, effects: ['prison'], textVa: 0x465ce5, text: "#0225盜賣國寶坐牢%d天", literal: 9 },
+  { id: 41, va: 0x0044da11, factor: null, effects: ['prison'], textVa: 0x465cfb, text: "#0226誘騙未成年少女拘役%d天", literal: 3 },
+  { id: 42, va: 0x0044da3f, factor: null, effects: ['prison'], textVa: 0x465d17, text: "#0227防礙風化坐牢%d天", literal: 5 },
+  { id: 43, va: 0x0044da6d, factor: null, effects: ['prison'], textVa: 0x465d2d, text: "#0228走私毒品坐牢%d天", literal: 7 },
+  { id: 44, va: 0x0044da9b, factor: null, effects: ['prison'], textVa: 0x465d43, text: "#0229施放毒氣坐牢%d天", literal: 9 },
+  { id: 45, va: 0x0044dac9, factor: null, effects: ['prison'], textVa: 0x465d59, text: "#0230非法持有槍械坐牢%d天", literal: 3 },
+  { id: 46, va: 0x0044daf7, factor: null, effects: ['prison'], textVa: 0x465d73, text: "#0231毆打警員坐牢%d天", literal: 5 },
+  { id: 47, va: 0x0044db25, factor: null, effects: ['prison'], textVa: 0x465d89, text: "#0232獵捕保育動物坐牢%d天", literal: 7 },
+  { id: 48, va: 0x0044db53, factor: null, effects: ['prison'], textVa: 0x465da3, text: "#0233盜賣國家機密坐牢%d天", literal: 9 },
+];
+
+/** 事件号 ≥ 33 才走第二套表块 @source `0x0044dc06 cmp ebp, 0x21 / jge` */
+export const FORTUNE_MAP_VARIANT_FROM = 0x21;
+
+/**
+ * 命運事件号 → **表槽**（插画表与函数指针表共用同一个下标）。
+ *
+ * @param globalMapId 引擎的地图号 `[0x4991b6]×4 + [0x4991b8]`；原版这里只读低位 `[0x4991b8]`。
+ */
+export function fortuneSlot(fortuneId: number, globalMapId: number): number {
+  return fortuneId < FORTUNE_MAP_VARIANT_FROM ? fortuneId : fortuneId + 4 * (globalMapId & 3);
+}
+
+/** 命運插画的 `Data.mkf` 资源号（查 `FORTUNE_ART_TABLE`）；越界返回 `undefined` */
+export function fortuneArtResource(fortuneId: number, globalMapId: number): number | undefined {
+  return FORTUNE_ART_TABLE[fortuneSlot(fortuneId, globalMapId)];
+}
+
+/** 画面上该用哪一条文案（33..36 在地图低位 1..3 上换成 `FORTUNE_MAP_JAIL_EVENTS`） */
+export function fortuneDisplayEntry(fortuneId: number, globalMapId: number): EventEntry | undefined {
+  const slot = fortuneSlot(fortuneId, globalMapId);
+  return slot === fortuneId ? fortuneEvent(fortuneId) : FORTUNE_MAP_JAIL_EVENTS.find((e) => e.id === slot);
 }
 
 /** 金额 = 物价指数 × factor */

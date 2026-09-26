@@ -7,15 +7,50 @@
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
+      /* ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏。**不用 `100vh`** —— 它在 iOS/iPadOS
+         Safari 上是「地址栏收起时」的最大高度，地址栏展开时比可视区高，文档还能被拖着卷上去。
+         改成固定定位贴满当前视口（包含块随地址栏伸缩），文档本身没有可滚的高度；
+         有 `visualViewport` 时 main.ts 再把 top/left/width/height 钉成它那块（见 viewport.ts）。 */
+      html { height: 100%; overflow: hidden; overscroll-behavior: none; }
       body {
-        margin: 0; height: 100vh; overflow: hidden; display: flex; background: #000; color: #e6e8ee;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        margin: 0; overflow: hidden; overscroll-behavior: none; display: flex; background: #000; color: #e6e8ee;
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+        /* ★ 左侧佈告欄此刻占多宽（`0px` = 没露出来）—— `board-panel.ts` 每次
+           收起/展开都写它（`BOARD_WIDTH_VAR`），门厅（`foyer.ts` 的 `#foyer`）拿它当
+           左边界：`left: var(--board-w, 0px)`。面板于是**永远**露在门厅外面，而它自己
+           还是 `body` 里没 position 的 flex 子项，不会浮到画布上。 */
+        --board-w: 0px;
       }
+      /* ★ 第二十七份（iPhone Safari）「输入文字后画面显示不全」：iOS 聚焦**计算字号 < 16px** 的
+         文字框会自动放大整页、失焦后不缩回 ⇒ 舞台只剩放大后的一角。兜底：所有文字类输入框
+         至少 16px（盖过内联样式，将来新加的框也吃得到）。复位与重钉见 viewport.ts。 */
+      input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=button]):not([type=submit]):not([type=reset]):not([type=image]),
+      textarea, select { font-size: 16px !important; }
       /* ★ 游戏画面是一块 640×480 的定屏，整数倍放大居中 —— 见 stage.ts */
       #board {
         flex: 1 1 0; min-width: 0; width: 100%; height: 100%; display: block;
         cursor: default; image-rendering: pixelated;
+        /* ★ 触屏（需求方 2026-09-24）：手势全由 touch-input.ts 接管 —— 不滚动/不缩放、
+           长按不弹 iOS 的放大镜/拷贝菜单、不选字、点按不闪灰底 */
+        touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
+      /* ★ 触屏的「取消」钮 = 一次右键（原版处处用右键取消，触屏上没有右键）。
+         只在触屏、且此刻右键有东西可取消时露出来；位置由 touch-input.ts 的
+         `cancelButtonPlacement` 算（优先放舞台外的黑边）。配色随门厅那套。 */
+      #touchcancel {
+        position: fixed; z-index: 42; padding: 0; border-radius: 10px;
+        border: 1px solid #3a5a83; background: #22405f; color: #e9eef7;
+        font: 600 16px/1.1 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; letter-spacing: 2px;
+        box-shadow: 0 4px 14px rgba(0,0,0,.4);
+        touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #touchcancel:active { background: #2f5680; }
+      #touchcancel[hidden] { display: none; }
+      #touchcancel.side { writing-mode: vertical-rl; letter-spacing: 6px; }
+      #touchcancel.corner { font-size: 13px; letter-spacing: 1px; opacity: .72; border-radius: 8px; }
       /* 侧栏收成调试抽屉：默认收起，D 键开关。游戏本身的側欄画在画布里 */
       #panel {
         width: 300px; flex: none; padding: 10px; overflow-y: auto;
@@ -50,14 +85,6 @@
       #loadhint { color: #8d95a5; font-size: 12px; margin-bottom: 8px; }
       #loadhint[hidden] { display: none; }
       #loadretry[hidden] { display: none; }
-      /* ★ W-73 大厅里的「複製邀請連結」—— DOM 按钮，盖在 canvas 下缘居中 */
-      #invite {
-        position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 40;
-        padding: 8px 16px; border-radius: 8px; border: 1px solid #3a5a83;
-        background: #22405f; color: #e9eef7; cursor: pointer; font: 600 13px/1.2 inherit;
-      }
-      #invite:hover { background: #2c5280; }
-      #invite[hidden] { display: none; }
       /* ★ 一键回报（需求方 2026-09-22）：左下角常驻按钮 + 点开的小面板。DOM，不进 canvas。 */
       #feedback {
         position: fixed; left: 14px; bottom: 14px; z-index: 40;
@@ -75,6 +102,8 @@
       #feedbackpanel textarea {
         width: 100%; box-sizing: border-box; height: 74px; resize: vertical; margin: 6px 0 8px;
         padding: 6px 8px; border-radius: 6px; border: 1px solid #3a5a83; background: #0e2138; color: #e9eef7; font: inherit;
+        /* ★ 第二十七份：≥ 16px —— 13px 时 iPhone Safari 一聚焦就自动放大、失焦不缩回（见下面的兜底规则） */
+        font-size: 16px;
       }
       #feedbackpanel .row { display: flex; gap: 8px; justify-content: flex-end; }
       #feedbackpanel button { padding: 6px 12px; border-radius: 6px; border: 0; cursor: pointer; font: 600 12px/1.2 inherit; }
@@ -115,9 +144,89 @@
       .itx-detail { color: #9aa3b2; font-size: 12px; margin-bottom: 8px; }
       #interaction .row { margin: 0; }
       #interaction button { padding: 5px 10px; font-size: 12px; }
+      /* ★ 左侧佈告欄（需求方 2026-09-25）：公告 + 更新日誌，DOM，**不进 640×480 舞台**。
+         `#boardpanel` 是 `body`（flex 行）里 `#board` 前面的一个普通 flex 子项 ——
+         **不是浮层**（没有 position: absolute/fixed），所以它一展开画布就自己变窄，
+         两者永不重叠 ⇒ 画布上的指针/触摸事件一个都截不走，`touch-action: none` 照旧。
+         收起时只剩 30px 的细籤（手机上默认收起，见 board-panel.ts 的 defaultCollapsed）。
+         内容与收起状态见 board-panel.ts；拿不到 /board.json 时整块 `hidden`。
+
+         ★ 门厅（`foyer.ts` 的 `#foyer`，固定定位盖满整屏）不再把这一块盖死：
+           门厅的左边界是 `left: var(--board-w, 0px)`，而 `--board-w` 就是下面这个宽度
+           （`board-panel.ts` 在每次收起/展开时写上 `body`）。两条宽度必须一致 ——
+           对不上门厅就会与面板错开一条缝或者压住面板一条，`board-panel.test.ts` 钉着。
+           门厅在屏幕上时面板默认**展开**（连手机也是，`initialCollapsed` 的 `foyerUp`）。 */
+      #boardpanel {
+        flex: none; display: flex; flex-direction: row; align-items: stretch;
+        width: min(300px, 64vw); overflow: hidden;
+        background: #14171d; border-right: 1px solid #2a2e38; color: #c9d2e0;
+      }
+      #boardpanel[hidden] { display: none; }
+      /* ★ 门厅在屏幕上、面板展开着的那一档（`board-panel.ts` 加 `.foyer` 类）：
+         给门厅那张卡片留出 240px。手机上还按 64vw 占 250px 的话，390 宽的竖屏只剩
+         140px，卡片被挤成 108px、模式按钮竖排四行（量过）。桌面上 `100vw − 240px`
+         远大于 300px ⇒ 与上面那条**完全一样**，桌面观感一个字没变。
+         写作位置在 `.collapsed` 之前：两个类同时出现时让收起那一档说了算。 */
+      #boardpanel.foyer { width: min(300px, max(120px, 100vw - 240px)); }
+      #boardpanel.collapsed { width: 30px; }
+      #boardpanel.collapsed #boardbody { display: none; }
+      #boardtab {
+        flex: none; width: 30px; margin: 0; padding: 8px 0; border: 0; border-radius: 0;
+        background: #1d2430; color: #cfe0f5; cursor: pointer; opacity: .9;
+        writing-mode: vertical-rl; letter-spacing: 6px;
+        font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+        touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+      }
+      #boardtab:hover { background: #26303f; opacity: 1; }
+      /* 面板自己滚，滚到底不再把整页带着动（页面本来就没有可滚的高度，双保险）。
+         下沿留出一颗按钮的高度：左下角那颗**固定定位**的「回報問題」（z-index 40，
+         `left/bottom: 14px`）正压在面板这一块上，不留白最后几行会被它盖住。 */
+      #boardbody {
+        flex: 1 1 auto; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
+        padding: 12px 12px 56px 10px;
+        font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+      }
+      #boardbody h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; letter-spacing: 1px; color: #e8d24a; }
+      #boardbody h2.second { margin-top: 16px; }
+      #boardannouncement { margin: 0 0 4px; color: #e6e8ee; }
+      /* 公告按**空行**分段（board-panel.ts 的 announcementParagraphs）；段内的单换行照旧保留 */
+      #boardannouncement p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      /* 落款（以破折号开头的那一段）：右对齐 + 灰 + 小一号，免得看起来像正文 */
+      #boardannouncement p.boardsig {
+        margin: 0 0 4px; text-align: right; color: #8d95a5; font-size: 12px;
+      }
+      #boardannouncedate { margin: 0 0 12px; color: #7d8698; font-size: 11px; font-variant-numeric: tabular-nums; }
+      #boardannouncedate:empty { display: none; }
+      #boardhighlights { margin: 0 0 12px; padding-left: 18px; }
+      #boardhighlights li { margin-bottom: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      #boardlog { border-top: 1px solid #232732; padding-top: 8px; }
+      #boardlog summary { cursor: pointer; color: #9aa3b2; }
+      #boardlog summary:hover { color: #c9d2e0; }
+      #boardchangelog { margin-top: 8px; }
+      .boardday { margin-bottom: 10px; }
+      .boarddate { margin-bottom: 2px; color: #8d95a5; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .boardday ul { margin: 0; padding-left: 16px; }
+      .boardday li { margin-bottom: 3px; color: #b9c2d0; white-space: pre-wrap; overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
+    <!-- ★ 左侧佈告欄（DOM，不进画布）：公告 + 更新日誌。内容由 tools/build-board.mjs
+         生成到 dist-web/board.json，页面上没有编辑器。默认 `hidden` —— 只有拿到并解析出
+         内容才露出来；拿不到就一直是隐藏的（游戏照跑）。收起时只剩左边那条细籤。 -->
+    <aside id="boardpanel" class="collapsed" hidden>
+      <button id="boardtab" type="button" aria-expanded="false" title="看公告與更新日誌">公告</button>
+      <div id="boardbody">
+        <h2>公告</h2>
+        <p id="boardannouncement"></p>
+        <div id="boardannouncedate"></div>
+        <h2 class="second">更新日誌</h2>
+        <ul id="boardhighlights"></ul>
+        <details id="boardlog">
+          <summary>全部更新記錄</summary>
+          <div id="boardchangelog"></div>
+        </details>
+      </div>
+    </aside>
     <canvas id="board"></canvas>
     <aside id="panel">
       <div class="meta" id="meta">载入中…</div>
@@ -136,8 +245,8 @@
       <textarea id="feedbacknote" maxlength="500" placeholder="例如：踩到空地沒有跳出買地的框"></textarea>
       <div class="row"><button id="feedbackcancel" type="button">取消</button><button id="feedbacksend" type="button">送出</button></div>
     </div>
-    <!-- ★ W-73 大厅里的「複製邀請連結」；平时 hidden，只有在大厅且已联机时露出来 -->
-    <button id="invite" type="button" hidden>複製邀請連結</button>
+    <!-- ★ 触屏的「取消」钮（= 一次右键；只在触屏、且有东西可取消时出现） -->
+    <button id="touchcancel" type="button" hidden>取消</button>
     <!-- ★ W-75 联机提示：右下角堆叠 + 被託管的常驻横幅 -->
     <div id="toasts"></div>
     <div id="autopilotbanner" hidden>你已被託管，點一下畫面收回</div>

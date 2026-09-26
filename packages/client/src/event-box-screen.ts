@@ -116,7 +116,7 @@
  *                                                       ;   flags=1 ⇒ [0x48c880]=0 ⇒ 点不掉
  * 0041b32b  call 0x45144f                               ;   在 (208,180) 播这段 FLIC
  * ; —— 第二段：亮牌 ——
- * 00441f91  create_font(0x10, 0xf0f0f0, 0x101010, 1, 3)
+ * 00441fa1  create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)       ; （2026-09-23 订正：先前把后两参抄反成 1, 3）
  * 00441fb1  add eax, 0x23a                              ; 卡面 = Data[卡号 + 0x23a]
  * 0044200a  fcn_00456418(表面, Data#517 图5, 0xdc, 0x81) ; 对话框皮落 (220,129)
  * 0044202b  rich4_draw_text(表面, 卡名, 0xdc, 0x81, 4)   ; flag 4 = 正中
@@ -181,10 +181,11 @@
 
 import { CARDS,
   CHARACTERS,
-  fortuneEvent,
+  fortuneArtResource,
+  fortuneDisplayEntry,
   newsEvent,
   type EventEntry } from '@rich4/data';
-import type { GameState } from '@rich4/core';
+import { SPECIAL_KIND, type GameState, type MapTopology } from '@rich4/core';
 import {
   loadRaw555Resource,
   type ArchiveName,
@@ -192,13 +193,14 @@ import {
   type LoadedFlic,
   type Sprite,
 } from './assets.ts';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import { portraitResource } from './assets.ts';
 import { DIALOG_SKIN_IMAGE, DIALOG_SKIN_RESOURCE } from './gameui.ts';
 import type { UiScreen, UiScreenEnv,
   UiKeyEvent,
 } from './ui-screen.ts';
 import { playVoiceCode } from './voice-sink.ts';
+import { drawSprite, flicFrame } from './hd-stage.ts';
 
 /** 取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type EventBoxSprite = (
@@ -239,15 +241,13 @@ export const EVENT_ART_AT = { x: 0x19, y: 0x2c } as const;
 /** 新聞插画资源基址 @source 0x0044b75a `lea edi, [ebx + 0x1b9]` */
 export const NEWS_ART_BASE = 0x1b9;
 /**
- * 命運插画资源基址 @source 0x0044dc11 `movsx eax, word [eax*2 + 0x475fb4]`
+ * 命運插画表**第 0 项**（= 477）@source 0x0044dc11 `movsx eax, word [eax*2 + 0x475fb4]`
  *
- * ⚠️ 表 `0x475fb4` **不是**严格的 `0x1dd + id`：`tools/disasm.py dump 0x475fb4 40 2`
- *   读出来前 37 项是
- *   `477..496, 497,497,497, 498,498, 499,500,501,501,501, 502..508`
- *   —— id 20/21/22 与 23/24 与 27/28/29 **共用同一张图**，且 id ≥ 0x21 走的是
- *   另一支（`cmp ebp, 0x21 / jge 0x44dc4d`，用 `[0x4991b8]` 当行偏移再查一次表）。
- *   本模块按任务书给的等价式 `0x1dd + id` 取（id 0..19 与表完全一致），
- *   见 `docs/deviations/T-041.md` 的 D-EVENT-6。
+ * ★★ 第十三份試玩回報（「遺失錢包損失2000元的配圖怎麼是高興的圖」）：
+ *   表 `0x475fb4` **不是**等差，先前按 `0x1dd + id` 取（D-EVENT-6「近似」）⇒
+ *   id ≥ 23 全部错位 —— 24「遺失錢包損失」画成了 501（發票中獎的笑脸）。
+ *   现在一律查表：`@rich4/data` 的 `fortuneArtResource(id, globalMapId)`
+ *   （含 id ≥ 33 按地图低位换图那一支，`0x0044dc5a`）。本常量只留作表头的值。
  */
 export const FORTUNE_ART_BASE = 0x1dd;
 
@@ -336,6 +336,25 @@ export const CARD_SKIN_AT = { x: 0xdc, y: 0x81 } as const;
 export const CARD_NAME_AT = { x: 0xdc, y: 0x81 } as const;
 /** 抽卡等待 0x5dc = 1500ms（**同样可跳过**，`fcn_004528b9`）@source 0x004420a6 */
 export const CARD_HOLD_MS = 0x5dc;
+/**
+ * 亮牌那一声 —— `Effect.mkf` **62**。
+ *
+ * @source `fcn_00441f73` 的 `0x00442097 push 0x482402 / call 0x4542ce`（play_sound_effect）；
+ *   描述符 `0x482402` = 音效表 `0x48231a` 的第 29 项（8 字节一项），首 dword = **62**
+ *   （`disasm.py dump 0x482402 8 1` → `62 0 0 0 …`；同表 `0x4823da` = 50 的先例见 `build-fx.ts`）。
+ *   这一声在 `fcn_00441f73` 里，所以**得卡与用卡两路都响**。
+ */
+export const CARD_REVEAL_SOUND = 62;
+/**
+ * 用卡那一句的格式串 `"使用%s"`。
+ *
+ * @source `0x465305`（`disasm.py` 取串 = `使用%s`）；两个调用点都在卡片函数**之前**：
+ *   · 真人（卡片欄选定之后）`0x00441ca6 push 0x465305 / 0x00441cb0 sprintf / 0x00441cbc call 0x441f73`
+ *     → `0x00441cc6 call [card_functions + 卡号*4]`；
+ *   · 电脑 `0x00441dd0 push 0x465305 / 0x00441dda sprintf / 0x00441def call 0x441f73`
+ *     → `0x00441e00 call [card_functions + 卡号*4]`（**没有** `who_plays` 闸 —— 电脑用卡照样亮牌）。
+ */
+export const CARD_USE_FORMAT = '使用%s';
 /** FLIC 取不到时的兜底时长 —— 原版是阻塞播放，本引擎不能卡住帧（见 deviations）*/
 export const CARD_FLIC_FALLBACK_MS = 1200;
 
@@ -345,6 +364,12 @@ export const EVENT_FONT_SIZE = 0x1c;
 export const CARD_FONT_SIZE = 0x10;
 /** 事件文字颜色 @source 同上：填充 0xf0f0f0、阴影 0x101010 */
 export const EVENT_TEXT = { fill: '#f0f0f0', stroke: '#101010' } as const;
+/** 字效 3 = 粗体 + 右下 1 px 阴影 @source `push 3`：新聞 0x0044b747 / 命運 0x0044dbed / 亮牌 0x00441fa1 */
+export const EVENT_TEXT_FLAGS = 3;
+/** 新聞 / 命運的字距参数 = **0**（`push 0`）⇒ `SetTextCharacterExtra(−1)` @source 0x0044b747 / 0x0044dbed */
+export const EVENT_TEXT_SPACING = 0;
+/** 亮牌卡名的字距参数 = 1（不加）@source 0x00441fa1 `push 1` */
+export const CARD_TEXT_SPACING = 1;
 /**
  * 多行文字的行距 —— **近似**。
  *
@@ -459,6 +484,36 @@ export function eventSubject(before: GameState, after: GameState, fallback: numb
   return CHARACTERS[after.players[at]?.character ?? -1]?.name ?? '';
 }
 
+/**
+ * ★ 第十二份試玩回報：「龙卷风摧毁房屋没有看到具体哪个房子受影响」——
+ *   新聞「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21）的 `%s` 是**挑中那一处的地名**，
+ *   不是人名。原版 pass 0 就把名字拷出来填进格式串：
+ *
+ * ```asm
+ * ; 新聞 21 fcn_0044ac99（5 / 15 / 19 / 20 同形，调用点见 core 的 `lastEvent.place`）
+ * 0044acbd  call 0x456f2d                  ; rand() % (地块数 + 設施数)
+ * 0044acf2  add  eax, 4 / 0044acfe call 0x457d96   ; strcpy(buf, 地块 + 4)   —— 名字
+ * 0044ad42  add  eax, 4 / 0044ad4e call 0x457d96   ; strcpy(buf, 設施 + 4)   —— 同上（設施支）
+ * 0044ad86  push 0x4656d0 / 0044ad90 call 0x457110 ; sprintf("#0170龍捲風侵襲%s\n摧毀房屋一棟", buf)
+ * ```
+ *
+ * 名字取自地图表（`LandInfo.name` = 地块 `+4`、`FacilityInfo.name` = 設施 `+4`，
+ * `loaders/map.ts`），实体编码与原版同一套（`0x7d0 + id` / `0xfa0 + id`）。
+ *
+ * @returns 地名；编码越界 / 地图里没有这一处时返回 `null`（调用方退回旧口径）
+ */
+export function newsPlaceName(
+  topo: Pick<MapTopology, 'lands' | 'facilities'>,
+  entity: number,
+): string | null {
+  if (entity >= 0xfa0) {
+    const f = topo.facilities?.find((x) => x.id === entity - 0xfa0);
+    return f === undefined ? null : f.name;
+  }
+  const l = topo.lands?.find((x) => x.id === entity - 0x7d0);
+  return l === undefined ? null : l.name;
+}
+
 // ============================================================
 //  抽卡：从手牌差集取「多出来的那张」
 // ============================================================
@@ -475,6 +530,11 @@ export interface CardGain {
  * `reduce.ts` 是 `p.cards.push(out.cardDrawn)`（VA 对应 `loc_0041b302` 那条路），
  * 故差集里多出来的那张就是刚抽到的；用多重集差而不是 `slice(before.length)`
  * 是为了对「先被拿掉一张、再加一张」这种 diff 也稳。
+ *
+ * ⚠️ 这个判据对**所有**得卡来源都成立 —— 包括福神显灵送的那张（`receiveCards`）。
+ *   原版那一支**没有卡面**（`rich4_gods.asm:693-754`，见 `event()` 的注释），
+ *   故 `event()` 在调本函数**之前**先让开带 `god.gotCard` 的那条 action
+ *   （大福神得两张那条是 `god.gotCardTwo`，同一个闸口一并让开）。
  */
 export function cardGained(before: GameState, after: GameState): CardGain | null {
   for (let i = 0; i < after.players.length; i++) {
@@ -491,6 +551,23 @@ export function cardGained(before: GameState, after: GameState): CardGain | null
     }
   }
   return null;
+}
+
+/**
+ * 这一条 action 是不是「在百貨公司里」—— 那里得到的卡（董事長贈卡 / 买卡）**没有卡面**（见 `event()` 里的取证）。
+ *
+ * ① 真人：前后任一边挂着 `pending.shop`（进门那条 settle → shop，买卡那条 shop → shop）；
+ * ② ★★ 第二十六份：电脑 / 托管进店**不挂** `pending`（原版 `0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`
+ *    当场买卖完就走，`core/places/ai-shop.ts`）⇒ 认「这条 settle 把当前玩家结算在百貨公司格上」。
+ *    电脑那一支买卡同样走 `_rich4_player_buy_card` `0x0042f13b call 0x42d237` → `0x4412e4`，零图形。
+ *    卡片格落点不会同时是百貨公司格，所以不会误伤真正的抽卡。
+ */
+export function shopVisitAction(before: GameState, after: GameState, topo: Pick<MapTopology, 'nodes'>): boolean {
+  if (before.pending?.kind === 'shop' || after.pending?.kind === 'shop') return true;
+  if (before.phase !== 'settling') return false;
+  const p = after.players[before.currentPlayer];
+  const node = p === undefined ? undefined : topo.nodes[p.nodeId - 1];
+  return node?.specialKind === SPECIAL_KIND.DEPARTMENT_STORE;
 }
 
 // ============================================================
@@ -510,6 +587,18 @@ export interface EventBoxView {
   description: string;
   /** 卡名；新聞/命運为空 */
   cardName: string;
+  /**
+   * 引擎地图号（命運用）—— id ≥ 33 的插画与文案按它的低位换槽
+   * （@source `0x0044dc53 movsx esi, word [0x4991b8]`）。缺省 0。
+   */
+  globalMapId?: number;
+  /**
+   * ★ 第十二份試玩回報（「莫名其妙被冬眠5天」）：这是**用卡**那一次亮牌（`"使用%s"`），
+   *   不是卡片格的「抽到」。两者同一支 `fcn_00441f73`，差别只在：
+   *   用卡那两个调用点（`0x00441cbc` / `0x00441def`）前面**没有** 0x218 那段 FLIC
+   *   （FLIC 是卡片格 `0x0041b32b` 自己播的）⇒ 直接进亮牌。
+   */
+  use?: boolean;
   /**
    * ★ 新聞百分比类那四条（11 所得稅 / 12 地價稅 / 13 證交稅 / 23 儲金紅利）的
    *   **逐人明细**（不是让本屏自己算 —— 规则在 core，见
@@ -552,6 +641,14 @@ export interface EventBoxText {
   baseline: CanvasTextBaseline;
   fill: string;
   stroke: string;
+  /**
+   * `create_font` 第 4 / 5 参（字效 / 字距）—— 画法见 `font.ts` 的 `drawGdiText`。
+   * ★ 2026-09-23：三处都是字效 **3 = 粗体 + 右下 1 px 阴影**（先前一律描 3 px 黑边）；
+   *   字距：亮牌 `0x00441fa1` 是 1（不加），新聞 `0x0044b747` / 命運 `0x0044dbed` 是 **0**
+   *   ⇒ `SetTextCharacterExtra(−1)`（`0x0044fb93 dec eax`），字挤 1 px。
+   */
+  flags: number;
+  spacing: number;
 }
 
 export type EventBoxItem = EventBoxBlit | EventBoxText;
@@ -597,6 +694,7 @@ function textItem(
   at: { readonly x: number; readonly y: number },
   size: number,
   centered: boolean,
+  spacing = EVENT_TEXT_SPACING,
 ): EventBoxText {
   return {
     kind: 'text',
@@ -607,6 +705,8 @@ function textItem(
     baseline: centered ? 'middle' : 'top',
     fill: EVENT_TEXT.fill,
     stroke: EVENT_TEXT.stroke,
+    flags: EVENT_TEXT_FLAGS,
+    spacing,
   };
 }
 
@@ -620,17 +720,20 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
         // 对话框皮（Data#517 图 5，249×170、锚点 (123,101)）→ 落点在 (97,28)
         blitSprite('Data.mkf', DIALOG_SKIN_RESOURCE, DIALOG_SKIN_IMAGE, true, CARD_SKIN_AT),
         // 卡名：flag 4 = 正中
-        textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true),
+        textItem(v.cardName, CARD_NAME_AT, CARD_FONT_SIZE, true, CARD_TEXT_SPACING),
         // 卡面：165×256 无头 RGB555（尺寸见 CARD_FACE_SIZE），**不透明**贴 (138,200)
         blitRaw('Data.mkf', CARD_FACE_BASE + v.id, CARD_FACE_SIZE, CARD_FACE_AT),
       ],
-      flic: { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
+      // 用卡那一路没有 0x218 那段 FLIC（见 `EventBoxView.use`）
+      flic: v.use === true ? null : { archive: 'Data.mkf', resource: CARD_FLIC_RESOURCE, at: CARD_FLIC_AT },
       holdMs: CARD_HOLD_MS,
       hold2Ms: 0,
     };
   }
 
   const fortune = v.kind === 'fortune';
+  // ★ 命運查表 `0x475fb4`（不是 `0x1dd + id`，见 `FORTUNE_ART_BASE`）；新聞是 `id + 0x1b9`（0x0044b75a）
+  const art = fortune ? fortuneArtResource(v.id, v.globalMapId ?? 0) : NEWS_ART_BASE + v.id;
   const items: EventBoxItem[] = [
     // 外框（440×480）**不透明**贴 (0,0) @source 0x0044b84c / 0x0044dd3c
     blitSprite(
@@ -640,14 +743,9 @@ export function eventBoxPlan(v: EventBoxView): EventBoxPlan {
       false,
       { x: 0, y: 0 },
     ),
-    // 插画（388×251，无头 RGB555）**不透明**贴 (25,44)
-    blitRaw(
-      'Data.mkf',
-      (fortune ? FORTUNE_ART_BASE : NEWS_ART_BASE) + v.id,
-      EVENT_ART_SIZE,
-      EVENT_ART_AT,
-    ),
   ];
+  // 插画（388×251，无头 RGB555）**不透明**贴 (25,44)；表外的号（不会发生）就不画
+  if (art !== undefined) items.push(blitRaw('Data.mkf', art, EVENT_ART_SIZE, EVENT_ART_AT));
   if (!fortune) items.push(textItem(v.title, NEWS_TITLE_AT, EVENT_FONT_SIZE, false));
   if (v.description !== '') {
     items.push(
@@ -707,13 +805,38 @@ export function newsView(
 }
 
 /** 命運那一段的 view */
-export function fortuneView(fortuneId: number, priceIndex: number, subject: string): EventBoxView {
+export function fortuneView(
+  fortuneId: number,
+  priceIndex: number,
+  subject: string,
+  globalMapId = 0,
+): EventBoxView {
   return {
     kind: 'fortune',
     id: fortuneId,
     title: '',
-    description: eventBoxDescription(fortuneEvent(fortuneId), priceIndex, subject),
+    // ★ 33..36 在地图低位 1..3 上原版分派到 37..48 那一套（文案不同、天数相同）
+    description: eventBoxDescription(fortuneDisplayEntry(fortuneId, globalMapId), priceIndex, subject),
     cardName: '',
+    globalMapId,
+  };
+}
+
+/**
+ * **用卡**那一次亮牌的 view —— 卡面 + 「使用XX卡」（第十二份試玩回報）。
+ *
+ * @source 见 `CARD_USE_FORMAT`：`sprintf(buf, "使用%s", 卡名表[卡号])` → `fcn_00441f73(卡号, buf)`。
+ *   卡名表 `[卡号*8 + 0x47fdea]` 就是 `@rich4/data` 的 `CARDS[].name`。
+ */
+export function cardUseView(cardId: number): EventBoxView {
+  const def = CARDS.find((c) => c.id === cardId);
+  return {
+    kind: 'card',
+    id: cardId,
+    title: '',
+    description: '',
+    cardName: def === undefined ? '' : CARD_USE_FORMAT.replace('%s', def.name),
+    use: true,
   };
 }
 
@@ -813,6 +936,12 @@ export interface EventBoxPlayback {
   showAt: number;
   /** 命運第二段开始的时刻；0 = 还没进第二段 */
   secondAt: number;
+  /**
+   * ★ 第十五份：这一张命運的 pass 1 会先 `view_to`（**重画整块棋盘**把框抹掉），第二段 800 ms
+   *   是在施加阶段的演出（加持框、影片、理賠框、台词）之后对着棋盘停的。
+   *   见 `eventBoxYieldsToBoard` 与 `fortuneRedrawsBoard` 的逐张表。
+   */
+  yieldAfterFirst?: boolean;
 }
 
 export function eventBoxPlaybackStart(plan: EventBoxPlan, now: number): EventBoxPlayback {
@@ -884,7 +1013,7 @@ export function eventBoxPlaybackSkip(p: EventBoxPlayback, now: number): EventBox
 /** 锚点落点绘制 @source `fcn_00456418` / `fcn_004563f5`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 function drawItem(
@@ -903,16 +1032,17 @@ function drawItem(
   }
   // `\n` 分段：原版交给 GDI 的 DrawTextA，行高见 `EVENT_TEXT_LINE_H`
   const lines = it.text.split('\n');
-  ctx.font = `${it.size}px ${FONT_FAMILY}`;
   ctx.textAlign = it.align;
   ctx.textBaseline = it.baseline;
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = it.stroke;
-  ctx.fillStyle = it.fill;
   for (let i = 0; i < lines.length; i++) {
     const y = it.at.y + i * EVENT_TEXT_LINE_H;
-    ctx.strokeText(lines[i]!, it.at.x, y);
-    ctx.fillText(lines[i]!, it.at.x, y);
+    drawGdiText(ctx, lines[i]!, it.at.x, y, {
+      size: it.size,
+      color: it.fill,
+      color2: it.stroke,
+      flags: it.flags,
+      spacing: it.spacing,
+    });
   }
 }
 
@@ -937,9 +1067,10 @@ export function drawEventBoxScreen(
       film.frames.length - 1,
       Math.max(0, Math.floor(opts.elapsed / Math.max(1, film.frameMs))),
     );
-    const bitmap = film.frames[frame];
+    const bitmap = flicFrame(film, frame);
     if (bitmap === undefined) return;
-    ctx.drawImage(bitmap, at.x, at.y);
+    // FLIC 帧按影片的**逻辑**尺寸画：超分帧位图更大，塞回同一个框（`hd-stage.ts`）
+    drawSprite(ctx, { bitmap, width: film.width, height: film.height }, at.x, at.y);
     return;
   }
   for (const it of plan.items) drawItem(ctx, sprite, raw, it);
@@ -952,9 +1083,208 @@ export function drawEventBoxScreen(
 /** 现在正在播的那一段；`null` = 没在播 */
 let playback: EventBoxPlayback | null = null;
 
+/**
+ * ★ 第十五份：命運第二段（800 ms，`0x0044dd7b push 0x320 / call 0x4528b9`）**让出框之后**的那一截。
+ *
+ * `waiting` = pass 1 里的影片 / 理賠框 / 台词还没演完（原版它们都在 `0x0044dd71` 那一次调用里、
+ * 阻塞的）；演完才开始数 800 ms（`until`）。这一截屏上只有棋盘（框已被 `view_to` 抹掉）。
+ */
+let tail: { waiting: true } | { waiting: false; until: number } | null = null;
+
+/**
+ * 命運第一段收尾（停满 1600 ms 或被点掉）的那一拍：这一张要不要**让出框**。
+ *
+ * ★ 原版 pass 1 里 `send_to_prison` / `send_to_hospital` / `0x40d375`（消失）开头都先
+ *   `view_to`（`0x41d476`）。那一支**无条件**重画棋盘并刷屏：
+ * ```asm
+ * 0041d50e  call 0x415e70(0)            ; view_to 里
+ * 00415e84  … push 镜头 x / y
+ * 00415ed7  call 0x40829d               ; ★ 把整块棋盘重画进后台面（框就贴在这块面上 —— 0x0044b814 / 0x0044dcf6）
+ * 00415f4f  or byte [0x475110], 2       ; 标「棋盘区脏」
+ * 0041d53f  call 0x4192f7               ; 刷脏区：
+ * 004193c4  test dh, 2 / je            ;   棋盘区 (0,0x28)-(0x1b8,0x1e0)
+ * 004193a5  call [edx + 0x1c]           ;   后台面 → 前台面
+ * ```
+ *   ⇒ 框在棋盘区被抹掉，接着才播警车 / 救护车 / 飛機飛碟（`fcn_0045144f`），最后回到
+ *   `0x0044dd7b` 对着棋盘再停 800 ms（可点掉）。
+ */
+export function eventBoxYieldsToBoard(p: EventBoxPlayback, next: EventBoxPlayback | null): boolean {
+  return p.yieldAfterFirst === true && p.secondAt === 0 && next !== null && next.secondAt !== 0;
+}
+
+/**
+ * ★ 第十五份（协调方：逐张查）：命運 pass 1 **一进来就无条件** `view_to` 的那几张 —— 框必被抹掉。
+ *
+ * 逐张的施加入口（`fcn_0044db81` 的 `0x0044dd5d` / `0x0044dd71 call [表 0x475ef0]`，arg = 1）
+ * 与那一次 `call 0x41d476`（`python3 tools/disasm.py va <入口> 40`）：
+ *
+ * | 命運 | 施加入口 | `view_to` | 说明 |
+ * |---|---|---|---|
+ * | 0 拆屋 / 1 徵收 | `0x0044becf` / `0x0044c067` | `0x0044bee8` / `0x0044c080`（镜头到那块地，flags 2）| 入口第一件事 |
+ * | 6 出國 / 7 綁架 | `0x0044c658` / `0x0044c76d` | `0x0044c66f` / `0x0044c784`（0,0,3）| `0x44b896` 之后、不看返回值 |
+ * | 9 賣股 | `0x0044c978` | `0x0044c98f` | 同上 |
+ * | 10 機車被偷 | `0x0044ca9f` | 返回 1：`0x0044cabb`；否则 `0x0044cb00` | 两支都有 |
+ * | 11 汽車全毀 | `0x0044cbac` | `0x0044cbc3` | |
+ * | 12 / 13 住院 | `0x0044ccd4`（13 `0x0044cd7e` 跳进来）| `0x0044cceb` | 之后才 `send_to_hospital` `0x0044cd65` |
+ * | 14 罰款 | `0x0044ce35` | `0x0044ce4c` | |
+ * | 15 / 16 罰款 | `0x0044cfdf`（没车那一支 `0x0044cf40` / `0x0044d08f` 改走 12）| `0x0044cff6` | |
+ * | 17 18 19 23 24 26 30 | `0x0044d172` | `0x0044d189` | 共用罰款尾巴 |
+ * | 20 21 22 25 27 28 29 31 | `0x0044d2a9` | `0x0044d2c0` | 共用進帳尾巴 |
+ * | 32 賣卡 | `0x0044d6d0` | `0x0044d6e7` | |
+ * | 33–36 坐牢 | `0x0044d80b`（34–36 跳进来）| `0x0044d822` | 之后才 `send_to_prison` `0x0044d8c2` |
+ *
+ * **有条件**的四张（见 `fortuneRedrawsBoard`）：2 冒貸（返回 1 `0x0044c19c` / 返回 2 `0x0044c1c3`，
+ * 都紧跟加持框）、3 跳票（返回 1 `0x0044c298`）、8 違約交割（返回 1 `0x0044c88c`）、
+ * 5 生日（收到至少一张 `0x0044c57b test edi,edi` → `0x0044c585`）。**4 挪用存款**整支没有 `view_to`。
+ * 另两个出口：0 的收尾 `0x0044bf51 view_to(0,0,1)`、11 的 `0x0044cc11`，都在第一次之后，不改结论。
+ */
+const FORTUNE_REDRAW_ALWAYS: ReadonlySet<number> = new Set([
+  0, 1, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+  34, 35, 36,
+]);
+
+/**
+ * 这一张命運的 pass 1 会不会走到那一次重画棋盘的 `view_to`（= 框在第一段收尾时被抹掉）。
+ *
+ * 有条件那几张按 core 交出的结果判：2 / 3 / 8 是「弹了神明加持框」（那一支就是 `view_to` + 框，
+ * core 只在原版弹框的那几档交 `blessing.*`，见 `fortune-effects.ts` 的 `fortuneBlessingNotice`）；
+ * 5 是「真的收到了卡」（有人手牌变少）。
+ */
+export function fortuneRedrawsBoard(before: GameState, after: GameState, id: number): boolean {
+  if (FORTUNE_REDRAW_ALWAYS.has(id)) return true;
+  if (id === 2 || id === 3 || id === 8) {
+    const fresh = after.notices !== before.notices ? (after.notices ?? []) : [];
+    return fresh.some((n) => n.key.startsWith('blessing.'));
+  }
+  if (id === 5) {
+    return (after.players ?? []).some(
+      (p, i) => i !== after.currentPlayer && p.cards.length < (before.players?.[i]?.cards.length ?? 0),
+    );
+  }
+  return false;
+}
+
+/** 命運让出框之后还有那一截 800 ms 没走完（等影片 / 正在停）—— 回合驱动要等它 */
+export function eventBoxTailPending(): boolean {
+  return tail !== null;
+}
+
+/**
+ * 宿主每帧问一次：pass 1 里的演出（影片 / 理賠框 / 台词）都收了 ⇒ 开始数那 800 ms。
+ *
+ * @param busy pass 1 那几段还有没有在演
+ */
+export function eventBoxTailTick(busy: boolean, now: number): void {
+  if (tail === null || !tail.waiting || busy) return;
+  tail = { waiting: false, until: now + FORTUNE_SECOND_HOLD_MS };
+}
+
+/** 本屏走一拍 / 点一下之后的落地（命運让出框的那一拍在这里接手） */
+function settlePlayback(p: EventBoxPlayback, next: EventBoxPlayback | null, env: UiScreenEnv): void {
+  if (eventBoxYieldsToBoard(p, next)) {
+    playback = null;
+    tail = { waiting: true };
+    env.log('事件提示框：命運 pass 1 重画棋盘（框让位）');
+    env.requestRender();
+    return;
+  }
+  playback = next;
+}
+
+/**
+ * 本机真人**已经亮过牌**的那一次用卡（D-CARD-USE-1 第 3 条收掉之后）。
+ *
+ * 原版真人那一支是「卡片欄选定 → 亮牌 → 卡片函数（里头才选目标）」：
+ * ```asm
+ * 00441c7e  call 0x4018e7                 ; 卡片欄（模态）→ ebx = 卡号，0 = 右键取消
+ * 00441c98  test ebx, ebx / je 0x441ce1   ; 只有「取消」绕过亮牌
+ * 00441cbc  call 0x441f73                 ; ★ 亮牌（无条件）
+ * 00441cc6  call [eax*4 + 0x475d5c]       ; 卡片函数：选目标（0x446ae8 等）→ 生效；取消 ⇒ 返回 0
+ * 00441cd9  call 0x4542ce(0x48233a)       ; 返回 0：失败音 3
+ * 00441ce3  je 0x441c22                   ; 返回 0：卡片欄重开（卡不消耗）
+ * ```
+ * ⇒ 亮牌由 `main.ts` 在**选定卡片那一刻**起播（`startOwnCardUsePopup`），
+ *   之后那条 `useCard` 落地时 `lastCardPlay` 照样会变 —— 这一格记着「这一张本机已经亮过」，
+ *   `event` 见到**同一人、同一张、同一回合**的那一次就不再亮第二遍。
+ *   联机旁观端没有这一格 ⇒ 仍在 `useCard` 到达时亮牌（亮的是「真的用出去的那一张」）。
+ */
+let ownCardUse: { player: number; cardId: number; turnCount: number } | null = null;
+
+/**
+ * ★ 第十五份：已认出、等台上的角色台词说完才起播的那一段（原版 `player_say` 阻塞，
+ *   说完才轮到 `0x44b6df` / `0x441f73`；气泡与框从不同屏）。`start` 在真正起播那一拍才调。
+ */
+let deferredStart: ((env: UiScreenEnv) => void) | null = null;
+
+/** 起播闸（宿主给：`true` = 台上还有气泡）；不给（单测）= 永远放行 */
+let startGate: (() => boolean) | null = null;
+
+export function setEventBoxStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
+/** 闸开着就当场起，关着就排着等 `tick` */
+function beginOrDefer(start: (env: UiScreenEnv) => void, env: UiScreenEnv): void {
+  if (startGate?.() === true) {
+    deferredStart = start;
+    env.requestRender();
+    return;
+  }
+  start(env);
+}
+
 /** 调试 / 单测用：把整屏关掉 */
 export function resetEventBoxScreen(): void {
   playback = null;
+  deferredStart = null;
+  ownCardUse = null;
+  tail = null;
+}
+
+/**
+ * ★ 第十四份：訊息框队列里的**亮牌**那一扇（`NoticeHint.card`）由这里起播 —— 与用卡那一次同一扇
+ *   （`fcn_00441f73(卡号, 文字)`：卡面 + 那一句 + 音效），文字由訊息框那边按格式串排好交进来。
+ *   收費那一段的被动卡要排在收費框之后、死神框之前，所以挂在訊息框的队列上（见 `notice-box-screen.ts`）。
+ */
+export function startCardRevealPopup(cardId: number, text: string, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan({ ...cardUseView(cardId), cardName: text }), env.now);
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：亮牌 #${cardId}（${text.replace(/\n/g, ' ')}）`);
+  env.requestRender();
+}
+
+/**
+ * 本机真人在卡片欄选定一张卡 ⇒ **当场**亮牌（`fcn_00441f73(卡号, "使用%s")`，
+ * 真人那一支 `0x00441cbc`，在卡片函数 `0x00441cc6` 之前）。
+ * 同时记下「这一张已经亮过」，免得 `useCard` 落地时再亮一遍。
+ */
+export function startOwnCardUsePopup(cardId: number, player: number, turnCount: number, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(cardId)), env.now);
+  ownCardUse = { player, cardId, turnCount };
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：使用卡片 #${cardId}（P${player + 1}，卡片欄选定）`);
+  env.requestRender();
+}
+
+/**
+ * ★ v8（gap-audit #7）：**联机旁观端**收到行动方「卡片欄选定」那一刻的亮牌（`present{cardReveal}`）——
+ *   与行动方同一扇（`0x00441cbc call 0x441f73`，在选目标之前），同样记下「这一张已经亮过」，
+ *   随后那条 `useCard` 落地时不再亮第二遍；没用成（`present{cardFailed}`）⇒ `dropOwnCardUse`，再用一张再亮一次。
+ */
+export function startRemoteCardUsePopup(cardId: number, player: number, turnCount: number, env: UiScreenEnv): void {
+  playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(cardId)), env.now);
+  ownCardUse = { player, cardId, turnCount };
+  env.playEffect(CARD_REVEAL_SOUND);
+  env.log(`事件提示框：使用卡片 #${cardId}（P${player + 1}，联机：行动方卡片欄选定）`);
+  env.requestRender();
+}
+
+/**
+ * 那一张没用成（卡片函数返回 0：目标取消 / 用不了）⇒ 忘掉「已亮过」。
+ * 原版之后是失败音 + 卡片欄重开，再选一张会**再亮一次**。
+ */
+export function dropOwnCardUse(): void {
+  ownCardUse = null;
 }
 
 /**
@@ -974,7 +1304,7 @@ function skipPlayback(env: UiScreenEnv): void {
     playback = null;
     env.log('事件提示框：跳过');
   } else {
-    playback = next;
+    settlePlayback(p, next, env);
   }
   env.requestRender();
 }
@@ -990,7 +1320,10 @@ export const eventBoxScreen: UiScreen = {
    */
   windowed: true,
 
-  active: () => playback !== null,
+  active: () => playback !== null || deferredStart !== null,
+
+  /** ★ 第十六份：排着等台上的气泡收掉（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && deferredStart !== null,
 
   draw(env: UiScreenEnv): void {
     const p = playback;
@@ -1005,6 +1338,17 @@ export const eventBoxScreen: UiScreen = {
   },
 
   tick(env: UiScreenEnv): void {
+    // ★ 第十五份：排着的那一段 —— 台上的气泡收了就起播
+    if (playback === null && deferredStart !== null) {
+      if (startGate?.() === true) {
+        env.requestRender();
+        return;
+      }
+      const start = deferredStart;
+      deferredStart = null;
+      start(env);
+      return;
+    }
     const p = playback;
     if (p === null) return;
     // ⚠️ `env.flic()` 是异步的：第一次问一定 null，解好后 main.ts 自己重画一帧。
@@ -1012,13 +1356,15 @@ export const eventBoxScreen: UiScreen = {
     const film = p.plan.flic === null ? null : env.flic(p.plan.flic.archive, p.plan.flic.resource);
     const filmMs = film === null ? null : film.frames.length * film.frameMs;
     const next = eventBoxPlaybackTick(p, env.now, filmMs);
+    // ★ 卡片格那一路：FLIC 播完、进亮牌的那一拍响亮牌音（`fcn_00441f73` 的 `0x00442097`）
+    if (next !== null && p.phase === 'flic' && next.phase === 'show') env.playEffect(CARD_REVEAL_SOUND);
     if (next === null) {
       playback = null;
       env.log(`事件提示框：${p.plan.kind} 演出结束`);
       env.requestRender();
       return;
     }
-    playback = next;
+    settlePlayback(p, next, env);
     // ★ **必须自己续帧**：`main.ts` 只把 `tick` 发给**此刻接管整屏**的那一屏，
     //   而本屏的换段/关屏都是「时间到」才有的事 —— 不续帧就永远到不了那个
     //   deadline（屏就一直挂在台上）。演出最长 2.4 秒，续帧的代价可接受。
@@ -1061,6 +1407,27 @@ export const eventBoxScreen: UiScreen = {
   },
 
   /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 整段直接落到终态。
+   *
+   * ★ 与点一下（`eventBoxPlaybackSkip`）不同：命運不停在第二段、抽卡第一段那段点不掉的
+   *   FLIC 也一并收 —— 行动者那台整段都演完了，留着只会让本台越落越远。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    const p = playback;
+    if (p === null && deferredStart !== null) {
+      deferredStart = null;
+      env.log('事件提示框：跟著行動者收場（未起播）');
+      env.requestRender();
+      return true;
+    }
+    if (p === null) return false;
+    playback = null;
+    env.log(`事件提示框：${p.plan.kind} 跟著行動者收場`);
+    env.requestRender();
+    return true;
+  },
+
+  /**
    * 察觉「刚刚落了一次新聞/命運/卡片格」。
    *
    * 判据两条（都纯查状态）：
@@ -1069,22 +1436,51 @@ export const eventBoxScreen: UiScreen = {
    *
    * `lastEvent` 优先：命運 id 5「今天是你生日 向每人收取一張卡片」同样会让手牌变长，
    * 那一次该由命運框来演，不是抽卡框。
+   *
+   * ★★ 例外（第九份试玩回报第 1 条）：**福神得卡不许出卡面**。
+   *   原版 `fcn_0040ed8f`（`rich4_gods.asm:693-754`）那一段的顺序是
+   *     附身影片 `Data 0x21e`（`:695`）→ 开场白 `0x4632cc`（`call 0x40e2a2`）
+   *     → `_rich4_player_receive_random_card`（`:732`）→ 訊息框「%s附身 得到%s！」
+   *     `0x4632fd` 1500ms（`:738-746`）→ 台词 `call 0x44f230`（`:754`）。
+   *   **中间没有卡面**：卡面演出 `fcn_00441f73` / `Data.mkf 0x218` 属于**卡片格**
+   *   （`loc_0041b302`）那一支；`_rich4_receive_card` 是纯状态、零图形。
+   *   而 `cardGained()` 的判据「任一玩家 `cards` 变长」对**所有**得卡来源都成立 ⇒
+   *   福神得卡会在 t=0 与附身影片**同时**起这一屏的卡面（本屏 `windowed`，在
+   *   `SCREENS` 里又排在 `noticeBoxScreen` 之前，还会盖住那扇訊息框）。
+   *   ⇒ 见到本 action 新写的 `god.gotCard`（core 在 `reduce.ts` 的
+   *   `case 'receiveCards'` 里 push 的那条；大福神那次是同一支里的 `god.gotCardTwo`）
+   *   就让开，交给訊息框与台词。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段还没播完
+    if (playback !== null || deferredStart !== null) return; // 上一段还没播完
     if (before === after) return;
 
     const ev = after.lastEvent;
     const prev = before.lastEvent;
-    // ⚠️ `magicHouse` 那一支借的是同一条通道**但不出框**（它是魔法屋屏的事，
-    //    见 `magic-screen.ts` 的 `magicViewOfSpin`）—— 别把它当命運演出。
+    // ⚠️ 这条通道是**共用**的，必须用**白名单**只认「新聞 / 命運」两种演出：
+    //   · `magicHouse` —— 魔法屋屏的事（见 `magic-screen.ts` 的 `magicViewOfSpin`）；
+    //   · ★★ `minigameDecline` —— **得點券格 / 小遊戲不玩**那一条，`id` **恒为 0**，
+    //     先前只排除了 `magicHouse` ⇒ 它掉进下面的 `fortuneView(0)`，
+    //     于是玩家踩到得點券格时会看到一张「**強制拆除房屋一棟**」的命運卡
+    //     （第十一份回报 #5「我名下没有房子的时候也会触发强制拆除房屋一栋吗？」与
+    //       #19「强制拆除房屋到底是怎么触发的，怎么NPC触发了还在「感谢阿拉」」的根因
+    //       —— 那两句「感謝阿拉！」其实是得 50 點的**好消息台词**，本身没错）。
+    //   ⇒ 改成白名单，永远不会再有第三种 kind 被误当成命運。
     if (
       ev !== null &&
-      ev.kind !== 'magicHouse' &&
-      (prev === null || prev.kind !== ev.kind || prev.id !== ev.id)
+      (ev.kind === 'news' || ev.kind === 'fortune') &&
+      // ★★ 第十四份：判据是**引用**，不是 kind/id —— 先前连着两次抽到同一张（例：命運 30
+      //   再抽一次付保險金），第二次的框**不出来**。core 只在新聞 / 命運**真的抽了一张**时
+      //   新建 `lastEvent`（`drawAndApplyFortune` / `drawAndApplyNews`），其余 action 都是
+      //   `{...state}` 原样带过去 ⇒ 引用不变就不重播；读档 / 失步重建都清成 null（`savegame.ts`）
+      //   或静默重放（`onResync` 不派 `event()`），不会补播。
+      ev !== prev
     ) {
       const who = after.players[after.currentPlayer];
-      const subject = eventSubject(before, after, after.currentPlayer);
+      // ★ 第十二份試玩回報：带着「挑中的那一处」的那几条新聞，`%s` = **地名**（见 `newsPlaceName`）
+      const placeName =
+        ev.kind === 'news' && ev.place !== undefined ? newsPlaceName(env.topo, ev.place.entity) : null;
+      const subject = placeName ?? eventSubject(before, after, after.currentPlayer);
       // ★ 新聞百分比类那四条：把引擎「先算好」的逐人金额配上角色名交给计划
       const shares = ev.shares?.map((s) => {
         const character = after.players[s.player]?.character ?? -1;
@@ -1097,22 +1493,147 @@ export const eventBoxScreen: UiScreen = {
       const view =
         ev.kind === 'news'
           ? newsView(ev.id, after.priceIndex, subject, shares)
-          : fortuneView(ev.id, after.priceIndex, subject);
-      playback = eventBoxPlaybackStart(eventBoxPlan(view), env.now);
-      env.log(`事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`);
-      env.requestRender();
+          : fortuneView(ev.id, after.priceIndex, subject, after.globalMapId);
+      const label = `事件提示框：${ev.kind === 'news' ? '新聞' : '命運'} #${ev.id}${who === undefined ? '' : `（P${who.index + 1}）`}`;
+      // ★ 第十五份：命運 pass 1 先重画棋盘的那几张 ⇒ 第一段收尾时让出框（`eventBoxYieldsToBoard`）
+      const yieldAfterFirst = ev.kind === 'fortune' && fortuneRedrawsBoard(before, after, ev.id);
+      beginOrDefer((e) => {
+        playback = eventBoxPlaybackStart(eventBoxPlan(view), e.now);
+        if (yieldAfterFirst) playback = { ...playback, yieldAfterFirst: true };
+        e.log(label);
+        e.requestRender();
+      }, env);
       return;
     }
 
+    // ★★ 福神得卡（`god.gotCard` / 大福神两张那条 `god.gotCardTwo`）只有訊息框，没有卡面
+    //   （依据见上面 `event` 的注释）。
+    //   判据 = 这条 action **新写**了 notices 且其中带这两个键之一；
+    //   不拿卡袋/手牌反推，免得把卡片格那一路也误伤。
+    if (
+      after.notices !== before.notices &&
+      after.notices?.some((n) => n.key === 'god.gotCard' || n.key === 'god.gotCardTwo')
+    )
+      return;
+
+    // ★★ 第十二份試玩回報（`20260923-015242569`「莫名其妙被冬眠5天」）：
+    //   电脑用了冬眠卡，玩家这边**什么都没看见**，只在自己回合开始时弹「冬眠中」。
+    //   原版不分人机，卡片函数**之前**先 `fcn_00441f73(卡号, "使用%s")` 亮牌 1500 ms
+    //   （调用点见 `CARD_USE_FORMAT`）—— 这一屏先前只接了「抽到卡」那一路。
+    //   判据 = core 的 `lastCardPlay` **引用变了**（`playCard` 成功时每次新建一个；
+    //   失败原样返回 state ⇒ 不亮牌 —— 本引擎的既定口径是「用不成的卡不发 action」）。
+    //   联机时每一端都 reduce 同一条 `useCard` ⇒ 每一端都亮同一张牌。
+    const play = after.lastCardPlay;
+    if (play !== null && play !== before.lastCardPlay) {
+      // ★ 本机真人这一张在卡片欄选定时已经亮过（`startOwnCardUsePopup`）⇒ 不亮第二遍
+      const own = ownCardUse;
+      ownCardUse = null;
+      if (
+        own !== null &&
+        own.player === play.player &&
+        own.cardId === play.cardId &&
+        own.turnCount === before.turnCount
+      ) {
+        return;
+      }
+      // ★ 第十四份：收費那一段的被动卡 —— 亮牌已经挂在訊息框队列里（`NoticeHint.card`），这里不亮第二遍
+      if (play.popup === false) return;
+      beginOrDefer((e) => {
+        playback = eventBoxPlaybackStart(eventBoxPlan(cardUseView(play.cardId)), e.now);
+        e.playEffect(CARD_REVEAL_SOUND);
+        e.log(`事件提示框：使用卡片 #${play.cardId}（P${play.player + 1}）`);
+        e.requestRender();
+      }, env);
+      return;
+    }
+
+    // ★★ 2026-09-23（第十二份試玩回報「卡片商店」那一條的現場日誌）：百貨公司裡得到的卡
+    //   —— 董事長進門贈卡、在貨架上買卡 —— **沒有卡面**。先前手牌差集一視同仁，
+    //   於是進門贈卡、每買一張都在商店窗上起一段「抽到卡片」（Data 0x218 那段點不掉的 FLIC + 卡面 + 音效）。
+    //   @source 卡面只在**顯式**調 `fcn_00441f73` 的地方出現（全 exe 10 處：卡片格 `0x0041b373`、
+    //   `0x00441cbc`/`0x00441def`、`0x004446de`..`0x00444bff`、`0x00452740`），百貨公司一處都沒有：
+    //   - 贈卡 `0x0042e9c0 call 0x441e12` —— `0x441e12` 只有 `rand`（`0x441e4a`）+ `receive_card`（`0x441e64 call 0x4412e4`）；
+    //   - 買卡 `_rich4_player_buy_card` `0x0042d242 call 0x4412e4` —— `0x4412e4` 只調 `0x441262`/`0x44128f`/`0x441343`，零圖形。
+    //   判據：這一條 action 前後任一邊掛著 `pending.shop`（進門那條是 settle → shop，買卡那條 shop → shop）。
+    //   卡片格落點不會同時是百貨公司格，所以不會誤傷真正的抽卡。
+    if (shopVisitAction(before, after, env.topo)) return;
+    // ★ 魔法屋「得一張卡片」同理：`0x004320dd` 那一支是 `0x004320ee call 0x441e12`（同上：只有 rand + receive_card，
+    //   零圖形）→ 弹「名字\n\n得到XX卡！」訊息框（`magic.gotCard`）—— **没有卡面**。
+    //   判據：這一條 action 剛寫下 `lastEvent.kind === 'magicHouse'`。
+    if (after.lastEvent !== before.lastEvent && after.lastEvent?.kind === 'magicHouse') return;
+
     const gain = cardGained(before, after);
     if (gain === null) return;
-    playback = eventBoxPlaybackStart(eventBoxPlan(cardView(gain.card)), env.now);
-    env.log(`事件提示框：抽到卡片 #${gain.card}`);
-    env.requestRender();
+    beginOrDefer((e) => {
+      playback = eventBoxPlaybackStart(eventBoxPlan(cardView(gain.card)), e.now);
+      e.log(`事件提示框：抽到卡片 #${gain.card}`);
+      e.requestRender();
+    }, env);
   },
 };
+
+/**
+ * 此刻台上是不是「用卡」那一次亮牌（`fcn_00441f73`，阻塞 1500 ms）。
+ *
+ * 原版亮牌在卡片函数**之前**、而且是阻塞的 ⇒ 那张卡自己的飞行 / 影片 / 建屋
+ * 都要等它收屏才起（`main.ts` 的 `tickBoardFilm` / `tickBuildFx` / 卡片飞行三处以它为闸）。
+ */
+export function cardUsePopupActive(): boolean {
+  return playback !== null && playback.plan.kind === 'card' && playback.plan.flic === null;
+}
+
+/** ★ 第十五份：已认出、还在等台上的气泡收掉的那一段（台词那一侧当它是一扇排着的 `lead` 框）*/
+export function eventBoxPending(): boolean {
+  return playback === null && deferredStart !== null;
+}
 
 /** 给单测的只读视图 */
 export function eventBoxScreenState(): { playing: boolean; playback: EventBoxPlayback | null } {
   return { playing: playback !== null, playback };
 }
+
+/**
+ * ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b push 0x320 / call 0x4528b9`）——
+ *   屏上只有棋盘（浮窗、什么都不画），**可点掉**（`fcn_004528b9` 认 0x202 / 0x205 / 0x101）。
+ *   只在真正开始数的那一截 `active()`；等 pass 1 演出那一截由宿主的回合闸（`eventBoxTailPending`）挡着。
+ */
+function skipTail(env: UiScreenEnv): void {
+  if (tail === null || tail.waiting) return;
+  tail = null;
+  env.log('事件提示框：命運第二段 跳过');
+  env.requestRender();
+}
+
+export const eventTailScreen: UiScreen = {
+  id: 'eventTail',
+  windowed: true,
+  active: () => tail !== null && !tail.waiting,
+  draw(): void {
+    // 框已被 `view_to` 抹掉：只剩棋盘（`windowed` ⇒ 宿主先画了整帧）
+  },
+  tick(env: UiScreenEnv): void {
+    if (tail === null || tail.waiting) return;
+    if (env.now >= tail.until) {
+      tail = null;
+      env.log('事件提示框：命運第二段 结束');
+    }
+    env.requestRender();
+  },
+  up(_x: number, _y: number, env: UiScreenEnv): void {
+    skipTail(env);
+  },
+  contextmenu(_x: number, _y: number, env: UiScreenEnv): void {
+    skipTail(env);
+  },
+  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {
+    if (tail === null || tail.waiting) return false;
+    skipTail(env);
+    return true;
+  },
+  fastForward(env: UiScreenEnv): boolean {
+    if (tail === null) return false;
+    tail = null;
+    env.requestRender();
+    return true;
+  },
+};

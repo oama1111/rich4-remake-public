@@ -12,9 +12,10 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { initialCardAmounts, newGame } from '../rules/new-game.ts';
 import { decideAction } from '../ai/policy.ts';
-import { WHO_PLAYS_RETURN_TO_BOARD, isAlive } from './types.ts';
+import { CONFINEMENT_GATE_TYPE } from '../rules/confinement.ts';
+import { WHO_PLAYS_AUTOPILOT, WHO_PLAYS_RETURN_TO_BOARD, isAlive, isInGame } from './types.ts';
 import { gameOverCode, isGameOver, reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 
@@ -46,7 +47,7 @@ interface Played {
  */
 function assertPositionInvariant(
   state: GameState,
-  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean }>,
+  nodeIndex: ReadonlyMap<number, { x: number; y: number; gate: boolean; facility: { x: number; y: number } | null }>,
   where: string,
   /**
    * 「贴图位置」的合法取值集合 —— `x/y` 是**贴图位置**，不是"所在格坐标"：
@@ -101,6 +102,11 @@ function assertPositionInvariant(
     //   路径只有关押传送，而关押传送必把 `nodeId` 设成该格；别处仍按节点坐标
     //   严格判，抓漏能力不受影响。
     if (n!.gate && spritePositions.some((g) => g.x === p.xpos && g.y === p.ypos)) continue;
+    // ★★ 第七个窗口（2026-09-24，provenance 审计换轨迹后现形）：**旅館住店中被綁架/出國**
+    //   （嫁禍的替死鬼可以是住店的人）。`0x40d375` 首次那一支 `call 0x40d761` 清掉住店计数，
+    //   **不写 x/y**（`0x0040d3d4/0x0040d3de` 只读来喂飞走动画），释放 `0x40d4e5` 也不写 ⇒
+    //   消失结束后留着**旅館設施坐标**、`nodeId` = 旅館那一格。只放行「脚下就是設施格、坐标 = 它」。
+    if (n!.facility !== null && n!.facility.x === p.xpos && n!.facility.y === p.ypos) continue;
     expect([p.xpos, p.ypos], `${where}: 玩家${p.index} 坐标与其节点不符`)
       .toEqual([n!.x, n!.y]);
   }
@@ -136,7 +142,18 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
       {
         x: n.x,
         y: n.y,
-        gate: n.specialKind === SPECIAL_KIND.PRISON || n.specialKind === SPECIAL_KIND.HOSPITAL,
+        // ★ 关押传送落的是**关押格**（节点 type 0x1f41 / 0x1f42，0001.bin 的 23 / 1），
+        //   不是落点特殊格（specialKind 4/5 = 12 / 16）—— 见 `rules/confinement.ts` 的
+        //   `CONFINEMENT_GATE_TYPE`（@source 0x0040803f / 0x0043d621）。先前这里只认 specialKind，
+        //   第六个窗口（被关 → 被綁架 → 消失结束，`0x40d375` / `0x40d4e5` 不写 x/y）在監獄那一侧
+        //   从没真正放行过；pt27-stock 改了认购股数后轨迹换了，种子 2024 第 9829 步正好走到
+        //   「命運三張：入監 + 消失」⇒ 綠島贴图 + 監獄關押格 1。
+        gate:
+          n.specialKind === SPECIAL_KIND.PRISON ||
+          n.specialKind === SPECIAL_KIND.HOSPITAL ||
+          n.type === CONFINEMENT_GATE_TYPE.prison ||
+          n.type === CONFINEMENT_GATE_TYPE.hospital,
+        facility: n.ref.kind === 'facility' ? (map.facilities.find((f) => f.id === (n.ref as { index: number }).index) ?? null) : null,
       },
     ]),
   );
@@ -150,11 +167,23 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
   //   原来那张设施的坐标上（soak 实测：设施 2 从旅館变成 4 号种类，客人还在里面）。
   //   ⇒ 判据放宽成"**任何設施坐标**都算合法贴图位置"，仍然能抓住 0/坐标错位/写错格。
   const spritePositionsFor = () => [...gateLandscapes, ...map.facilities];
-  let state = newGame({
+  // ★ 2026-09-24 审计：四位都是**託管的真人**（who_plays = 1|4）。原版破产后数的是「在场真人」
+  //   （`0x0040d029 test esi, esi`，託管也算真人），全电脑的局第一次破产就收局（码 1）——
+  //   这条验收要的是「打到只剩一人」，所以让四位都算真人、由 AI 代打。
+  const fresh = newGame({
     map,
-    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
+    players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'human' as const })),
     seed,
   });
+  let state: GameState = {
+    ...fresh,
+    // 还没上盘的（`whoPlays = 0`）把託管位挂在 `landingWhoPlays` 上，落地时才生效
+    players: fresh.players.map((p) =>
+      p.whoPlays === 0
+        ? { ...p, landingWhoPlays: (p.landingWhoPlays ?? 0) | WHO_PLAYS_AUTOPILOT }
+        : { ...p, whoPlays: p.whoPlays | WHO_PLAYS_AUTOPILOT },
+    ),
+  };
 
   const deaths: number[] = [];
   let steps = 0;
@@ -166,11 +195,15 @@ function playFullGame(seed: number, maxTurns = 16000): Played {
     //   任何一条**移动了玩家却忘了同步坐标**的新路径都会在这里当场现形。
     assertPositionInvariant(state, nodeIndex, `step ${steps}`, spritePositionsFor());
     invariantChecks += 4;
+    // ★ 牌堆守恒：原版手牌只经 `0x4412e4` / `0x441343` / `0x441f21` 三个口子进出，每个口子都把
+    //   同一张卡记进牌堆 `0x499197` ⇒ 牌堆 + 四人手牌 ≡ 開局 initAmount（见 `conserveCardPool`）。
+    assertCardConservation(state, `step ${steps}`);
     const a = decideAction({ state, map });
     if (a === null) throw new Error(`无人可动：phase=${state.phase} 当前玩家=${state.currentPlayer}`);
     const next = reduce(state, a, topo);
     if (next === state) throw new Error(`卡死于 ${state.phase} / ${a.type}`);
-    const dead = next.players.filter((p) => !isAlive(p)).length;
+    // ★ 出局 = 不在局里了（还没上盘的第 2..N 位不算出局：他们轮到自己才落地）
+    const dead = next.players.filter((p) => !isInGame(p)).length;
     while (deaths.length < dead) deaths.push(next.turnCount);
     state = next;
     if (state.turnCount >= maxTurns) break;
@@ -210,7 +243,7 @@ describe('★ M2 验收：完整一局', () => {
   run('★ AI 真的会用道具 —— 百貨公司一通，道具经济就活了', () => {
     // 这条先前是反向断言（「一个都没用」），因为当时卡在两处：
     //   开局不发交通工具，而車子要去百貨公司买——那时百貨还没实现。
-    // 现在百貨接上了，AI 会用點數买汽車再换乘，道具终于被用起来。
+    // 现在百貨接上了，AI 会用點數买車（原版先買機車、只拿一半點券逛道具）再换乘，道具终于被用起来。
     const map = loadMap();
     const topo = {
       nodes: map.nodes,
@@ -229,8 +262,13 @@ describe('★ M2 验收：完整一局', () => {
       const a = decideAction({ state, map });
       if (a === null) break;
       if (a.type === 'useTool') used++;
-      if (a.type === 'shop') bought++;
+      // ★ 第二十六份：电脑进百貨不再挂商店交互（原版 `0x0042ea2b … jne 0x42ed8d` 当场买卖完就走，
+      //   `places/ai-shop.ts`）⇒ 不再有 `shop` action，改数「落在百貨的那条 settle 花掉了點券」
+      const me = state.players[state.currentPlayer];
+      const onStore =
+        a.type === 'settle' && map.nodes[(me?.nodeId ?? 0) - 1]?.specialKind === SPECIAL_KIND.DEPARTMENT_STORE;
       const next = reduce(state, a, topo);
+      if (onStore && (next.players[state.currentPlayer]?.points ?? 0) < (me?.points ?? 0)) bought++;
       if (next === state) break;
       state = next;
     }
@@ -269,8 +307,17 @@ describe('★ M2 验收：完整一局', () => {
     //   而当前 AI 只会买地、从不动用存款，于是人人躺在存款上滚雪球，
     //   谁也打不死谁。那是 AI 的问题（M3），不是规则的问题。
     //   这里只要求局面确实在推进：有人出局。
+    // ★ 种子于 2026-09-22 更换：本轮改动（福神附身时买地/买设施/建设施/加盖设施
+    //   白送一级、回合开始被阻碍会弹状态框、放置类道具不能和神明重叠）改了游戏
+    //   进程，旧种子 1 在 4000 回合内打不出局，而且会先撞上坐标不变量的旧窗口
+    //   （step 15384 / turn 1263，玩家3 在 nodeId=23 上留着醫院大樓贴图坐标）。
+    //   ⇒ 换成重新扫出来的 177 / 58 / 230：三个都能在 4000 回合内打出 3 人出局
+    //   （分别倒在 521/2904/3274、638/1595/1645、644/834/915 回合），全程不变量干净。
+    // ★ 2026-09-25（econ 区审计合入 provenance 之后复核，**输入一个字没换**）：三个种子在合并后的
+    //   reduce 上仍是 3 人出局（177 → 830/2059/3471、58 → 1005/1500/1592、230 → 1300/1311/…），
+    //   坐标与「牌堆 + 手牌 ≡ 開局」两套不变量都干净 —— 只更新这行读数。
     let withDeaths = 0;
-    for (const seed of [1, 42, 31337]) {
+    for (const seed of [177, 58, 230]) {
       if (playFullGame(seed, 4000).deaths.length > 0) withDeaths++;
     }
     expect(withDeaths).toBeGreaterThan(0);
@@ -335,3 +382,19 @@ describe('★ M2 验收：完整一局', () => {
     expect(moved).toBeGreaterThan(0);
   });
 });
+
+const INITIAL_CARD_AMOUNTS = initialCardAmounts();
+
+/** 牌堆 + 全体手牌 = 開局 initAmount（逐卡号），见 `rules/inventory.ts` 的 `conserveCardPool` */
+function assertCardConservation(state: GameState, where: string): void {
+  const held = new Array<number>(INITIAL_CARD_AMOUNTS.length).fill(0);
+  for (const p of state.players) for (const id of p.cards) held[id - 1] = (held[id - 1] ?? 0) + 1;
+  for (let i = 0; i < INITIAL_CARD_AMOUNTS.length; i++) {
+    const total = (state.cardAmount[i] ?? 0) + (held[i] ?? 0);
+    if (total !== INITIAL_CARD_AMOUNTS[i]) {
+      expect(total, `${where}: 卡 ${i + 1} 牌堆 ${state.cardAmount[i]} + 手牌 ${held[i]} ≠ 開局 ${INITIAL_CARD_AMOUNTS[i]}`).toBe(
+        INITIAL_CARD_AMOUNTS[i],
+      );
+    }
+  }
+}

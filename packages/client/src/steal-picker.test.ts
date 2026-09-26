@@ -346,7 +346,8 @@ describe('★ 选牌窗那一屏', () => {
     // 拾到人之后先问 `needsStealPick`，开窗，回调里才派 `useCard`
     expect(src).toContain("if (t.kind === 'player' && needsStealPick(state, source.cardId, t))");
     expect(src).toContain("openStealPicker(t.index, 'steal', (pick) => {");
-    expect(src).toContain("if (pick === null) return; // 取消：什么都不派（照抄 exe）");
+    // 取消：什么都不派（照抄 exe）；卡片函数返回 0 ⇒ 失败音 + 卡片欄重开（D-CARD-USE-1 之后收进 `cardUseFailed`）
+    expect(src).toContain('if (pick === null) {\n              cardUseFailed();\n              return;\n            }');
     expect(src).toContain('steal: pick');
     // 登记表里有这一屏
     const reg = readFileSync(new URL('./screens.ts', import.meta.url), 'utf8');

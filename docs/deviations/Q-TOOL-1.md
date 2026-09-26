@@ -192,9 +192,52 @@ loc_00408e0e（放在地上的）:
 |---|---|---|---|
 | 1 | **附身于人**的物件（`attached != 0`）画在主人身上 | **已做（Q-TOOL-5 ②）**：新增纯函数 `attachedObjectTokens` + `#attachedObjectSlots`，`objectTokens` 那一行未动 | `fcn_0040829d` VA 0x00408f95..0x00408cd9 那一支用主人记录里的 `+8/+0xa` 当落点、并且主人 `+0x32` 那个 dword 非 0（住店/坐牢/住院/消失）时整个不画。偏移表 0x474951 / 0x474991、帧 = 图号 + 4 —— 全部落码并登记在 `Q-TOOL-5.md` |
 | 2 | 「動畫過程」设定关掉时投掷动画播不播 | **恒播**（有意） | `_rich4_animate_object` 整支读过，**没有任何开关检查**，三个调用点也没有。走子补间那边原版是有关卡的（见 `tween.ts` 的 `enabled`），这条却找不到 ⇒ 按 exe 恒播。要改需要先找到 cfg offset 1 的读取点 |
-| 3 | 「物件自己在飞」那套（`objects_info + 6` 计数 + `+8/+0xc` 浮点坐标 + `+0x10/+0x14` 步长） | **没做** | 它由 `fcn_0040fafd`（VA 0x0040fafd）起，**全 exe 只有一个调用点**：`rich4_player_core_actions.asm` 的 0x0041b519，条件是 `[0x49910c] == 8`（機器娃娃那一支），参数是 `special_players_state + 68/70`（= 機器娃娃 tool 开跑时存下的玩家**节点号 / 上一节点号**，@source `rich4_tool_jiqiwawa.asm` 0x00446b7x），飞完再 `remove_object`。与本轮三件道具**无关**（那三件走 `animate_object`）。将来做機器娃娃搬东西时再解 |
+| 3 | 「物件自己在飞」那套（`objects_info + 6` 计数 + `+8/+0xc` 浮点坐标 + `+0x10/+0x14` 步长） | **已做（2026-09-22，机器娃娃「打飞」）**：纯函数 `objectKnockStart` / `objectKnockTick` / `objectKnockAt` / `sweptObjectFrameAt`（`client/render.ts` 导出）+ `#drawSweptFlights`（画在清单最后） | 它由 `fcn_0040fafd`（VA 0x0040fafd）起，**全 exe 只有一个调用点**：`rich4_player_core_actions.asm` 的 0x0041b4e7 那一支（0x0041b519 `call fcn_0040fafd` 紧接 0x0041b529 `call _rich4_remove_object`），条件是 `[0x49910c] == 8`（機器娃娃那一支），参数是 `special_players_state + 68/70`（= `rich4_tool_jiqiwawa.asm:37-39` 存下的玩家**节点号 / 上一节点号**）。速度 = (本格 − 来路) × 0.5、起手位置已推进半格、`+0x06 = 0xFF`、`+0x07 ← +0x01`；逐 tick 见 `rich4.asm:1746-1810`（判 29×29 窗口 → `dec +0x06` → 画 → 才 `+= 速度`）。13 条口径移植自通道 2 `rich4-spec/tests/test_object_float_move.py`，新增 `packages/client/src/object-knock.test.ts`。⚠️ 这一支**没有任何音效调用**（`fcn_0040fafd` 全支 0 个 `call`、`remove_object` 只调 `find_random_unoccupied_distant_node` / `place_object`）—— 不存在「被扫出去的哀嚎」，见本节末 |
 | 4 | 起点取的是**角色所在格心**，不是原版的**实时像素坐标** | 有意简化 | exe 读 `player + 0x8/+0xa`（走子补间中途是插值位置）。本引擎取 `map.nodes[player.nodeId−1]`；使用道具时角色就停在格上，两者相同。只有在**走子补间还没播完就点用道具**时才会差几十像素（而且那时下一个 dispatch 本来就被 `holdForActorWalk` 挡住）|
 | 5 | 帧节拍用 rAF 按时间取帧，不是阻塞 sleep(24−已用时) | 等价实现 | exe 是阻塞主循环；浏览器里不能阻塞。`k = floor((now − start)/24) + 1` 与「每帧至少 24 ms」等价，收尾那 100 ms 也算在 `throwTotalMs` 里，故音效时刻一致 |
 | 6 | `state` 里没有物件**朝向**字段，朝向是渲染时**当场推**的 | 有意 | core 不改规则（`MapObject` 只有 type/nodeId/state/attached）。推法与 `place_object` 逐条同规则（第一个非 0 邻接槽 → `directionOf(本格 − 邻格)`）。四个槽全 0 的孤立格原版算的是「从 0 号空节点出发」，无意义，这里退回 0 |
 | 7 | 另外 23 个 `animate_object` 调用点（卡片/神明那一批飞行动画） | **已做 20 个（Q-TOOL-5 ①）**，3 个接不了（core 没有那种目标） | 23 个点逐条登记在 `throw-fx.ts` 的 `CARD_FLIGHT_SITES`（25 行 / 23 个 VA，每行带 VA、闸门、arg6、方向），`cardFlightPlan` 是纯判据。没接的 3 条与理由见 `Q-TOOL-5.md` 的 ⑤ |
 | 8 | 原版动画期间的**脏矩形擦除**（`fcn_00456469` / `rich4_rect_union`） | 不需要 | 那是「直接往主表面画」才需要的；本引擎每帧整幅重绘 |
+
+---
+
+## 表格第 3 行（機器娃娃「打飞」）的落码与复核（2026-09-22）
+
+需求方 2026-09-22 回报 (a)：「机器娃娃清扫路面时应该是**撞到哪个再播放哪个被扫出去的动画**」。
+修之前那一件在娃娃走到它的那一格时**直接不见**（`render.ts` 的 `hideAt` 之后不再画）。
+
+- **纯函数**（`packages/client/src/render.ts` 导出，可单独测）：
+  - `objectKnockStart(from, to, facing)` —— `fcn_0040fafd` 的起手：`v = (from − to) × 0.5`、
+    `位置 = from + v`（**已经推进半格**）、`timer = 0xFF`、`facing` 照抄（= `+0x07 ← +0x01`）；
+  - `objectKnockTick(k)` —— `+0x08 += +0x10` / `+0x0c += +0x14`；
+  - `objectKnockAt(from, to, facing, tick, inWindow)` —— 第 `tick` 拍画在哪：
+    **先判 29×29 窗口 → `dec +0x06` → 画 → 最后才推进位置**（`rich4.asm:1746-1810`），
+    越界 / 计时耗尽返回 `null`；
+  - `sweptObjectHideTimes(steps, objects, path, cleared, nodes)`（原有，本轮多带 `knock`）
+    + `sweptObjectFrameAt(s, elapsed, tickMs, inWindow)` —— `ground` / `fly` / `null` 三态。
+  落点全部过 `Math.fround`（原版每一处都是 `fstp dword`，单精度）。
+- **绘制**：`#drawSweptFlights` 画在绘制槽**清单最后**（照 `#drawObjectFlight` / `buildFx` 的成法；
+  需求方口径：原版这一支是拿 `+0x08/+0x0c` 直接贴屏幕的）。飞行状态存在 `#sweptFlights`，
+  **不挂在替身补间上** —— 物件那颗 `+0x06` 计时是自己跑的，娃娃走完（补间删掉）之后它照样飞；
+  否则被扫在**最后一格**上的那一件会一辈子画不出飞出去那一段。
+- **不动 core / GameState**：数据全用现成的 `SweptObject{index, step}` + 这趟 `path` +
+  `before.objects`（`dollSweepNode` 只清 `nodeId`，下标不挪）。C-DET-4：动效不进 state。
+- **测试**：`packages/client/src/object-knock.test.ts` —— 通道 2
+  `rich4-spec/tests/test_object_float_move.py` 的 **13 条口径逐条移植**（第 [1]..[4] 组，
+  含 float32 那条新增的可判别用例 2²⁵）+ 逐 tick（计时递减 / 逐拍位置 / 越界停止）
+  + 两条端到端行为钉子（`hideAt` 那一刻物件出现在半格之外而不是消失；末格那件照样飞）。
+
+### ★ 独立复核：「被扫出去的哀嚎」**不存在**
+
+需求方另一句话提到「只有狗被踢出去的**哀嚎**」。逐处读过 `0x40fafd` 这一趟的全部代码：
+
+| 处 | 结论 |
+|---|---|
+| `fcn_0040fafd` 本体（`rich4.asm:7035-7103`，0x0040fafd..0x0040fbb7） | **整支 0 个 `call`** —— 只有 `fild/fmul/fadd/fstp` 与两个 `mov byte`（`+0x06 = 0xFF`、`+0x07 ← +0x01`），不可能发声 |
+| 娃娃那一支 `0x0041b4e7..0x0041b531`（`rich4_player_core_actions.asm:2663-2681`） | 只有 `call fcn_0040fafd`（0x0041b519）与 `call _rich4_remove_object`（0x0041b529）；**没有** `push <音效号>` / `call 0x4542ce` |
+| `_rich4_remove_object`（`rich4_objects.asm:139-258`，0x0040e14d） | 整支只有两个 `call`：`_rich4_find_random_unoccupied_distant_node`（0x40aa6c）与 `_rich4_place_object`（0x40e033）；**没有** `call 0x4542ce`。（顺带查了 `place_object` 与它调到的 `_rich4_attach_god`：两者的 `call` 清单里同样没有 `0x4542ce`） |
+
+⇒ **结论：原版这一趟一个音效都没有；唯一那一声是娃娃上路时的音效 38**
+（`0x0040deb9..0x0040dedc` 那一支，移动音效表 `0x48234a` 第 9 项，已由 `main.ts` 播）。
+**本次不加任何音效**，也不为「哀嚎」造号。
+

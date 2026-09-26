@@ -55,17 +55,21 @@
     c.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, ...d }));
   };
   /** 联机大厅的「開始」（`client/lobby.ts` 的 `BTN_START`，舞台坐标）*/
-  const START = { x: 506 + 55, y: 416 + 17 };
+  const START = { x: 506 + 55, y: 398 + 17 };
 
   // ── 座位号：从页面日志里读（客户端没有把 `net.seat` 挂到调试出口上）──
   const logLines = () => {
     const el = document.getElementById('log');
     return el === null ? [] : [...el.children].map((c) => c.textContent ?? '');
   };
+  // ★ 认到一次就记住：客户端日志有条数上限，跑上几十回合「我是 N 號座」那一行会被挤出去，
+  //   驱动就认不出自己、停手不动（只剩服务器 60 秒计时代打）—— 第十二份回报验收时踩到。
+  //   记在 `__net` 上（同一页面重新注入驱动时它还在；刷新页面后日志是新的，自然又认得出）。
   const mySeat = () => {
+    if (N.seatSeen !== undefined && N.seatSeen !== null) return N.seatSeen;
     for (const line of logLines()) {
       const m = /我是\s*(\d+)\s*號座/.exec(line);
-      if (m !== null) return Number(m[1]) - 1;
+      if (m !== null) return (N.seatSeen = Number(m[1]) - 1);
     }
     return null;
   };
@@ -163,6 +167,8 @@
   if (N.timer) clearInterval(N.timer);
   N.timer = setInterval(tick, 60);
 
+  /** 客户端日志最后 25 行（排查停摆用）*/
+  N.logTail = () => { const l = logLines(); return { head: l.slice(0, 20), tail: l.slice(-20) }; };
   N.summary = () => {
     const turn = r.state.turnCount;
     return {

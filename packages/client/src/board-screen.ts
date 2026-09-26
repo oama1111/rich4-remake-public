@@ -98,15 +98,16 @@ import {
   allEffectiveLands,
   calculateLandToll,
   isColumnFull,
+  reduce,
   stockListPrice,
   toolCount,
   toolListPrice,
 } from '@rich4/core';
 import { CARDS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
 import type { AmountPage, DialogHit } from './dialog.ts';
-import { drawDialog, hitDialog } from './dialog.ts';
-import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId } from './amount-keys.ts';
-import { amountKeyOfSlotId } from './amount-window.ts';
+import { AmountPressLatch, drawDialog, hitDialog } from './dialog.ts';
+import { AMOUNT_KEY_BY_ID, amountKeyStep, amountSlotOfId, resetAmountWindowPos } from './amount-keys.ts';
+import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, amountKeyOfSlotId } from './amount-window.ts';
 import type { InteractionUi } from './interactions.ts';
 import { FONT_FAMILY } from './font.ts';
 import { LAYOUT } from './stage.ts';
@@ -119,7 +120,9 @@ import {
   yesNoHalves,
 } from './gameui.ts';
 import { portraitResource, type Sprite } from './assets.ts';
+import { ARROW_CURSOR, HAND_CURSOR, showCursor, type CursorWant } from './soft-cursor.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 挂牌栏里的一项 —— 直接用 core 的 `Listing`（`places/notice-board.ts`）。
@@ -352,6 +355,33 @@ export const BOARD_MSG_MS = 0x5dc;
 
 /** 板满时那一句 @source 串 0x463f03 */
 export const BOARD_FULL_MSG = '公佈欄已滿\n\n請先撤件！';
+
+/**
+ * ★★ 第二十一份（`20260924-122205095`「获得经营权…」那一条的兄弟框）：在公佈欄**买股票**买成了董事長 ——
+ *   公佈欄自己那只訊息框弹「恭喜您獲得經營權！」1500 ms（**只给真人**，門派也是这一句）。
+ *
+ * @source `fcn_004255da`（公佈欄成交）股票那一支：`0x0042571e call 0x4294d5(買家, 股票號)`（重排持股名次）→
+ *   `0x00425726 cmp eax,1 / jne`（易主才弹）→ `0x00425732 cmp byte [買家+0x15],1 / jne`（真人）→
+ *   `0x0042573d push 0x463e5f`（串「恭喜您獲得經營權！」）`/ call 0x424502`（公佈欄訊息框）→
+ *   `0x0042574a push 0x5dc / call 0x4528b9`（等 1500 ms）→ `0x00425757 call 0x424620`（收框）。
+ * ⚠️ 这条路**没有音效**：`0x4255da` 起到 `0x4258ac` 付款之间一处 `0x4542ce` 都没有（`disasm.py callers 0x4542ce`）。
+ */
+export const BOARD_CHAIRMAN_MSG = '恭喜您獲得經營權！';
+
+/**
+ * 这一条 action 让 `buyer` **新**当上了哪家企業的董事長（公佈欄买股票之后 `0x4294d5` 返回 1 那一种）。
+ * 纯函数：比 `commercialOwners[*].owner`（1 基）前后。
+ */
+export function boardChairmanGained(before: GameState, after: GameState, buyer: number): boolean {
+  if (before.noticeBoard === after.noticeBoard) return false; // 不是公佈欄成交
+  const n = Math.max(before.commercialOwners.length, after.commercialOwners.length);
+  for (let i = 0; i < n; i++) {
+    const was = before.commercialOwners[i]?.owner ?? 0;
+    const now = after.commercialOwners[i]?.owner ?? 0;
+    if (now === buyer + 1 && was !== now) return true;
+  }
+  return false;
+}
 
 // ============================================================
 //  选物窗几何
@@ -1249,6 +1279,11 @@ interface BoardUiState {
   /** `price`：哪一件、可挂多少、市價 */
   amount: { kind: number; id: number; amount: number; market: number } | null;
   amountPage: AmountPage | null;
+  /**
+   * `price`：左键**按在金额栏上**还没松（= 原版 `[0x48cac2] == 0x10`，
+   * `WM_LBUTTONDOWN` `0x00452d5e` 写、抬手 `0x00452e4b` 清）—— 这时 `move` 才改值。
+   */
+  barHeld: boolean;
   /** 訊息框（「公佈欄已滿…」）*/
   message: string | null;
   messageUntil: number;
@@ -1269,6 +1304,7 @@ function freshState(): BoardUiState {
     confirm: null,
     amount: null,
     amountPage: null,
+    barHeld: false,
     message: null,
     messageUntil: 0,
   };
@@ -1279,6 +1315,7 @@ let ui: BoardUiState = freshState();
 /** 测试用：把本屏的子状态清干净 */
 export function resetBoardScreen(): void {
   ui = freshState();
+  pricePress.reset();
 }
 
 /** 测试用：现在开着吗 / 在哪一页 */
@@ -1352,7 +1389,7 @@ function blit(
   y: number,
 ): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -1567,7 +1604,7 @@ function drawYesNo(
   const s = env.sprite('Data.mkf', YESNO_RESOURCE, img, false);
   const x0 = YESNO_CENTER_SCREEN.x - YESNO_SIZE.w / 2;
   const y0 = YESNO_CENTER_SCREEN.y - YESNO_SIZE.h / 2;
-  if (s !== null) ctx.drawImage(s.bitmap, x0, y0);
+  if (s !== null) drawSprite(ctx, s, x0, y0);
   // 图还没解好时至少给出可点的一半，别让玩家对着空屏
   else {
     const h = yesNoHalves();
@@ -1770,10 +1807,16 @@ function hitPricePage(env: UiScreenEnv, x: number, y: number): DialogHit | 'insi
 }
 
 /**
- * 填数页上的点击 —— 与 main.ts 的 `onDialogHit` 同一套动作。
+ * 填数页鼠标的「按下记账 + 放音、抬手动作」—— 与 `main.ts` 那三扇同一个闩（`AmountPressLatch`）。
+ * @source `fcn_00452c02`：0x201 放 7 并记 `[0x48cac2]`（0x00452d5e..0x00452d95），0x202 照它动作（`loc_00452fce`）
+ */
+const pricePress = new AmountPressLatch();
+
+/**
+ * 填数页上**抬手**要办的那一颗 —— 与 main.ts 的 `onDialogHit` 同一套动作。
  *
- * 填数窗（`fcn_00453544`）的钮在**按下**就生效（与銀行/股市那两屏的
- * `hitDialog` 同一条路），所以这一步放在 `down` 里。
+ * ★ pt26：先前这一步放在 `down` 里（按下就连音带动作一起办）。原版填数窗（`fcn_00453544`）
+ *   是**按下放音、抬手动作**（见 `pricePress`），按键音已在 `down` 放过，这里不再放。
  */
 function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
   const page = ui.amountPage;
@@ -1786,6 +1829,7 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
     case 'amountSlot': {
       const key = amountKeyOfSlotId(hit.id, amountSlotOfId, (n) => AMOUNT_KEY_BY_ID.get(n) ?? null);
       if (key === null) break;
+      // 按键音 7 已在**按下**放过（`onDown` → `pricePress.down`，0x00452d95）
       const step = amountKeyStep(page.value, amount.max, key);
       if (step.submit) {
         const n = page.value;
@@ -1823,9 +1867,37 @@ function onPriceHit(env: UiScreenEnv, hit: DialogHit): void {
   env.requestRender();
 }
 
+/** 出价填数页的上限；`null` = 没开 */
+function priceMax(): number | null {
+  const page = ui.amountPage;
+  if (page === null) return null;
+  return priceUi()?.choices[page.choice]?.amount?.max ?? null;
+}
+
+/**
+ * 按住金额栏拖动 → 改值（原版 `WM_MOUSEMOVE` `loc_00453394`：按下时在栏上、此刻也还在栏上）。
+ *
+ * ★ 原版这扇就是通用填数窗 `fcn_00453544`（公佈欄的五处调用 0x00425ee9 / 0x00425f6b /
+ *   0x00426631 / 0x00426b35 / 0x00426f57），窗过程恒为 `0x452c02`，`0x200` → `0x45320b`
+ *   → `0x453394` 拖栏那一支 —— 与棋盘对话框、股市屏那两扇同一段代码，所以这里也拖得动。
+ *   坐标是**舞台坐标**（`AMOUNT_WINDOW` 就是舞台坐标），与 `main.ts` 的 `dragAmountBar` 同一条式子。
+ */
+function dragPriceBar(env: UiScreenEnv, x: number, y: number): void {
+  const page = ui.amountPage;
+  const max = priceMax();
+  if (!ui.barHeld || page === null || max === null) return;
+  const next = amountBarDragValue(x, y, max);
+  if (next === null) return;
+  ui.amountPage = { ...page, value: next };
+  env.playEffect(AMOUNT_BAR_DRAG_SOUND);
+  env.requestRender();
+}
+
 /** 填数页收掉 → 回主屏（原版成交后也是把两扇窗一起关掉）*/
 function closePrice(): void {
+  pricePress.reset();
   ui.amountPage = null;
+  ui.barHeld = false;
   ui.amount = null;
   ui.mode = 'board';
   ui.press = null;
@@ -1855,6 +1927,9 @@ function openPrice(env: UiScreenEnv, i: number): void {
   const market = marketPriceOf(env.state, env.topo, ui.pickKind, it.id, it.amount);
   ui.amount = { kind: ui.pickKind, id: it.id, amount: it.amount, market };
   // ★ 出价默认值 = 市價（原 stub 的说法）；股数那一类就是持有股數
+  // 开窗：落点回到 (0x100, 0x90) @source `fcn_00453544` 0x0045359c..0x004535a5
+  resetAmountWindowPos();
+  pricePress.reset();
   ui.amountPage = { choice: 0, value: ui.pickKind === LISTING.stock ? it.amount : market };
   ui.press = null;
   ui.pickHot = null;
@@ -1862,8 +1937,31 @@ function openPrice(env: UiScreenEnv, i: number): void {
   env.requestRender();
 }
 
+/**
+ * 开 / 关公佈欄时交给 core 的那两步（`{ op: 'open' }` 进门清理 `0x42483e`、`{ op: 'close' }` 收尾收回特別融資
+ * `0x436b0a(0)`，见 `state/actions.ts`）。**只在真会改局面时才发** —— 空操作在联机里会被定序器当成非法拒掉。
+ */
+function dispatchBoardEdge(env: UiScreenEnv, op: 'open' | 'close'): void {
+  // 联机：只有回合主人那一端交（别人的回合里本机开着看，交了也是 notYourTurn）
+  if (env.localSeat !== undefined && env.localSeat !== null && env.localSeat !== env.state.currentPlayer) return;
+  const a: Action = { type: 'noticeBoard', op };
+  if (reduce(env.state, a, env.topo) !== env.state) env.dispatch(a);
+}
+
+function openBoard(env: UiScreenEnv): void {
+  ui.open = true;
+  ui.forPlayer = env.state.currentPlayer;
+  ui.mode = 'board';
+  // @source `0x004284c5 call 0x42483e` —— 开窗之前先清理
+  dispatchBoardEdge(env, 'open');
+  env.requestRender();
+}
+
 function closeAll(env: UiScreenEnv): void {
+  // @source `0x0042885c push 0 / call 0x436b0a` —— 窗关上后收回特別融資（只在本人回合里关的那一次）
+  const mine = ui.open && env.state.currentPlayer === ui.forPlayer;
   resetBoardScreen();
+  if (mine) dispatchBoardEdge(env, 'close');
   env.requestRender();
 }
 
@@ -1915,9 +2013,13 @@ function detailKindOf(env: UiScreenEnv): number {
 /** 按下这一拍 @source `WM_LBUTTONDOWN` VA 0x00427ea1（主屏）/ 0x00427a18（详情框）等 */
 function onDown(env: UiScreenEnv, x: number, y: number): void {
   if (ui.mode === 'price') {
-    const hit = hitPricePage(env, x, y);
-    if (hit !== null && hit !== 'inside') onPriceHit(env, hit);
-    else env.requestRender();
+    // ★ 金额栏：只记「按在栏上」，不改值（值是随后的 `WM_MOUSEMOVE` 改的）@source `0x00452d5e`
+    const max = priceMax();
+    ui.barHeld = max !== null && amountBarDragValue(x, y, max) !== null;
+    // ★ 按下只记账 + 放按键音 7，数值在抬手才动（`onUp`）@source 0x00452d5e..0x00452d95
+    const r = pricePress.down(hitPricePage(env, x, y), { x, y });
+    if (r.sound !== null) env.playEffect(r.sound);
+    env.requestRender();
     return;
   }
 
@@ -2052,8 +2154,14 @@ function onDown(env: UiScreenEnv, x: number, y: number): void {
 function onUp(env: UiScreenEnv, at: { x: number; y: number } | null = null): void {
   const p = ui.press;
   ui.press = null;
+  ui.barHeld = false; // @source `0x00452e4b`：抬手清掉按下的控件号
 
-  if (ui.mode === 'price') return; // 填数页在按下那一把就处理完了
+  if (ui.mode === 'price') {
+    // ★ 抬手照**按下时记下的那一颗**动作（不看抬手坐标）@source `loc_00452fce`
+    const pressed = pricePress.up();
+    if (pressed !== null) onPriceHit(env, pressed);
+    return;
+  }
 
   // ★ YES/NO 确认：抬手那一拍才判定（原版 `_rich4_ui_yesno` 的 `:205-257`
   //   就是「抬手返回 1/0」），YES 才真的下单
@@ -2158,10 +2266,7 @@ export const boardScreen: UiScreen = {
       if (env.screen !== 'game') return false;
       const me = env.state.players[env.state.currentPlayer];
       if (me === undefined) return false;
-      ui.open = true;
-      ui.forPlayer = env.state.currentPlayer;
-      ui.mode = 'board';
-      env.requestRender();
+      openBoard(env);
       return true;
     }
     if (!boardScreen.active(env)) return false;
@@ -2189,18 +2294,39 @@ export const boardScreen: UiScreen = {
     cancelBoardLayer(env);
   },
 
+  /**
+   * 软件指针：公佈欄各层在自己的 `WM_CREATE` 里放出箭头（@source 0x00425af1 / 0x004261b0 / 0x00426954 /
+   * 0x00426d69 / 0x004279f7 / 0x00427ce4 / 0x004283ab `fcn_00402460(1)`）；出价 / 挂牌那一页是
+   * 通用填数窗 `fcn_00453544`，换**手指**（@source 0x00452cb1 `fcn_004021f8(0x1b, 1, 0)`）。
+   * 这一屏只由本机的工具列 / 熱鍵打开，不会出现在旁观端。
+   */
+  cursor(env: UiScreenEnv): CursorWant {
+    return showCursor(boardScreen.amountEntry!(env) ? HAND_CURSOR : ARROW_CURSOR);
+  },
+
+  /** 出价填数页（通用填数窗：金额条 + 数字键盘）开着 ⇒ 触屏长按不算右键（`touch-input.ts` 的 `longPressAllowed`）*/
+  amountEntry(env: UiScreenEnv): boolean {
+    return boardScreen.active(env) && ui.mode === 'price';
+  },
+
   toolbar(index: number, env: UiScreenEnv): boolean {
     // 工具列第 10 颗「SALE? 房子」就是这一屏 @source VA 0x00417dee `call 0x4284be`
     if (index !== 9) return false;
     if (env.screen !== 'game') return false;
     if (ui.open) closeAll(env);
-    else {
-      ui.open = true;
-      ui.forPlayer = env.state.currentPlayer;
-      ui.mode = 'board';
-      env.requestRender();
-    }
+    else openBoard(env);
     return true;
+  },
+
+  /** 公佈欄买股票买成了董事長 ⇒ 公佈欄訊息框「恭喜您獲得經營權！」（见 `BOARD_CHAIRMAN_MSG`）*/
+  event(before: GameState, after: GameState, env: UiScreenEnv): void {
+    if (!ui.open || after.currentPlayer !== ui.forPlayer) return;
+    if (after.players[ui.forPlayer]?.whoPlays !== 1) return; // `0x00425732`：只给真人
+    if (!boardChairmanGained(before, after, ui.forPlayer)) return;
+    ui.message = BOARD_CHAIRMAN_MSG;
+    ui.messageUntil = env.now + BOARD_MSG_MS;
+    env.log('公佈欄：恭喜您獲得經營權！');
+    env.requestRender();
   },
 
   tick(env: UiScreenEnv): void {
@@ -2222,6 +2348,15 @@ export const boardScreen: UiScreen = {
    * 挂牌格、SALE／EXIT、详情框那两颗钮原版**都没有悬停**，这里也不加。
    */
   move(x: number, y: number, env: UiScreenEnv): void {
+    if (ui.mode === 'price') {
+      // ★ 按在拖窗把手（id 1）上：窗跟着走（`0x0045320b cmp dh,1` 那一支，先于金额栏）
+      if (pricePress.drag({ x, y })) {
+        env.requestRender();
+        return;
+      }
+      dragPriceBar(env, x, y);
+      return;
+    }
     // ★ YES/NO 确认是模态的：它开着时鼠标只用来高亮哪一半
     //   @source `_rich4_ui_yesno` 的 `0x200`（`:145-155` 换图）
     if (ui.confirm !== null) {

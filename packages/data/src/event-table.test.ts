@@ -5,10 +5,15 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import {
+  FORTUNE_ART_TABLE,
   FORTUNE_EVENTS,
+  FORTUNE_MAP_JAIL_EVENTS,
   NEWS_EVENTS,
   eventAmount,
+  fortuneArtResource,
+  fortuneDisplayEntry,
   fortuneEvent,
+  fortuneSlot,
   newsEvent,
   stripEventCode,
 } from './event-table.ts';
@@ -379,13 +384,20 @@ const BLESSING_CALLSITE = new Map<number, number>([
   [6, 0x44c65c], [7, 0x44c771],
   [8, 0x44c874], [9, 0x44c97c],
   [10, 0x44caa3], [11, 0x44cbb0], [12, 0x44ccd8],
+  // ★ 第十四份（需求方拍板照原版）：13 是跳板 `0x0044cd7e jne 0x44ccd4` → 12 的施加段
+  [13, 0x44ccd8],
   [14, 0x44ce39], [15, 0x44cfe3],
+  // ★ 第十四份：16 与 15 **逐字节同构**（`0x0044d0a4 jne 0x44cfdf` → `0x0044cfe3 call 0x44b896(0,1)`）——
+  //   先前「16 原版没接加持」是扫描只认了两条共享尾、漏了 `0x44cfdf` 这一条
+  [16, 0x44cfe3],
   // 17..31 里除 20 外都跳进两条共享尾；17 与 20 是**自己**条件跳进自己的尾
   [17, 0x44d176], [18, 0x44d176], [19, 0x44d176],
   [20, 0x44d2ad], [21, 0x44d2ad], [22, 0x44d2ad],
   [23, 0x44d176], [24, 0x44d176], [25, 0x44d2ad], [26, 0x44d176],
   [27, 0x44d2ad], [28, 0x44d2ad], [29, 0x44d2ad], [30, 0x44d176], [31, 0x44d2ad],
   [32, 0x44d6d4], [33, 0x44d80f],
+  // ★ 第十四份：34/35/36 是跳板（`0x0044d8e1` / `0x0044d90f` / `0x0044d93d jne 0x44d80b`）→ 33 的施加段
+  [34, 0x44d80f], [35, 0x44d80f], [36, 0x44d80f],
 ]);
 
 run('★ 28 个命运事件的 blessing 用法与 exe 调用点参数逐项一致', () => {
@@ -419,7 +431,84 @@ run('★ 28 个命运事件的 blessing 用法与 exe 调用点参数逐项一�
     .sort((a, b) => a[0] - b[0]);
 
   expect(fromTable).toEqual(fromExe);
-  expect(fromTable).toHaveLength(28);
-  // 原版**没接**加持的那一个：16（汽車超速罰款3000元）
-  expect(FORTUNE_EVENTS.find((e) => e.id === 16)?.blessing).toBeUndefined();
+  expect(fromTable).toHaveLength(33);
+  // ★ 第十四份：16（汽車超速罰款）**接了**加持 —— 施加入口逐字节核一遍
+  const o16 = codeOff(0x44d0a4);
+  expect([...exe.subarray(o16, o16 + 2)]).toEqual([0x0f, 0x85]); // jne rel32
+  expect(0x44d0a4 + 6 + exe.readInt32LE(o16 + 2)).toBe(0x44cfdf);
+  // 跳板那几条：jne 的目标就是 12 / 33 的施加段（那里第一件事就是问加持）
+  for (const [va, to] of [[0x44cd7e, 0x44ccd4], [0x44d8e1, 0x44d80b], [0x44d90f, 0x44d80b], [0x44d93d, 0x44d80b]] as const) {
+    const o = codeOff(va);
+    expect(va + 6 + exe.readInt32LE(o + 2), `0x${va.toString(16)}`).toBe(to);
+  }
+});
+
+// ============================================================
+//  ★ 第十三份試玩回報：「遺失錢包損失2000元的配圖怎麼是高興的圖」
+//  命運插画查的是 word 表 `0x475fb4`，不是 `0x1dd + 事件号`
+// ============================================================
+describe('★ 命運插画表 `0x475fb4` 与地图换文案的 37..48 —— 直接对 exe 校验', () => {
+  const big5 = new TextDecoder('big5');
+
+  run('插画表 49 个 word 与 exe 逐项一致', () => {
+    const d = readFileSync(EXE);
+    expect(FORTUNE_ART_TABLE).toHaveLength(49);
+    FORTUNE_ART_TABLE.forEach((v, i) => {
+      expect(d.readInt16LE(dataOff(0x475fb4) + i * 2), `art[${i}]`).toBe(v);
+    });
+  });
+
+  run('函数指针表 `0x475ef0` 实有 49 项：37..48 与 FORTUNE_MAP_JAIL_EVENTS 逐项一致', () => {
+    const d = readFileSync(EXE);
+    // 49 × 4 = 0xc4 —— 正好顶到插画表 0x475fb4
+    expect(0x475ef0 + 49 * 4).toBe(0x475fb4);
+    expect(FORTUNE_MAP_JAIL_EVENTS.map((e) => e.id)).toEqual([37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]);
+    for (const e of FORTUNE_MAP_JAIL_EVENTS) {
+      expect(d.readUInt32LE(dataOff(0x475ef0) + e.id * 4), `fortune[${e.id}]`).toBe(e.va);
+    }
+  });
+
+  run('37..48 每支都是 `mov esi, 天数 / … / push 文案 / jmp 0x44d7a8` 的跳板，天数与文案逐字节一致', () => {
+    const d = readFileSync(EXE);
+    for (const e of FORTUNE_MAP_JAIL_EVENTS) {
+      const o = codeOff(e.va);
+      // 0x18: be imm32（mov esi, 天数）
+      expect(d[o + 0x18], `va ${e.va.toString(16)}`).toBe(0xbe);
+      expect(d.readUInt32LE(o + 0x19)).toBe(e.literal);
+      // 0x24: 68 imm32（push 文案）
+      expect(d[o + 0x24]).toBe(0x68);
+      expect(d.readUInt32LE(o + 0x25)).toBe(e.textVa);
+      // 0x29: e9 rel32 → 0x44d7a8（fortune[33] 的生效段）
+      expect(d[o + 0x29]).toBe(0xe9);
+      expect(e.va + 0x29 + 5 + d.readInt32LE(o + 0x2a)).toBe(0x44d7a8);
+      const t = dataOff(e.textVa);
+      expect(big5.decode(d.subarray(t, d.indexOf(0, t)))).toBe(e.text);
+    }
+  });
+
+  it('★ 事件 24（遺失錢包損失 2000）→ 498，与 23 同图；不是 0x1dd+24 = 501（發票中獎）', () => {
+    expect(fortuneArtResource(24, 7)).toBe(498);
+    expect(fortuneArtResource(23, 0)).toBe(498);
+    expect(fortuneArtResource(27, 0)).toBe(501);
+    expect(0x1dd + 24).toBe(501);
+  });
+
+  it('33..36 按地图低位换槽：v + 4 × (globalMapId & 3)', () => {
+    expect(fortuneSlot(33, 0)).toBe(33);
+    expect(fortuneSlot(33, 1)).toBe(37);
+    expect(fortuneSlot(36, 3)).toBe(48);
+    expect(fortuneSlot(33, 5)).toBe(37); // 原版只读低位 `[0x4991b8]`
+    expect(fortuneSlot(32, 3)).toBe(32); // v < 33 不看地图
+    expect(fortuneArtResource(34, 2)).toBe(506);
+    expect(fortuneDisplayEntry(33, 1)?.text).toBe('#0222酒醉大鬧警局坐牢%d天');
+    expect(fortuneDisplayEntry(34, 1)?.text).toBe('#0223違法聚眾示威坐牢%d天');
+    expect(fortuneDisplayEntry(34, 0)).toBe(fortuneEvent(34));
+    expect(fortuneDisplayEntry(24, 3)).toBe(fortuneEvent(24));
+  });
+
+  it('换文案不换天数：37..48 的天数与 33..36 按位置一一相同', () => {
+    for (const e of FORTUNE_MAP_JAIL_EVENTS) {
+      expect(e.literal).toBe(fortuneEvent(33 + ((e.id - 37) % 4))?.literal);
+    }
+  });
 });

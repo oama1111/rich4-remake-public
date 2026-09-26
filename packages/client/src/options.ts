@@ -65,6 +65,7 @@
 
 import type { Sprite } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** Data.mkf 里这一屏的资源号 */
 export const OPTIONS_RESOURCE = 3;
@@ -291,7 +292,7 @@ export const FONT_SIZE = { label: 15, big: 20, list: 12 } as const;
  * offset 2 music        00~04
  * offset 3 sound effect 00~04
  * offset 4 auto save    01 enabled
- * offset 5 view         00 日曆 / 01 小地圖 / 02 兩者輪流
+ * offset 5 view         00 日曆 / 01 小地圖 / 02 兩者輪流   ← ⚠️ 这句说明是猜的，见 windowView
  * ```
  */
 export interface GameOptions {
@@ -300,7 +301,11 @@ export interface GameOptions {
   music: number;
   sound: number;
   autoSave: boolean;
-  /** 右下角那块显示什么 0/1/2 */
+  /**
+   * 右栏版式 0 日、月曆 / 1 縮小地圖 / 2 **組合畫面**（窄版面板 + 小地图 + 日曆三块同屏）。
+   * 版式本身在 `hud.ts` 的 `sidebarLayout`（@source WM_PAINT 分派 VA 0x00418bcd）。
+   * ⚠️ `rich4_cfg.txt` 把 02 记成「兩者輪流」—— exe 里没有轮换代码，是那份说明猜错了。
+   */
   windowView: number;
   /**
    * 第几首配乐 0..7 —— `Midi.txt` 的前 8 条正好是这 8 首。
@@ -310,16 +315,41 @@ export interface GameOptions {
    *   本引擎多存一个字段只是为了知道自己点了哪首；反白仍以正在放的那首为准。
    */
   track: number;
+  /**
+   * 日曆那一面画哪个版式：0 日曆 / 1 月曆 —— `RICH4.CFG` +12（`[0x497164]`），由日曆面上的
+   * 太阳 / 月亮两颗钮切换（`0x004183c6` / `0x0041840c`），**不在設定屏上**。
+   * 与 `windowView`（`cfg+5`）互相独立：那一格决定日曆那一面在不在屏上，这一格决定画哪个版式。
+   */
+  calendar: number;
 }
 
+/**
+ * 没有 `RICH4.CFG`（新浏览器 / 隐身窗口 / 新装机）时的那一份。
+ *
+ * ★★ 2026-09-24（第十六份试玩回报「默认展示缩小地图、游戏速度最快是不是没部署到多人模式？」）：
+ *   单机与联机**本来就读同一份**（开机 `loadConfigFromStore()` 一次，两条开局路都不再改）。
+ *   回报里单机那边是 `speed 2 / windowView 1`，那是**浏览器里存着的 RICH4.CFG**；
+ *   联机那边若是新窗口 / 另一台机器（没有 cfg），吃的就是这里的出厂值 —— 而这里先前是
+ *   `speed 1 / windowView 0`（日月曆），所以「单机对、联机不对」。
+ *
+ * - `windowView: 1`（縮小地圖）—— **原版出厂值**：`rich4_read_config()` 找不到文件时
+ *   `0x00411edc..0x00411efc` 把 `ah = 1` 写进 `[0x49715d]`（= `cfg+5`，視窗）。
+ * - `speed: 2`（3 格、最快）—— ⚠️ **有意偏离**：需求方 2026-09-23 拍板（「3 格的整体节奏与他对
+ *   原版的体感一致」，当时那一笔 `9835a02` 落在 `ds/hd-stage` 分支上、没有进主线）。
+ *   原版出厂值是 1（`0x00411edc mov [0x497158], ah`，`ah = 1`）。
+ * - `music: 4` / `sound: 4`（`0x00411eea` / `0x00411ef0`，`dh = 4`）、`autoSave: true`（`0x00411ef6`，`ah = 1`）、
+ *   `animation: true`（`0x00411ee2`）—— 原版出厂值（2026-09-24 需求方拍板照原版，先前是 3 / 3 / 关）。
+ */
 export const DEFAULT_OPTIONS: GameOptions = {
-  speed: 1,
+  speed: 2,
   animation: true,
-  music: 3,
-  sound: 3,
-  autoSave: false,
-  windowView: 0,
+  music: 4,
+  sound: 4,
+  autoSave: true,
+  windowView: 1,
   track: 0,
+  // @source `rich4_read_config()` 找不到文件时 `0x00411f02 xor ch, ch / 0x00411f04 mov [0x497164], ch` ⇒ 日曆
+  calendar: 0,
 };
 
 /** 音量档 0..4 → 0..1 */
@@ -454,7 +484,7 @@ function blit(
   y: number,
 ): void {
   const s = sprite(index, KEYED_IMAGES.includes(index));
-  if (s !== null) ctx.drawImage(s.bitmap, x, y);
+  if (s !== null) drawSprite(ctx, s, x, y);
 }
 
 /** 白字黑边（原版是点阵字自带描边） */
@@ -482,7 +512,7 @@ export function drawOptions(
 
   // ——— 底图 0：不抠黑 ———
   const panel = sprite(IMG.PANEL, false);
-  if (panel !== null) ctx.drawImage(panel.bitmap, 0, 0);
+  if (panel !== null) drawSprite(ctx, panel, 0, 0);
   else {
     ctx.fillStyle = '#6b7b6b';
     ctx.fillRect(0, 0, DIALOG.w, DIALOG.h);

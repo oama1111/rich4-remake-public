@@ -6,7 +6,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { DICE_HOLD_MS, DiceRollFx } from './dice-roll.ts';
+import { DICE_HOLD_MS, DiceRollFx, rollsWithoutDice } from './dice-roll.ts';
+import { makeGameState, makeNode, makePlayer, reduce } from '@rich4/core';
 import type { LoadedFlic } from './assets.ts';
 
 /** 造一段假影片：`n` 帧、每帧 `ms` 毫秒 */
@@ -207,5 +208,185 @@ describe('★ 相位推进不依赖绘制（2026-09-16 长跑抓到的硬卡死�
     const beginAt = src.indexOf('diceFx.begin(performance.now(), diceAnticipateTicks(me)');
     const afterBegin = src.slice(beginAt, beginAt + 400);
     expect(afterBegin, 'applyAction 里自己起的动画也得挂 dicePoll').toContain('setTimeout(dicePoll, 16)');
+  });
+});
+
+/*
+ * 联机预测 —— 第九份试玩回报「多人模式下玩家扔骰子有个很明显的延迟卡顿」（2026-09-22）
+ *
+ * 死锁形状（改动前）：`pumpNetInbox` 的 `diceFxActive` 闸只能由 `applyAction(rollDice)`
+ * → `diceFx.roll()` 清掉，而 `applyAction` 正被这道闸挡着 ⇒ 每掷空转到 3 秒超时。
+ * 现在：dispatch 那一刻就 `predictRoll()` 开滚（滚骰画面**不含点数**，所以不必猜点数），
+ * 回包只负责把权威点数补上。
+ */
+describe('DiceRollFx.predictRoll —— 联机预测（先滚起来，点数后补）', () => {
+  it('★ 预动作期间可以预测开滚，且**不预设任何点数**', () => {
+    const fx = new DiceRollFx();
+    fx.begin(1000, 9, TICK, 2);
+    expect(fx.predictRoll(1000, fakeFlic(36, 14))).toBe(true);
+    expect(fx.phase).toBe('tumble');
+    // 点数还没到 —— 这正是「不必猜点数」的证据
+    expect(fx.dice).toEqual([]);
+    expect(fx.diceCount, '颗数不该被预测改掉').toBe(2);
+    // 滚骰段照旧按 FLIC 自己的帧数 × 每帧毫秒走
+    expect(fx.tumbleMs()).toBe(36 * 14);
+  });
+
+  it('★ 没解好的影片不预测（否则 tumbleMs() = 0，相位会当场滑过去）', () => {
+    const fx = new DiceRollFx();
+    fx.begin(1000, 9, TICK, 1);
+    expect(fx.predictRoll(1000, null)).toBe(false);
+    expect(fx.phase, '留在预动作，退回老路').toBe('anticipate');
+  });
+
+  it('不在预动作时预测是空操作（别把别人的动画顶掉）', () => {
+    const fx = new DiceRollFx();
+    expect(fx.predictRoll(1000, fakeFlic(36, 14))).toBe(false);
+    expect(fx.phase).toBe('idle');
+  });
+
+  it('★★ 权威点数到达时**接着滚**，不重启相位、不重算起始时刻', () => {
+    const fx = new DiceRollFx();
+    fx.begin(1000, 9, TICK, 1);
+    fx.predictRoll(2000, fakeFlic(36, 14));
+    // 预测起播后 200 ms（= 14 帧）—— 回包到了
+    fx.roll(2200, [5, 3], fakeFlic(36, 14));
+    expect(fx.phase).toBe('tumble');
+    // ★ 起始时刻仍是 2000：帧号从 **200 ms** 算起（第 14 帧），不是从 2200 重头
+    expect(fx.flicFrame(2200)).toBe(14);
+    expect(fx.dice).toEqual([5, 3]);
+    expect(fx.diceCount).toBe(2);
+  });
+
+  it('★ 回包迟到（已进定格）也只在原地补点数，不回头再滚一遍', () => {
+    const fx = new DiceRollFx();
+    fx.begin(1000, 9, TICK, 1);
+    fx.predictRoll(2000, fakeFlic(36, 14));
+    // 滚骰 504 ms 走完 → hold；此刻点数还没到（空数组 = 一张点数图都不画）
+    expect(fx.pips(2600)).toEqual([]);
+    fx.roll(2600, [6], fakeFlic(36, 14));
+    expect(fx.phase).toBe('hold');
+    expect(fx.pips(2600)).toEqual([6]);
+    // 定格没被重置：2000 + 504 = 2504 起算，500 ms 后收摊
+    expect(fx.done(3004)).toBe(true);
+  });
+
+  it('单机那条路一个字没变：roll() 从预动作正常起步', () => {
+    const fx = new DiceRollFx();
+    fx.begin(1000, 9, TICK, 1);
+    fx.roll(1720, [4], fakeFlic(36, 14));
+    expect(fx.phase).toBe('tumble');
+    expect(fx.flicFrame(1720)).toBe(0);
+    expect(fx.pips(1720 + 36 * 14)).toEqual([4]);
+  });
+});
+
+/*
+ * 死锁那一处（`pumpNetInbox`）的接线钉子 —— 这段在 websocket 回调/定时器里，
+ * 仓里没有 `pumpNetInbox` 的单测，故用原始码钉（与 `feedback-button.test.ts` 同法）。
+ */
+describe('pumpNetInbox —— 放行自己在等的那条 rollDice', () => {
+  const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+  const pump = src.slice(src.indexOf('function pumpNetInbox('), src.indexOf('function startNetTick('));
+
+  it('本机发出的 rollDice 会置位「在等回包」，并带一条兜底撤位', () => {
+    expect(src).toContain('let awaitingOwnRoll = false;');
+    const dispatchAt = src.indexOf('function dispatch(action: Action): void {');
+    const dispatchBody = src.slice(dispatchAt, dispatchAt + 1200);
+    expect(dispatchBody).toContain("if (action.type === 'rollDice') {");
+    expect(dispatchBody).toContain('awaitingOwnRoll = true;');
+    // ★ 这一位会让队首的 rollDice 绕过整个节拍闸 ⇒ 必须有兜底，不能一直挂着
+    expect(dispatchBody).toContain('awaitingOwnRoll = false;');
+    expect(dispatchBody).toContain('ROLL_WAIT_TIMEOUT_MS');
+  });
+
+  it('★★ 队首是自己等的那条 rollDice ⇒ 不走 diceFxActive 那道闸', () => {
+    expect(pump).toContain('const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === \'rollDice\';');
+    expect(pump).toContain('if (!ownRollEcho && holdForActorWalk(');
+  });
+
+  it('回包落地 / 3 秒超时 / 服务器拒绝 三条路都要清掉这一位', () => {
+    const applyNetAt = src.indexOf('function applyNetAction(');
+    const applyNetBody = src.slice(applyNetAt, src.indexOf('function pumpNetInbox('));
+    expect(applyNetBody).toContain("if (item.action.type === 'rollDice') awaitingOwnRoll = false;");
+
+    const dicePollAt = src.indexOf('function dicePoll(): void {');
+    const dicePollBody = src.slice(dicePollAt, src.indexOf('\nfunction resumeTurnDriver', dicePollAt));
+    expect(dicePollBody, '超时那条要清').toContain('awaitingOwnRoll = false;');
+
+    const errAt = src.indexOf('onError: (message) => {');
+    const errBody = src.slice(errAt, errAt + 500);
+    expect(errBody, '被拒那条要清 + 收掉预测动画').toContain('awaitingOwnRoll = false;');
+    expect(errBody).toContain('diceFx.cancel();');
+  });
+
+  it('★ dispatch 那一刻就预测开滚（别白等一个 RTT）', () => {
+    const dicePollAt = src.indexOf('function dicePoll(): void {');
+    const dicePollBody = src.slice(dicePollAt, src.indexOf('\nfunction resumeTurnDriver', dicePollAt));
+    expect(dicePollBody).toContain('diceFx.predictRoll(performance.now(), diceFlic.get(diceFx.diceCount) ?? null)');
+    // 预测起播时音效也要跟着响，且 applyAction 不能放第二遍
+    expect(dicePollBody).toContain('playDiceSound();');
+    const applyAt = src.indexOf('function applyAction(action: Action): void {');
+    const applyBody = src.slice(applyAt, applyAt + 3000);
+    expect(applyBody).toContain("const predicted = diceFx.phase === 'tumble' || diceFx.phase === 'hold';");
+    expect(applyBody).toContain('if (!predicted) playDiceSound();');
+  });
+});
+
+describe('★★ 掷骰姿停在哪一帧（第十四份试玩回报 #3「扔完骰子后应该是手上没骰子的模型」）', () => {
+  // 那一组图每向 N 帧：前几帧捧着骰子、最后一帧骰子已出手（宮本寶藏 Data.mkf #256：0..5 捧骰、8 空手）。
+  // @source 0x0040dee4 帧号清 0；0x0040d975 数到 N 那一 tick 不重画、直接掷；
+  //   fcn_00419572（滚骰 + 500 ms 定格）不调 0x40829d ⇒ 屏幕停在第 N−1 帧。
+  it('★ 预动作从第 0 帧起、一 tick 一帧', () => {
+    const fx = new DiceRollFx();
+    expect(fx.poseFrame(0)).toBeNull();
+    fx.begin(1000, 9, TICK, 1);
+    expect(fx.poseFrame(1000)).toBe(0);
+    expect(fx.poseFrame(1000 + TICK)).toBe(1);
+    expect(fx.poseFrame(1000 + 8 * TICK + 79)).toBe(8);
+  });
+
+  it('★★ 滚骰 + 定格整段**定在最后一帧**（N−1 = 空手），不跟任何计数器转', () => {
+    const fx = new DiceRollFx();
+    fx.begin(0, 9, TICK, 1);
+    fx.roll(9 * TICK, [4], fakeFlic(36, 14));
+    for (const t of [9 * TICK, 9 * TICK + 100, 9 * TICK + 504, 9 * TICK + 504 + 499]) {
+      expect(fx.poseFrame(t), `t=${t}`).toBe(8);
+    }
+    // 定格走完 → 不再盖姿态（原版 0x0040da37 切成走子）
+    expect(fx.poseFrame(9 * TICK + 504 + DICE_HOLD_MS)).toBeNull();
+  });
+
+  it('★ 每向帧数不是 9 的载具也一样（N−1 随 begin 给的帧数走）', () => {
+    const fx = new DiceRollFx();
+    fx.begin(0, 4, TICK, 2);
+    fx.roll(0, [1, 2], fakeFlic(36, 14));
+    expect(fx.poseFrame(10)).toBe(3);
+  });
+
+  it('★ 接线：主循环把帧号交给渲染器，渲染器按它取图而不是全局走路帧', () => {
+    const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(main).toContain('characterPoseFrame: diceFx.poseFrame(performance.now()),');
+    const render = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
+    expect(render).toContain('input.characterPose ?? null, input.characterPoseFrame ?? null');
+    expect(render).toContain('directionalImage(count, dir, frameNow)');
+    expect(render).toContain('const frameNow = fixedFrame ?? this.#walkFrame;');
+  });
+});
+
+describe('★ 审计 2026-09-25（loop F5）：停留 / 龜行不起滚骰 —— 与 core 的 rollDice 同源', () => {
+  it('rollsWithoutDice 为真 ⇔ core 这一「掷」没有骰子（dice: []）', () => {
+    const topo = { nodes: [1, 2].map((id) => makeNode({ id, adjacent: [id === 1 ? 2 : 1] })) };
+    const cases = [
+      { stopping: 0, tortoiseWalking: 0 },
+      { stopping: 1, tortoiseWalking: 0 },
+      { stopping: 0, tortoiseWalking: 2 },
+      { stopping: 0x80, tortoiseWalking: 0x80 },
+    ];
+    for (const c of cases) {
+      const p = makePlayer({ index: 0, nodeId: 1, blocking: { inHotel: 0, disappearing: 0, inPrison: 0, inHospital: 0, sleeping: 0, sleepWalking: 0, ...c } });
+      const after = reduce(makeGameState({ players: [p], phase: 'awaitingRoll' }), { type: 'rollDice' }, topo);
+      expect(rollsWithoutDice(p), JSON.stringify(c)).toBe(after.dice.length === 0);
+    }
   });
 });

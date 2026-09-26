@@ -246,10 +246,12 @@ describe('★ 原版另有专窗的那几处**没有**被并进来（不许多�
     // 它们虽然带 `amount`（上限与 fill 要给 ATM 用），但原版 exe 里
     // `_rich4_ui_bank_atm_entry` / `fcn_00436ef8` **从不 call 0x453544** ——
     // 那台机器自己的数字键在 `Panel.mkf` #24 上（`fcn_00436ef8` 的 0x100 分支）。
+    // ★ 第十三份试玩回报后：存提**根本不在**貸款屏的 choices 里 —— 原版貸款屏（`fcn_00435062`，
+    //   命中表 `0x4757f8`）只有 EXIT / 申請 / 償還 / 特別融資四颗，存提只在 ATM（`pending.kind === 'atm'`）里办
     const ui = interactionUi(bank, state)!;
-    // 存款上限 = 手上現金；取款上限 = 存款（两条都交给 ATM 自己那把数字键盘）
-    expect(byAction(ui, 'deposit').max).toBe(150_000);
-    expect(byAction(ui, 'withdraw').max).toBe(80_000);
+    const ops = ui.choices.map((c) => (c.action.type === 'bank' ? c.action.op : null));
+    expect(ops).not.toContain('deposit');
+    expect(ops).not.toContain('withdraw');
   });
 
   it.skipIf(!existsSync(EXE))(

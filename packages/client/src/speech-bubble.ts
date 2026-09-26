@@ -28,8 +28,9 @@
  *
  * 1. ★ 先前把第 ③ 步的**备份**当成了底板，还据此断言「原版把棋盘抠下来当底板、
  *    再贴一张 400×89 的角色名牌」—— **错的**。第 ③ 步只是为了说完还原棋盘；
- *    原版的底板是第 ④ 步那张**气泡图**（与 `god-slot.ts` 的
- *    `GOD_SLOT_BUBBLE` 是**同一张**：`Data.mkf #0x205` 图 6，落 (220,130)）。
+ *    原版的底板是第 ④ 步那张**气泡图**（`Data.mkf #0x205` 图 6，落 (220,130)）。
+ *    ⚠️ 神明老虎机（`god-slot.ts`）与转盘（`wheel-screen.ts`）用的**不是**这张，
+ *    是 `+0x48` 的图 5（棕色訊息框）—— 全 exe 只有 `player_say` 这一处 `+0x54`。
  *    `fd31598` 据此错读加的「半透明深色底板 + 浅边」**已删**，换成 ④+⑤。
  * 2. ★ `rich4-spec/docs/systems/dialogue-voice.md` §二 与本文档 Q-SPEECH-11
  *    都写过「第二个实参 `flag` 函数体里一次都没读」—— **也是错的**：
@@ -54,6 +55,14 @@
 import {
   cardLine,
   cardLineVoice,
+  FREE_CARD_ANSWER_LINES,
+  FREE_CARD_ANSWER_SLOT,
+  freeCardAnswerVoice,
+  SCAPEGOAT_ANSWER_LINES,
+  SCAPEGOAT_ANSWER_SLOT,
+  scapegoatAnswerVoice,
+  parseVoiceCode,
+  toolLine,
   speechEmojiImage,
   speechIndex,
   speechLine,
@@ -62,6 +71,8 @@ import {
 import type { Sprite } from './assets.ts';
 import { portraitResource } from './assets.ts';
 import type { SayEvent } from './speech.ts';
+import { drawGdiText, type GdiTextStyle } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /**
  * 取图出口 —— 与 `main.ts` 的 `spriteNow` 同形。
@@ -119,6 +130,14 @@ export const SPEECH_TEXT_FLAG = 5;
 
 /** 字幕的排版：字号 / 行距（原版 `_rich4_create_font(0x10, 0x101010, …)`，16 像素高）*/
 export const SPEECH_TEXT_FONT_SIZE = 0x10;
+/** 字幕的整套字效 @source 0x0044efd2 `create_font(0x10, 0x101010, 0, 2, 1)`：深色、粗体、无阴影 */
+export const SPEECH_TEXT_STYLE: GdiTextStyle = {
+  size: SPEECH_TEXT_FONT_SIZE,
+  color: '#101010',
+  color2: '#000000',
+  flags: 2,
+  spacing: 1,
+};
 export const SPEECH_TEXT_LINE_HEIGHT = 0x12;
 
 /**
@@ -141,9 +160,9 @@ export const SPEECH_EMOJI_AT = { x: 0xf0, y: 0x82 } as const;
  * 0044f032  push ebp
  * 0044f033  call 0x456418                          ; 带透明（抠黑）贴
  * ```
- * `(0x54 − 0xc) / 0xc = 6` —— 与 `god-slot.ts` 的 `GOD_SLOT_BUBBLE`
- * （`0x004407a0` `fcn_00456418(表面, Data#517 图 6, 0xdc, 0x8c)`）是**同一张图**，
- * 只是落点不同（神明老虎机落 (220,140)，台词落 (220,130)）。
+ * `(0x54 − 0xc) / 0xc = 6` —— 全 exe 引用 `[0x48bad8] + 0x54` 的**只有这一处**
+ * （`dialog-templates.test.ts` 扫全段钉住）。★ 2026-09-23 订正：先前这里说神明老虎机
+ * （`0x004407a6 add eax,0x48`）也是图 6 —— 错，`+0x48` 是**图 5**（棕色訊息框）。
  * 实测该图 **271×199，锚点 (127,92)** ⇒ 它占屏幕 (93,38)-(364,237)，
  * 正好把台词 (200,130) 与表情图 (240,130) 罩住。
  */
@@ -221,6 +240,14 @@ export interface SpeechBubble {
    *     （VA `0x48123a`，见 `@rich4/data` 的 `card-lines.ts`）。
    */
   readonly cardId?: number;
+  /**
+   * 道具台词时给出**道具号 1..13**（普通台词为 `undefined`）。
+   *
+   * 与 `cardId` 同一个理由：工具台词的文本/语音来自**另一张表**
+   * （`@rich4/data` 的 `TOOL_LINES`，原版 `_tool_strings` @0x480d5a），
+   * 而 `event` 这时是 `道具号 − 1`。
+   */
+  readonly toolId?: number;
   /** 说话人的**完整名字**（如「金貝貝」）*/
   readonly speaker: string;
   /**
@@ -266,6 +293,24 @@ export function speechBubbleOf(
   character: number,
   speaker: string,
 ): SpeechBubble | null {
+  // ★ 字面串那一种（`SayEvent.text`，如魔法屋的「？？？...」）：不查角色台词表；
+  //   串首有 `#NNNN` 才放语音（`0x0044f07c cmp byte [ebx], 0x23`），否则只画字。
+  if (ev.text !== undefined) {
+    const { voice, rest } = parseVoiceCode(ev.text);
+    return {
+      player: ev.player,
+      character,
+      event: ev.event,
+      speaker,
+      expression: ev.expression ?? 0,
+      lines: bubbleLines(rest),
+      voice,
+      emoji: null,
+      textAt: SPEECH_TEXT_AT,
+      emojiAt: SPEECH_EMOJI_AT,
+      holdMs: SPEECH_HOLD_MS,
+    };
+  }
   let line: SpeechLine;
   try {
     line = speechLine(character, ev.event);
@@ -432,6 +477,44 @@ export function cardLineBubbleOf(
   };
 }
 
+/**
+ * 一条**道具台词**（第十一份試玩回報 #3）→ 一段可直接画的台词。
+ *
+ * @source 原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`
+ *   （路障 `0x00446bcc` / 地雷 `0x00446caa` / 定時炸彈 `0x00446d8b`，各函式**开头**、
+ *   `cmp [who_plays],1` **之前** ⇒ **电脑也说**）。
+ *   表在 `0x480d5a`（12 行 × 26 列，行距 0x68），前 13 列 = 道具 1..13。
+ *
+ * ⚠️ 与卡牌台词不同：**语音号是散列的**（`#0236`/`#0237`/…），不像角色台词表能用公式还原，
+ *   所以 `TOOL_LINES` 的串**保留 `#NNNN` 前缀**，这里用 `parseVoiceCode` 现剥。
+ */
+export function toolLineBubbleOf(
+  player: number,
+  character: number,
+  speaker: string,
+  toolId: number,
+): SpeechBubble | null {
+  const line = toolLine(character, toolId);
+  if (line === null) return null;
+  const [emojiCode, raw] = line;
+  const parsed = parseVoiceCode(raw);
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: toolId - 1,
+    toolId,
+    speaker,
+    expression: 0,
+    lines: isEmoji ? [] : bubbleLines(parsed.rest),
+    voice: parsed.voice,
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
+}
+
 // ============================================================
 //  队列（表现层状态，不进 GameState）
 // ============================================================
@@ -544,7 +627,7 @@ export interface SpeechDrawEnv {
  */
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /**
@@ -560,7 +643,7 @@ function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number
  *   ④ ⑤ 排在它**之前** —— 故金貝貝那一句**照样有气泡与头像**（原版就是这么画的）。
  */
 export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
-  const { ctx, sprite, font } = env;
+  const { ctx, sprite } = env;
 
   // ── ④ 气泡底图（原版第 ④ 步，@source 0x0044f019..0x0044f033）──
   //
@@ -590,14 +673,12 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     // `@DD` 那一支：只贴 `Data.mkf #0x207` 的表情图，**不画字** @source 0x0044f0b5..0x0044f0e0
     drawAnchored(ctx, sprite('Data.mkf', 0x207, b.emoji, true), b.emojiAt.x, b.emojiAt.y);
   } else if (b.lines.length > 0) {
-    // 白字 + 黑描边（原版 `_rich4_create_font(0x10, 0x101010, …)` + `draw_text(串,200,130,5)`）
+    // ★ 2026-09-23 订正：原版 `create_font(0x10, 0x101010, 0, 2, 1)`（@source 0x0044efc7..0x0044efd2）
+    //   = **深色 #101010 正文、粗体（bit1）、无阴影无描边**（bit0 / bit2 都没置）——
+    //   先前画成「白字 + 3 px 黑描边」。`draw_text(串, 200, 130, 5)` 不变。
     ctx.save();
-    ctx.font = font(SPEECH_TEXT_FONT_SIZE);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = '#101010';
-    ctx.fillStyle = '#ffffff';
     // ★★ W-64：`SPEECH_TEXT_FLAG = 5` = **垂直居中** —— `(200,130)` 是整块文字的
     //   垂直中心（原版 `0x0044ff35 mov eax,ebx / sar eax,1 / sub [esp+0xb0],eax`，
     //   `ebx` = 整块文字高 + 1；`sar` 是**算术**右移 ⇒ 用 `>> 1` 而不是 `/ 2`）。
@@ -607,9 +688,41 @@ export function drawSpeechBubble(b: SpeechBubble, env: SpeechDrawEnv): void {
     for (let i = 0; i < b.lines.length; i++) {
       const y = top + i * SPEECH_TEXT_LINE_HEIGHT;
       const text = b.lines[i]!;
-      ctx.strokeText(text, b.textAt.x, y);
-      ctx.fillText(text, b.textAt.x, y);
+      drawGdiText(ctx, text, b.textAt.x, y, SPEECH_TEXT_STYLE);
     }
     ctx.restore();
   }
+}
+
+/**
+ * ★ 第十四份：被动卡用完之后**回的那一句** —— 卡牌台词表的另两槽：
+ *   - 免費卡（20）→ 地主说槽 79，表情 1（`0x00444b8e mov edi,[eax + 0x481376]` / `0x00444b95 push 1`）；
+ *   - 嫁禍卡（19）→ 替死鬼说槽 78，表情 2（`0x00444a41 mov edi,[eax + 0x481372]` / `0x00444a48 push 2`）。
+ *   其余卡没有这一句 ⇒ null。
+ */
+export function cardAnswerBubbleOf(
+  player: number,
+  character: number,
+  speaker: string,
+  cardId: number,
+): SpeechBubble | null {
+  const free = cardId === 20;
+  if (!free && cardId !== 19) return null;
+  const line = (free ? FREE_CARD_ANSWER_LINES : SCAPEGOAT_ANSWER_LINES)[character];
+  if (line === undefined) return null;
+  const [emojiCode, text] = line;
+  const isEmoji = emojiCode !== null;
+  return {
+    player,
+    character,
+    event: free ? FREE_CARD_ANSWER_SLOT : SCAPEGOAT_ANSWER_SLOT,
+    speaker,
+    expression: free ? 1 : 2,
+    lines: isEmoji ? [] : bubbleLines(text),
+    voice: free ? freeCardAnswerVoice(character) : scapegoatAnswerVoice(character),
+    emoji: isEmoji ? speechEmojiImage(emojiCode) : null,
+    textAt: SPEECH_TEXT_AT,
+    emojiAt: SPEECH_EMOJI_AT,
+    holdMs: SPEECH_HOLD_MS,
+  };
 }

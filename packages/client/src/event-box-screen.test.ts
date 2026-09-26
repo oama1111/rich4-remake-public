@@ -11,6 +11,8 @@
  *      `fcn_0045144f` 的 `flags=1` ⇒ `[0x48c880]=0`），亮牌时对话框皮 + 卡名
  *      （220,129，正中）落 + 卡面 `Data[卡号+0x23a]`（**165×256**，见 `CARD_FACE_SIZE`）落 (138,200)，停 1500ms（可跳过）；
  *   ④ **触发**：`lastEvent` 变了 → 新聞/命運；否则手牌变长 → 抽卡；正在播时不起新的。
+ *      ★ 例外：这条 action 新写的 `notices` 里有 `god.gotCard`（福神得卡）⇒ **不出卡面**
+ *      （原版 `fcn_0040ed8f` 那一段没有卡面演出；见文件末「福神得卡」那一组）。
  *   ⑤ **可跳过性**：`fcn_004544f6`（新聞 / 命運第一段）与 `fcn_004528b9`（命運第二段 /
  *      抽卡亮牌）都认 `0x202`/`0x205`/`0x101` ⇒ 这些段都能被抬手/右键/按键推进或关屏；
  *      抽卡第一段 FLIC 是 `fcn_0045144f` 且那一处跳过闸关着 ⇒ 点不掉
@@ -67,6 +69,8 @@ import {
   newsTitle,
   newsView,
   resetEventBoxScreen,
+  startCardRevealPopup,
+  cardUsePopupActive,
   type EventBoxItem,
   type EventBoxPlan,
 } from './event-box-screen.ts';
@@ -351,9 +355,7 @@ describe('★ 新聞那一段的绘制计划 @source 0x0044b6df', () => {
 describe('★ 命運那一段的绘制计划 @source 0x0044db81', () => {
   const plan = eventBoxPlan(fortuneView(12, 1, '糖糖'));
 
-  it('★ 外框图 1、插画 `0x1dd+12` 落 (25,44)', () => {
-    // ⚠️ 真表 `0x475fb4` 不是等差（id 20..36 有几项重复/走另一支），
-    //   这里按任务书给的等价式钉；见 D-EVENT-6。
+  it('★ 外框图 1、插画 = 表 `0x475fb4`[12]（= 0x1dd+12，表的前 23 项恰好等差）落 (25,44)', () => {
     const blits = blitsOf(plan);
     expect(blits[0]).toMatchObject({ index: EVENT_FORTUNE_FRAME, keyed: false, at: { x: 0, y: 0 } });
     expect(EVENT_FORTUNE_FRAME).toBe(1);
@@ -376,6 +378,34 @@ describe('★ 命運那一段的绘制计划 @source 0x0044db81', () => {
   it('★ 1600ms + 800ms', () => {
     expect(plan.holdMs).toBe(1600);
     expect(plan.hold2Ms).toBe(800);
+  });
+});
+
+describe('★★ 第十三份試玩回報：命運插画一律查表 `0x475fb4`（不是 `0x1dd + id`）', () => {
+  const artOf = (id: number, map = 0): number | undefined =>
+    blitsOf(eventBoxPlan(fortuneView(id, 1, '阿土伯', map))).find((b) => b.archive === 'Data.mkf')?.resource;
+
+  it('★ 24「遺失錢包損失2000元」→ 498（与 23 同一张），不是 501（發票中獎那张）', () => {
+    // 回报 `20260923-150322722`：地图 7、命運 #24，先前画的是 0x1dd+24 = 501
+    expect(artOf(24, 7)).toBe(498);
+    expect(artOf(23, 7)).toBe(498);
+    expect(artOf(27)).toBe(501);
+    expect(artOf(24)).not.toBe(FORTUNE_ART_BASE + 24);
+  });
+
+  it('★ 其余重复/错位的几项：20..22 → 497、25 → 499、26 → 500、30..32 → 502..504', () => {
+    expect([20, 21, 22].map((id) => artOf(id))).toEqual([497, 497, 497]);
+    expect([25, 26, 28, 29, 30, 31, 32].map((id) => artOf(id))).toEqual([499, 500, 501, 501, 502, 503, 504]);
+  });
+
+  it('★ 33..36（坐牢）按地图低位换图，也换文案（fortune_call_table[37..48]），天数不变', () => {
+    expect([33, 34, 35, 36].map((id) => artOf(id, 0))).toEqual([505, 506, 507, 508]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 1))).toEqual([505, 509, 510, 511]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 2))).toEqual([512, 506, 507, 513]);
+    expect([33, 34, 35, 36].map((id) => artOf(id, 3))).toEqual([514, 515, 510, 516]);
+    expect(fortuneView(34, 1, '阿土伯', 0).description).toBe('防礙風化坐牢5天');
+    expect(fortuneView(34, 1, '阿土伯', 1).description).toBe('違法聚眾示威坐牢5天');
+    expect(fortuneView(36, 1, '阿土伯', 3).description).toBe('盜賣國家機密坐牢9天');
   });
 });
 
@@ -531,6 +561,8 @@ function fakeCanvas(): {
       /* 不记 */
     },
     fillText(text: string, x: number, y: number): void {
+      // 字效 3 的阴影那一遍（第二色 #101010，`font.ts` 的 `drawGdiText`）不记 —— 只记正文
+      if (String(this.fillStyle) === '#101010') return;
       texts.push({
         text,
         x,
@@ -585,8 +617,8 @@ describe('★ 画一遍：落点与抠黑（照计划执行）', () => {
       [24, 8],
       [24, 310],
     ]);
-    // 28 号宋体
-    expect(texts[0]!.size.startsWith('28px')).toBe(true);
+    // 28 号宋体、**粗体**（`create_font(0x1c, …, 3, 0)` 的 bit1，0x0044b747；2026-09-23 订正）
+    expect(texts[0]!.size.startsWith('bold 28px')).toBe(true);
   });
 
   it('★ 命運：说明画在 (24,330) 而不是 (24,310)', () => {
@@ -728,12 +760,30 @@ describe('★ event 钩子：lastEvent 变了 / 手牌变长', () => {
     resetEventBoxScreen();
   });
 
-  it('★ `lastEvent` 没变（同一 kind/id）→ 一次都不起播', () => {
+  it('★ `lastEvent` 没变（**同一个引用** —— 别的 action 原样带过去的）→ 一次都不起播', () => {
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], { kind: 'news', id: 3 });
-    const after = stateOf([player(0, [])], { kind: 'news', id: 3 });
+    const after = { ...before, players: [...before.players] };
     eventBoxScreen.event!(before, after, fakeEnv(after));
     expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★★ 第十四份：连着两次抽到**同一张**（core 新建了一份 `lastEvent`）⇒ 照样起播', () => {
+    // 先前按 kind/id 比，第二次付保險金的框不出来（浏览器实测：强抽两次命運 30）
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], { kind: 'fortune', id: 30 });
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 30 });
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('fortune');
+    expect(eventBoxScreenState().playback?.plan.id).toBe(30);
+    resetEventBoxScreen();
+  });
+
+  it('★★ 第十四份：真的 reduce 两次抽同一张 ⇒ 两个不同的 `lastEvent`；中间无关的 action 不换引用', () => {
+    const src = readFileSync(new URL('../../core/src/state/reduce.ts', import.meta.url), 'utf8');
+    // 命運 / 新聞的 `lastEvent` 只在抽牌那两处新建（其余都是 `{...state}` 带过去）
+    const sites = [...src.matchAll(/lastEvent: \{\s*kind: '(fortune|news)'/g)].length;
+    expect(sites).toBe(2);
   });
 
   it('★ 抽卡：手牌变长 → 起播，卡名对得上', () => {
@@ -809,6 +859,146 @@ describe('★ event 钩子：lastEvent 变了 / 手牌变长', () => {
     expect(eventBoxScreen.active(fakeEnv(after))).toBe(false);
     // ★ 没在播时右键也不能炸（原版那两处等待各有自己的窗口过程）
     eventBoxScreen.contextmenu!(0, 0, fakeEnv(after, 20));
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ 福神得卡不出卡面（第九份试玩回报第 1 条）
+//
+//  @source `fcn_0040ed8f`（`rich4_gods.asm:693-754`）的顺序：
+//    0x21e 附身影片 → `0x40e2a2` 开场白（0x4632cc）→ `_rich4_player_receive_random_card`
+//    → 訊息框 `0x4632fd`「%s附身 得到%s！」(0x5dc) → `0x44f230` 台词
+//  **中间没有卡面** —— 卡面 `fcn_00441f73` / `Data.mkf 0x218` 是卡片格（`loc_0041b302`）
+//  那一支的；`_rich4_receive_card` 纯状态、零图形。
+//  core 在 `reduce.ts` 的 `case 'receiveCards'` 里 push `god.gotCard`（带 `cardId`），
+//  `event()` 见到它就**让开** `cardGained`（否则手牌差集会让卡面与附身影片同时起播）。
+//  反证：删掉 `event()` 里那句 `god.gotCard` 闸，下面第一条就变红。
+// ============================================================
+
+describe('★ 福神得卡：只有訊息框，不出卡面 @source fcn_0040ed8f', () => {
+  /** `stateOf` + notices（`NoticeHint` 那一条就是 core `receiveCards` 交下来的形状） */
+  const withNotices = (
+    players: Player[],
+    notices: GameState['notices'],
+    lastEvent: GameState['lastEvent'] = null,
+  ): GameState => ({ ...stateOf(players, lastEvent), notices });
+
+  it('★★ 手牌变长 + `god.gotCard` ⇒ 不起播（卡面让开訊息框/台词）', () => {
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices(
+      [player(0, [1, 12])],
+      [{ key: 'god.gotCard', args: ['大福神', '拆除卡'], holdMs: 1500, cardId: 12 }],
+    );
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(env)).toBe(false);
+  });
+
+  it('★★ 手牌变长 + 大福神那扇 `god.gotCardTwo`（一扇两卡名）⇒ 同样不起播', () => {
+    // @source `fcn_0040ee50` 的 `0x0040eed7 push 0x463353`：大福神两张只弹**一扇**
+    //   （`args` = 两张卡名，**不带神明名**、也不带 `cardId`）—— 闸口必须一并认它，
+    //   否则这扇訊息框会被卡面盖住。
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices(
+      [player(0, [1, 12, 14])],
+      [{ key: 'god.gotCardTwo', args: ['拆除卡', '停留卡'], holdMs: 1500 }],
+    );
+    const env = fakeEnv(after);
+    eventBoxScreen.event!(before, after, env);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(env)).toBe(false);
+  });
+
+  it('★ 对照：同一条得卡（手牌变长）但 notices 里没有 `god.gotCard` ⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const before = withNotices([player(0, [1])], []);
+    const after = withNotices([player(0, [1, 12])], [{ key: 'god.build', args: ['大福神'] }]);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    expect(eventBoxScreenState().playback?.plan.id).toBe(12);
+    resetEventBoxScreen();
+  });
+
+  it('★ 没换过 `notices`（引用相同）时那条老 `god.gotCard` 不算数 ⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const stale: GameState['notices'] = [
+      { key: 'god.gotCard', args: ['大福神', '拆除卡'], holdMs: 1500, cardId: 12 },
+    ];
+    const before = withNotices([player(0, [1])], stale);
+    const after = withNotices([player(0, [1, 12])], stale);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ 百貨公司裡得到的卡（董事長贈卡 / 貨架買卡）不出卡面
+//  @source 贈卡 `0x0042e9c0 call 0x441e12`（rand + `receive_card`），買卡 `0x0042d242 call 0x4412e4`
+//  —— 兩條都不經 `fcn_00441f73`（卡面）。第十二份試玩回報的日誌裡，進門贈卡與每一次買卡都起了
+//  「事件提示框：抽到卡片」（`20260923-013753079` 的 #22、`20260923-014200829` 的 #12 / #13）。
+//  反證：刪掉 `event()` 裡那句 `pending.shop` 閘，下面前兩條就變紅。
+// ============================================================
+
+describe('★ 百貨公司得卡：不出卡面 @source 0x0042e9c0 / 0x0042d242', () => {
+  const shopPending = { kind: 'shop', points: 0, cards: [], tools: [], owned: { cards: [], tools: [] } } as unknown as GameState['pending'];
+  const withPending = (players: Player[], pending: GameState['pending']): GameState => ({
+    ...stateOf(players),
+    pending,
+  });
+
+  it('★★ 進門那一條（settle → pending.shop）董事長贈卡 ⇒ 不起播', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [])], null);
+    const after = withPending([player(0, [22])], shopPending);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★★ 商店裡買卡（shop → shop）⇒ 不起播', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [22])], shopPending);
+    const after = withPending([player(0, [22, 12])], shopPending);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('★ 对照：卡片格抽卡（前后都没有 pending.shop）⇒ 照旧出卡面', () => {
+    resetEventBoxScreen();
+    const before = withPending([player(0, [])], null);
+    const after = withPending([player(0, [12])], null);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreenState().playback?.plan.kind).toBe('card');
+    resetEventBoxScreen();
+  });
+});
+
+// ============================================================
+//  ★ 魔法屋「得一張卡片」不出卡面（2026-09-23）
+//  @source `0x004320ee call 0x441e12`（rand + `receive_card`，零圖形）→ `0x00432156 call 0x440cac`
+//  （「名字\n\n得到XX卡！」訊息框）—— 整支没有 `fcn_00441f73`。浏览器实测先前起了「抽到卡片」。
+// ============================================================
+
+describe('★ 魔法屋得卡：不出卡面 @source 0x004320dd', () => {
+  it('★★ lastEvent 刚写成魔法屋（效果 6）⇒ 不起播；对照：旧的 lastEvent 不挡', () => {
+    resetEventBoxScreen();
+    const ev = { kind: 'magicHouse', id: 6, criterion: 9, targets: [0] } as unknown as GameState['lastEvent'];
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [24])], ev);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+    // 对照：lastEvent 没变（是上一趟留下的）⇒ 这一条的得卡照旧出卡面
+    const b2 = stateOf([player(0, [])], ev);
+    const a2 = stateOf([player(0, [12])], ev);
+    eventBoxScreen.event!(b2, a2, fakeEnv(a2));
+    expect(eventBoxScreenState().playing).toBe(true);
     resetEventBoxScreen();
   });
 });
@@ -1035,7 +1225,9 @@ describe('★ 可跳过性（falsification：这几条红了就说明又回到�
   it('★★ 命運全段：抬手跳过第一段 → 按键关掉第二段（屏幕真的不再接管）', () => {
     resetEventBoxScreen();
     const before = stateOf([player(0, [])], { kind: 'news', id: 1 });
-    const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+    // ★ 第十五份：用命運 **4**（挪用存款，施加阶段整支没有 `view_to`）—— 其余大多数命運的 pass 1
+    //   一进来就重画棋盘把框抹掉、第二段改在棋盘上停（见 `event-box-yield.test.ts`），这里专测框上那一段
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 4 });
     eventBoxScreen.event!(before, after, fakeEnv(after));
     expect(eventBoxScreenState().playback?.plan.kind).toBe('fortune');
     eventBoxScreen.up!(0, 0, fakeEnv(after, 10)); // 第一段 → 进第二段
@@ -1115,6 +1307,78 @@ describe('★ 可跳过性（falsification：这几条红了就说明又回到�
     expect(fire('up')).toBe('flic');
     expect(fire('ctx')).toBe('flic');
     expect(fire('key')).toBe('flic');
+    resetEventBoxScreen();
+  });
+});
+
+/*
+ * ★★ 第十一份試玩回報 #5/#19：得點券格（`lastEvent.kind === 'minigameDecline'`，`id` 恒为 0）
+ *   先前会掉进 `fortuneView(0)`，弹出一张「**強制拆除房屋一棟**」的命運卡 ——
+ *   玩家明明只是踩到得點券格拿 50 點，却以为触发了拆房事件。
+ *   这一条用源码钉守住「这条共用通道必须用白名单，只认 news / fortune」。
+ */
+describe('★★ 事件框只认 news / fortune（别的 kind 借道不出框）', () => {
+  const src = readFileSync(new URL('./event-box-screen.ts', import.meta.url), 'utf8');
+
+  it('判据是白名单 `(ev.kind === \'news\' || ev.kind === \'fortune\')`', () => {
+    expect(src).toContain("(ev.kind === 'news' || ev.kind === 'fortune')");
+  });
+
+  it('不许再出现「只排除 magicHouse」那种黑名单写法', () => {
+    expect(src).not.toContain("ev.kind !== 'magicHouse'");
+  });
+});
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  it('★ 命運第一段 ⇒ 整段直接收（不像点一下那样停到第二段）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after = stateOf([player(0, [])], { kind: 'fortune', id: 12 });
+    const logs: string[] = [];
+    eventBoxScreen.event!(before, after, fakeEnv(after, 0, null, logs));
+    expect(eventBoxScreen.fastForward!(fakeEnv(after, 10, null, logs))).toBe(true);
+    expect(eventBoxScreenState().playing).toBe(false);
+    expect(eventBoxScreen.active(fakeEnv(after))).toBe(false);
+    expect(logs).toContain('事件提示框：fortune 跟著行動者收場');
+  });
+
+  it('★ 抽卡第一段那段点不掉的 FLIC 也收（行动者那台早演完了）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [1])], null);
+    const after = stateOf([player(0, [1, 12])], null);
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playback?.phase).toBe('flic');
+    // 点一下不动（原版那一段的跳过闸是关的）
+    eventBoxScreen.up!(0, 0, fakeEnv(after, 10));
+    expect(eventBoxScreenState().playing).toBe(true);
+    expect(eventBoxScreen.fastForward!(fakeEnv(after, 10))).toBe(true);
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('没在播 ⇒ false', () => {
+    resetEventBoxScreen();
+    const s = stateOf([player(0, [])], null);
+    expect(eventBoxScreen.fastForward!(fakeEnv(s))).toBe(false);
+  });
+});
+
+describe('★★ 第十四份：收費那一段的被动卡亮牌挂在訊息框队列上', () => {
+  it('`lastCardPlay.popup === false` ⇒ 本屏不亮（已经排在訊息框里）', () => {
+    resetEventBoxScreen();
+    const before = stateOf([player(0, [])], null);
+    const after: GameState = { ...before, lastCardPlay: { player: 0, cardId: 20, popup: false, answeredBy: 1 } };
+    eventBoxScreen.event!(before, after, fakeEnv(after));
+    expect(eventBoxScreenState().playing).toBe(false);
+  });
+
+  it('訊息框那边轮到亮牌那一扇 ⇒ `startCardRevealPopup` 起播卡面 + 那一句', () => {
+    resetEventBoxScreen();
+    const s0 = stateOf([player(0, [])], null);
+    startCardRevealPopup(19, '沙隆巴斯\n\n嫁禍卡生效！', fakeEnv(s0, 5));
+    const pb = eventBoxScreenState().playback!;
+    expect(pb.plan.kind).toBe('card');
+    expect(pb.plan.id).toBe(19);
+    expect(cardUsePopupActive()).toBe(true);
     resetEventBoxScreen();
   });
 });

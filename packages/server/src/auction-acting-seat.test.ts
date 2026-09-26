@@ -46,8 +46,27 @@ const run = existsSync(MAP) ? it : it.skip;
  * 本文件钉住的两个种子（一局里拍賣难得开一场，30 个种子里没有一个两种现场都走到，故各钉一个）。
  * 下面每条都断言「现场数 > 0」—— 种子走不到现场时宁可红。换种子用文末的搜索器。
  */
-const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 12;
-const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 5;
+// ★ 2026-09-22 換種子：福神附身買地/買設施/建設施/加蓋白送一級改了進程；原 5 走不到（真人回合、電腦舉牌）現場，兩個一併重掃（原 12 / 5）。
+// ★ 2026-09-22 換種子（E-41）：「走回棋盤」那一回合收尾不換人，改了輪轉；原 12 走不到（電腦回合、真人舉牌）現場，重掃取 5（8 次）。
+// ★ 2026-09-23 換種子（第十四份試玩回報 #2）：開局擺人每人多抽一次「來路」（`0x00408328`），隨機序列整體後移；
+//   重掃 1..40：14 = 電腦回合真人舉牌 6 次，5 = 真人回合電腦舉牌 6 次（兩個恰好對調）。
+// ★ 2026-09-24 換種子（開局惰性擺人：第 2..N 位輪到自己才落地、兩次抽籤挪到各自回合開頭）：
+//   重掃 1..40：12 = 電腦回合真人舉牌 6 次，18 = 真人回合電腦舉牌 7 次。
+// ★ 2026-09-24 可成交量 `0x42915a` 挪到每位玩家回合開頭之後重掃：12 = 8 次、18 = 7 次，兩個種子不用換。
+// ★ 2026-09-24 換種子（第 24 份：魔法屋「向後轉」重挑來路要 `rand()`、機器娃娃不掃附身物件並走 `0x40e14d`、
+//   電腦用娃娃的判據不再把別人身上的神明當路上的 —— 對局走向又變了）：重掃 1..40：
+//   14 = 電腦回合真人舉牌 8 次，21 = 真人回合電腦舉牌 8 次（原 12 / 18 都掉到 0）。
+// ★ 2026-09-25 換種子（审计 provenance-ai-econ：电脑买股 / 卖股挪进 reducer 按原版掷全局 `rand()`、公佈欄 / 銀行对账补齐 ——
+//   对局走向又变了）：重掃 1..40：12 = 電腦回合真人舉牌 8 次（原 14 掉到 0），21 = 真人回合電腦舉牌 5 次（不用換）。
+// ★ 2026-09-25 換種子（**六區審計全部合入 provenance 之後的最終樹**上重掃 1..60、`RICH4_AUCTION_SEARCH=60`）：
+//   合併把兩邊各自換過的種子又打亂了一次 —— events 的神明老虎機自動轉 4 輪、新聞開拍接著同一隨機流、首次關押
+//   倒霉台詞的 rand、惡人只在停步那格勒索，與**events 第二輪**把台詞階梯那幾次 `rand()` 從客戶端哈希改成
+//   core 在 exe 擲的那一刻擲進全局流；econ 的拍賣开场席位 = 末位座位、收費记敌意、分紅按人加总、落槌回原相位；
+//   cards 的下車 / 傳送機兩段拾取 / 天使卡 0 級設施種類 —— 對局走向全變了。
+//   ⇒ **最終樹**上重扫 1..60 的结果：10 号 = 電腦回合真人舉牌 4 次（真人回合電腦舉牌 0），
+//   19 号 = 真人回合電腦舉牌 4 次（電腦回合真人舉牌 0）；两个都在，断言一字未動。
+const SEED_HUMAN_BIDS_ON_COMPUTER_TURN = 10; // 最終樹：電腦回合真人舉牌 4 次
+const SEED_COMPUTER_BIDS_ON_HUMAN_TURN = 19; // 最終樹：真人回合電腦舉牌 4 次
 const TURNS = 200;
 const HUMANS = 2;
 
@@ -101,6 +120,10 @@ function humanAction(state: GameState, map: ReturnType<typeof parseMap>, seat: n
   if (state.phase === 'awaitingRoll') return { type: 'rollDice' };
   const a = decideAction({ state: asAi(state, seat), map });
   if (a === null) throw new Error(`座位 ${seat} 无决策：${state.phase} / ${state.pending?.kind ?? '-'}`);
+  // ★ 貸款屏上 AI 给的是「托管 ⇒ 按电脑那一支办」（`bank/auto`），恰好真人不认这一手 ⇒ 真人这一端按 EXIT 离开
+  if (a.type === 'bank' && a.op === 'auto') return { type: 'declineDecision' };
+  // ★ 选種類窗上 AI 给的是 `facilityType: null`（托管 ⇒ 电脑那一支掷），恰好真人不认 ⇒ 真人这一端点一格（旅館）
+  if (a.type === 'buildFacility' && a.facilityType === null) return { type: 'buildFacility', facilityType: 1 };
   return a;
 }
 
@@ -117,7 +140,9 @@ interface Played {
 
 function play(seed: number, turns: number): Played {
   const map = parseMap(new Uint8Array(readFileSync(MAP)));
-  const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials };
+  // ★ 2026-09-25：`landscapes` 也要带上 —— 客户端（main.ts 建 topo 那一行）一直带着它，
+  //   服务器先前漏了（room.ts 同步修正）；不带的话入監 / 入院的坐标两端会差（格心 vs 景观）。
+  const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
   const hub = new RoomHub({ map, globalMapId: 0, seedFor: () => seed });
   const clients = Array.from({ length: HUMANS }, () => new Client(map, topo));
   const handles = clients.map((c, i) => {

@@ -309,6 +309,40 @@ describe('★ 掉线：重连补发、超时代打、归还', () => {
     expect(b3.inbox.filter((m) => m.t === 'action').length).toBe(2);
   });
 
+  run('★★ 第十二份試玩回報：中途进房的 start 带 through = 进房那一刻日志的最后一号；开局广播不带', () => {
+    // 客户端据此把 `seq <= through` 的补发**静默**追上，不把整局的演出重演一遍
+    //（`20260923-014329884`「断线重连后莫名其妙又进入魔法屋」/ `…014349833`「所有文本提示又重新触发了一轮」）
+    const map = loadMap();
+    const hub = hubWith(map);
+    const a = new FakeConn();
+    const b = new FakeConn();
+    const ha = hub.connect(a);
+    const hb = hub.connect(b);
+    ha.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'A', clientId: idFor('A') });
+    hb.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
+    ha.onMessage({ t: 'start' });
+    expect(a.last('start')?.through).toBeUndefined();
+    ha.onMessage({ t: 'intent', action: { type: 'startTurn' } });
+    ha.onMessage({ t: 'intent', action: { type: 'rollDice' } });
+    const lastSeq = Math.max(...a.inbox.filter((m) => m.t === 'action').map((m) => (m as { seq: number }).seq));
+    expect(lastSeq).toBeGreaterThanOrEqual(1);
+    hb.onClose(100);
+    // 刷新（不带 since）：整段补发，through 指着最后一条
+    const b2 = new FakeConn();
+    const hb2 = hub.connect(b2);
+    hb2.onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B') });
+    expect(b2.last('start')?.through).toBe(lastSeq);
+    const sent = b2.inbox.filter((m) => m.t === 'action').map((m) => (m as { seq: number }).seq);
+    expect(sent.at(-1)).toBe(lastSeq);
+    // `start` 排在补发之前（客户端要先知道 through 才分得出补发与实时）
+    expect(b2.inbox.findIndex((m) => m.t === 'start')).toBeLessThan(b2.inbox.findIndex((m) => m.t === 'action'));
+    // 断线重连（带 since）：through 同样是那一刻的最后一号
+    hb2.onClose(200);
+    const b3 = new FakeConn();
+    hub.connect(b3).onMessage({ t: 'join', version: PROTOCOL_VERSION, room: ROOM, name: 'B', clientId: idFor('B'), since: 0 });
+    expect(b3.last('start')?.through).toBe(lastSeq);
+  });
+
   run('★ 超时后由电脑代打（镜像里 setAi 託管）；重连归还', () => {
     const map = loadMap();
     const hub = hubWith(map, 1000);

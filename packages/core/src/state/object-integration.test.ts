@@ -6,14 +6,25 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { decideAction } from '../ai/policy.ts';
 import { applyBankruptcy, reduce, isGameOver } from './reduce.ts';
 import { isAlive } from './types.ts';
 import type { GameState } from './types.ts';
-import { INITIAL_OBJECT_TYPES, placeObjectOfType } from '../rules/object-landing.ts';
+import { INITIAL_OBJECT_TYPES, OBJECT_TYPE_ROADBLOCK, objectNodeCandidates, pickObjectNodeDistant, placeObjectOfType, runtimeOccupiedNodes } from '../rules/object-landing.ts';
+import { WatcomRng } from '../rng/watcom.ts';
 import { OBJECT_NAMES } from '../rules/purchase.ts';
+import { objectTypeOf } from '../rules/objects.ts';
 import { stateFingerprint } from '../net/protocol.ts';
+import { facilityIndexOf, housingIndexOf } from '../rules/land.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -112,6 +123,75 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     expect(after.stepsRemaining).toBe(4);
   });
 
+  /*
+   * ★★ 第九份试玩回报 #5（Charles，2026-09-22）：
+   *   「路障和神灵重合时经过路障没有把我阻拦下来」。
+   *
+   *   两份回报的 `finalState.objects` 里**节点 86 同时有**
+   *   `[0] type=1（小財神, attached=0）` 与 `[16] type=16（路障, attached=0）`。
+   *   原版靠地图节点里的反向索引 `node+0x26` 取种类 —— `place_object` 往里**按位或**
+   *   槽号（`rich4_objects.asm:118-126`），`1 | 17 = 17` ⇒ 读到的是**路障** ⇒ 照样拦人。
+   *   `objectHandleAt` 先前取**下标最小**的那件（恒取神明），而神明那一支带
+   *   `if (moving) return`（@source `0x41c164`）⇒ 路过时什么都不发生。
+   */
+  run('★★ 神明与路障同格：路障照样半途拦人（不再被神明顶掉）', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    // 先摆神明（槽 0），再摆路障（槽 16）—— 路障槽号更大，正是原版 OR 压过去的方向
+    const withGod = placeObjectOfType(cleared, 1, to).objects;
+    const both = placeObjectOfType(withGod, OBJECT_TYPE_ROADBLOCK, to).objects;
+    expect(both.filter((o) => o.nodeId === to && o.attached === 0), '两件确实同格').toHaveLength(2);
+
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 5, stepsTotal: 5 };
+    const after = reduce(start, { type: 'step' }, topo);
+    expect(after.stepsRemaining, '还剩 5 步时踩上路障 ⇒ 当场清零').toBe(0);
+    expect(after.phase).toBe('settling');
+    expect(after.players[0]!.godInfo, '路过不该附身').toBe(0);
+  });
+
+  run('★ 同一根因的另一族：路障与地雷同格 ⇒ 取到的是槽号更大的地雷（原版 17|27 = 27）', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    // 路障 = 槽 16（handle 17）、地雷 = 槽 26（handle 27）；原版 OR 得 27 ⇒ 地雷。
+    // ⚠️ 地雷那一支自己也有 `if (moving) return`（`object-landing.ts:711`，踩停才炸），
+    //    所以这里要「停在这一格」而不是「路过」—— 与神明那一支同理。
+    const withBlock = placeObjectOfType(cleared, OBJECT_TYPE_ROADBLOCK, to).objects;
+    const both = placeObjectOfType(withBlock, 17, to).objects;
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 1, stepsTotal: 1 };
+    const after = reduce(start, { type: 'step' }, topo);
+    expect(after.players[0]!.blocking.inHospital, '地雷生效 ⇒ 住院').toBeGreaterThan(0);
+  });
+
+  /*
+   * ★★ 2026-09-25（本分支）：那一字节是**按位或**（`0x0040e13c or [node+0x24],(槽+1)<<16`），
+   *   不是「取最大槽号」—— 两者在 `1|17` / `17|27` 这两对上恰好相同，所以先前看不出来。
+   *   找一个 OR 落到**第三个槽**的组合：死神（种类 15，唯一槽段 14..15 ⇒ handle 15）
+   *   与路障（种类 16，槽段 16..25 ⇒ 空着时取槽 16、handle 17）⇒ `15 | 17 = 31` ⇒ 槽 30，
+   *   而 `OBJECT_TYPE_TABLE[30] = 17`（地雷）。原版随后正是拿这一字节去查
+   *   `objects[字节-1].type`（0x0041b4ca..db）并按它跳表（0x41b3e5）⇒ 这一格是**地雷**。
+   */
+  run('★★ 逐位 OR：死神(handle 15) 与路障(handle 17) 同格 ⇒ 15|17 = 31 ⇒ 槽 30 的地雷', () => {
+    const { state, topo } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo.nodes[from - 1]!.adjacent[0]!;
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    const withReaper = placeObjectOfType(cleared, 15, to).objects;
+    const both = placeObjectOfType(withReaper, OBJECT_TYPE_ROADBLOCK, to).objects;
+    expect(both[14]!.nodeId, '死神落在槽 14（handle 15）').toBe(to);
+    expect(both[16]!.nodeId, '路障落在槽 16（handle 17）').toBe(to);
+    // 15 | 17 = 31 ⇒ 原版读到的是槽 30；三个槽的种类先钉住（槽位决定种类）
+    expect([objectTypeOf(14), objectTypeOf(16), objectTypeOf(30)]).toEqual([15, 16, 17]);
+
+    const start: GameState = { ...state, objects: both, phase: 'moving', stepsRemaining: 1, stepsTotal: 1 };
+    const after = reduce(start, { type: 'step' }, topo);
+    // 地雷：住院 3 天（路障那一支只会把剩余步数清零，不住院）
+    expect(after.players[0]!.blocking.inHospital).toBe(3);
+  });
+
   run('地雷 → 住院 3 天，占用表也置位', () => {
     const { after } = stepOnto(17);
     expect(after.players[0]!.blocking.inHospital).toBe(3);
@@ -191,6 +271,70 @@ describe('★ 踩上去：从 reduce 这一层看', () => {
     //   机械普查（全 exe 38 处访问全是 16 位）见 rich4-spec/tests/test_points_field.py
     const { after } = stepOnto(14, 1, { points: 65500 });
     expect(after.players[0]!.points).toBe(66000 - 65536); // = 464
+  });
+
+  /*
+   * ★★ 第十六份試玩回報（「我自己进医院或监狱没办法直接保释自己吧？看看原版逻辑」）：
+   *   最后一步踩到惡犬 ⇒ 人被送进醫院、站在醫院格上 ⇒ 先前 `settle` 照跑醫院格落点，
+   *   给他开了保釋屏、名单第一个就是他自己。
+   *   原版走完之后先问 `0x40c912(1)`（`0x0040d889 call 0x418e7f` → `0x00418e81`），
+   *   `dword [+0x32]`（住院）非 0 ⇒ 返回 0 ⇒ `0x00418ead mov dl,0x83`，**落点例程 `0x41982d` 不进**。
+   *   0007 号图的醫院关押格本身就是醫院落点格（specialKind 5），不挡就会开保釋屏。
+   */
+  const MAP7 = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0007.bin';
+  for (const who of [1, 2] as const) {
+    run(`★★ 踩到惡犬被送进醫院：醫院格的落点（保釋屏）不进 —— ${who === 1 ? '真人' : '电脑'} @source 0x00418e81 / 0x00418ead`, () => {
+      const map = parseMap(new Uint8Array(readFileSync(MAP7)));
+      const topo = topoOf(map);
+      const state = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 7 });
+      const from = state.players[0]!.nodeId;
+      const to = topo.nodes[from - 1]!.adjacent[0]!;
+      const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+      const start: GameState = {
+        ...state,
+        players: state.players.map((p, i) => (i === 0 ? { ...p, whoPlays: who } : p)),
+        objects: placeObjectOfType(cleared, 11, to).objects,
+        phase: 'moving',
+        stepsRemaining: 1,
+        stepsTotal: 1,
+      };
+      const after = reduce(start, { type: 'step' }, topo);
+      const me = after.players[0]!;
+      expect(me.blocking.inHospital).not.toBe(0);
+      expect(after.hospitalOccupancy[0]).toBe(1);
+      expect(after.phase).toBe('settling');
+      // 人确实站在醫院格上（specialKind 5）—— 不挡就会开保釋屏
+      expect(topo.nodes[me.nodeId - 1]!.specialKind).toBe(5);
+      const settled = reduce(after, { type: 'settle' }, topo);
+      expect(settled.phase).toBe('turnEnd');
+      expect(settled.pending).toBeNull();
+      // 电脑那一支（`0x43e9a4` 的 `rand & 1`）也没掷、没人被放
+      expect(settled.rngState).toBe(after.rngState);
+      expect(settled.hospitalOccupancy).toEqual(after.hospitalOccupancy);
+      expect(settled.players[0]!.blocking.inHospital).toBe(me.blocking.inHospital);
+      expect(settled.players[0]!.points).toBe(me.points);
+    });
+  }
+
+  // ★★ 2026-09-24（provenance 审计）：土地公登场在**送醫院之前**挑格（`0x0041b845 call 0x40e14d` 早于
+  //   `0x0041b8ef call 0x43ec3f`）⇒ 被咬的人还占着那一格。按这个次序手算候选与抽签，与引擎逐位一致。
+  run('★★ 惡犬：搭档挑格时被咬的人还占着那一格（先挑格、后住院）', () => {
+    const { before, after, topo, node } = stepOnto(11);
+    // 走这一步本身不掷随机（单邻居起步）⇒ 以「走完」的状态为抽签起点
+    const walkedOnly = reduce({ ...before, objects: before.objects.map((o) => ({ ...o, nodeId: 0 })) }, { type: 'step' }, topo);
+    const rng = new WatcomRng(walkedOnly.rngState);
+    const playersAtBite = before.players.map((p, i) => (i === 0 ? { ...p, nodeId: node } : p));
+    const objectsAfterRelease = after.objects.map((o) => (o.type === 12 ? { ...o, nodeId: 0 } : o));
+    const occupied = runtimeOccupiedNodes(playersAtBite, objectsAfterRelease, before.specialActors);
+    const spots = objectNodeCandidates(topo.nodes).filter((n) => !occupied.has(n));
+    const xy = (id: number) => {
+      const n = topo.nodes[id - 1];
+      return n === undefined ? null : { x: n.x, y: n.y };
+    };
+    const want = pickObjectNodeDistant(spots, node, xy, () => rng.next());
+    const earthGod = after.objects.find((o) => o.type === 12)!;
+    expect(earthGod.nodeId).toBe(want);
+    expect(after.players[0]!.blocking.inHospital).toBe(3);
   });
 
   run('★ 惡犬被踩掉之后，土地公会补到场上 —— 物件不会越打越少', () => {
@@ -366,9 +510,74 @@ describe('★ 确定性没被破坏', () => {
         expect(isAlive(host)).toBe(true);
       }
     }
-    // ★ 六对神明始终在循环；禮物与寶箱是一次性的（原版 `i < 12` 才有搭档）
-    const alive = s.objects.filter((o) => o.nodeId !== 0 || o.attached !== 0);
+    // ★ 六对神明始终在循环（原版 `i < 12` 才有搭档）；禮物与寶箱被拿走后**每逢跨月**重新摆出来
+    //   （审计 2026-09-24：`0x0041d0a5..0x0041d0f6`，见 `rules/monthly-objects.ts`）。
+    //   只数唯一物件（種類 1..14）—— 路障/地雷/定時炸彈是道具放出来的，另算。
+    const alive = s.objects.filter((o) => o.type <= 14 && (o.nodeId !== 0 || o.attached !== 0));
     expect(alive.length).toBeGreaterThan(0);
     expect(alive.length).toBeLessThanOrEqual(INITIAL_OBJECT_TYPES.length);
   }, 120_000);
+});
+
+/*
+ * ★★ 需求方 2026-09-24「炸弹定时炸弹…爆炸时是否会摧毁周围建筑物」—— 定時炸彈只动**脚下那一格**，
+ *   走 `0x40ab4a(node.type, 0)`（`0x0041b70c..0x0041b71f`）：
+ *   住宅：0 级不动；否则 −1，連鎖店（`+0x18 ≠ 0`）直接夷平成 0 级住宅（种类也落回）；
+ *   設施：0 级不动；否则 −1，减到 0 ⇒ 种类清 0 并放人（`0x40ac20..0x40ac33`）。
+ *   邻格一律不动。
+ */
+describe('★★ 定時炸彈爆在脚下：只动这一格（0x40ab4a mode 0）', () => {
+  /**
+   * 0 号背着一颗还剩 1 步的炸彈，照「踩上去」那一组的走法走一步（当前格 → 第一个邻居），
+   * 那一格的 `node.type` 换成要测的实体（住宅 0x7d0+id / 設施 0xfa0+id）。
+   */
+  function explodeOnto(entityType: number) {
+    const { state, topo: topo0 } = fresh();
+    const from = state.players[0]!.nodeId;
+    const to = topo0.nodes[from - 1]!.adjacent[0]!;
+    const nodes = topo0.nodes.map((n) => (n.id === to ? { ...n, type: entityType } : n));
+    const topo = { ...topo0, nodes };
+    const cleared = state.objects.map((o) => ({ ...o, nodeId: 0, state: 0, attached: 0 }));
+    const placed = placeObjectOfType(cleared, 18, from, 1, 1);
+    expect(placed.slot).toBeGreaterThanOrEqual(0);
+    const start: GameState = {
+      ...state,
+      players: state.players.map((p, i) => (i === 0 ? { ...p, f64: placed.slot + 1 } : p)),
+      objects: placed.objects,
+      phase: 'moving',
+      stepsRemaining: 3,
+      stepsTotal: 3,
+    };
+    return { start, topo, to };
+  }
+
+  run('★★ 炸在設施上：等级 −1（先前什么都不发生）', () => {
+    const fid = loadMap().facilities[0]!.id;
+    const { start, topo, to } = explodeOnto(0xfa0 + fid);
+    expect(facilityIndexOf(topo.nodes[to - 1]!.type)).toBe(fid);
+    const facilityLevel = [...start.facilityLevel];
+    facilityLevel[fid] = 2;
+    const after = reduce({ ...start, facilityLevel }, { type: 'step' }, topo);
+    // 炸了：炸彈没了、人送醫院 5 天（`push 5 / call send_to_hospital`，人被搬到醫院格）
+    expect(after.players[0]!.f64).toBe(0);
+    expect(after.players[0]!.blocking.inHospital).toBe(5);
+    expect(after.facilityLevel[fid]).toBe(1);
+  });
+
+  run('★★ 炸在連鎖店上：夷平成 0 级**住宅**（种类也要落回），邻格不动', () => {
+    const idx = loadMap().lands[3]!.id;
+    const { start, topo, to } = explodeOnto(0x7d0 + idx);
+    expect(housingIndexOf(topo.nodes[to - 1]!.type)).toBe(idx);
+    const landLevel = start.landLevel.map(() => 2);
+    const landType = [...start.landType];
+    landType[idx] = 1;
+    landLevel[idx] = 3;
+    const after = reduce({ ...start, landLevel, landType }, { type: 'step' }, topo);
+    expect(after.players[0]!.blocking.inHospital).toBe(5);
+    expect(after.landLevel[idx]).toBe(0);
+    expect(after.landType[idx]).toBe(0);
+    // 其它地块一块都没动（不炸周围）
+    const changed = after.landLevel.map((v, i) => (v !== landLevel[i] ? i : -1)).filter((i) => i >= 0);
+    expect(changed).toEqual([idx]);
+  });
 });

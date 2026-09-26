@@ -21,8 +21,14 @@
  * - `b8c4` 可见表：`0x409ef9()` 扫出画面内**节点 id**；`0x40a45c(-1)` 扫出画面内
  *   实体（地块 2000+/設施 4000+/企業 6000+）与玩家标记 0x80xx；
  *   `0x40a0b1(x, y, r)` 以地图点为中心的实体表 + 只画**当前玩家**的 0x80xx。
- *   本引擎一律用「以我为中心 ±220px 的方形视野」（card-policy.ts 的 VIEW_HALF），
- *   镜头钳位差异记 D-005；爆风半径用节点坐标方窗，与效果侧一致（Q-TOOL-1）。
+ *   **成员**判据（Q-TOOL-1 已按 exe 改，`rules/board-window.ts`）：三者都是**同一套投影**下的
+ *   屏幕方窗 —— 节点用节点坐标、地块/設施用它们记录自己的 x/y、棋子用他的世界坐标。
+ *   先前一律按「以我为中心 ±220px 的**节点坐标**方窗」近似；镜头钳位差异记 D-005。
+ *   **收集次序**也照原版：那张 440×440 格表是**行优先**扫出的（先屏幕 Y 后屏幕 X）——
+ *   节点表 `0x409ef9` 走 `screenScanOrder`（并列候选因此与原版取同一格，§7.139(6) 第 2 条）；
+ *   `0x40a45c` 那一路（`visibleEntities`）同样是这张格表的行优先扫，但锚点不同
+ *   （地块记录自己的 x/y、玩家 xpos/ypos、物件节点 y−0x28）⇒ 次序仍按 (y,x) 近似
+ *   （见 card-policy.ts，登记在 ai-move V-1）。
  *
  * ## 参数语义（`[0x48be64]`）
  *
@@ -33,9 +39,10 @@
  *
  * ⚠️ 这里只回答「用不用、对谁」；能不能用由 reduce 的 `useToolAction` 说了算（C-ARC-2）。
  *   随机（>4 的起点、地雷/定時炸彈挑候选、機車/汽車的 1/4、工程車的 %15）在纯策略层
- *   用 `aiRoll` 的确定性替身，与卡片同一约定（D-004）。
+ *   ★ FU-2（2026-09-25 审计）：走 `view.roll`（真随机流），与卡片同一条路（`ai/rand.ts`）。
  */
 
+import { projectWorld } from '@rich4/data';
 import type { MapNode } from '../loaders/map.ts';
 import type { LandInfo, FacilityInfo } from '../loaders/map.ts';
 import type { MapObject } from '../cards/summon.ts';
@@ -44,9 +51,12 @@ import { isAlive } from '../state/types.ts';
 import { LAND_TYPE_HOUSE } from '../rules/toll.ts';
 import { FACILITY_TYPE, FACILITY_MAX_LEVEL } from '../rules/facility.ts';
 import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
+import { BOARD_VIEW_HALF, inBoardWindow } from '../rules/board-window.ts';
+// ★ 需求方 2026-09-22：放置类道具不许和「唯一物件」同格 —— AI 必须与引擎同一条判据
+import { runtimeOccupiedNodes } from '../rules/object-landing.ts';
+import { nodeObjectIndex } from '../rules/special-actors.ts';
 import { anyPlayerConfined } from '../rules/confinement.ts';
 import {
-  aiRoll,
   inView,
   lookahead,
   mostHated,
@@ -54,6 +64,7 @@ import {
   visibleEntities,
   type CardAiView,
 } from './card-policy.ts';
+import { aiRand } from './rand.ts';
 
 /** 道具 AI 的视野与牌共用同一个 */
 export type ToolAiView = CardAiView;
@@ -75,7 +86,7 @@ export type AiToolChoice =
   | { kind: 'build'; nodeId: number }
   | { kind: 'teleportSelf'; nodeId: number };
 
-/** 各判定函数的 VA——同时充当 aiRoll 的盐（D-004） */
+/** 各判定函数的 VA —— 同时充当退回替身时的盐（D-004）；生产路径走 `view.roll` */
 const SALT = {
   doll: 0x420efa,
   luzhang: 0x42107f,
@@ -114,14 +125,28 @@ function facilityById(view: ToolAiView, id: number): FacilityInfo | undefined {
   return view.facilities.find((f) => f.id === id);
 }
 
-/** 站在这格上的物件（原版的 node+0x24 bits 16-21 每格至多一件） */
+/**
+ * 站在这格上的物件（原版的 node+0x24 bits 16-21 每格至多一件）。
+ *
+ * ★★ 只认**地上**的（`attached == 0`）：附身的神明 / 被带着的定時炸彈不在那一字节里（见
+ *   `special-actors.ts` 的 `nodeObjectIndex`）。第 24 份 `20260924-182247766`：電腦的機器娃娃判据
+ *   （@source 0x00420efa「路径格上有坏神 → 用」）把**真人身上**的小窮神当成了路上的。
+ */
 function objectOnNode(view: ToolAiView, nodeId: number): MapObject | undefined {
-  return view.state.objects.find((o) => o.nodeId === nodeId);
+  const i = nodeObjectIndex(view.state.objects, nodeId);
+  return i === -1 ? undefined : view.state.objects[i];
 }
 
-/** 这格上有没有（活着的）玩家 @source node+0x24 bits 12-15 */
-function anyoneOnNode(view: ToolAiView, nodeId: number): boolean {
-  return view.state.players.some((p) => isAlive(p) && p.nodeId === nodeId);
+/**
+ * 这格上有没有**惡人**（actor 4..7）@source node+0x24 bits 12-15（`0x1000 << (actor − 4)`）。
+ *
+ * ★★ 审计（ai-move）：`+0x24` 的运行位是 `0x100 << actor`（送監獄 `0x0043d59b mov edi,0x100 /
+ *   shl edi,cl` 对 actor 0..7 同一个式子）⇒ **bits 8-11 = 玩家 0..3、bits 12-15 = 惡人 4..7**。
+ *   遙控骰子 `0x00421a12 and edx, 0xf000` 查的是惡人，不是玩家（旧注释与 rich4-spec 的
+ *   test_tool_dice_ai.py 都把它说成「玩家占用」）。
+ */
+function villainOnNode(view: ToolAiView, nodeId: number): boolean {
+  return runtimeOccupiedNodes([], [], view.state.specialActors).has(nodeId);
 }
 
 /**
@@ -129,17 +154,83 @@ function anyoneOnNode(view: ToolAiView, nodeId: number): boolean {
  * 起点/来路对调——从 lastNodeId 出发、避开 nodeId。
  */
 function backtrack(view: ToolAiView, n: number, salt: number): { nodes: number[]; forked: boolean } {
-  return lookahead(view.topo, view.state, view.me.lastNodeId, view.me.nodeId, n, salt);
+  return lookahead(view.topo, view.state, view.me.lastNodeId, view.me.nodeId, n, salt, view.roll);
 }
 
-/** 画面里的节点 id，按屏幕行序（先 y 后 x）@source 0x409ef9 的行序扫描 */
+/** `screenScanOrder` 的行优先键：每行 2^16 宽、坐标先挪成非负 */
+const ROW_STRIDE = 0x10000;
+const ROW_BIAS = 0x8000;
+
+/**
+ * 原版「可见节点表」的收集次序 @source 0x00409ef9（填表）/ 0x0040a050（收集）
+ *
+ * 原版不按世界坐标排：它先把每个节点**投影到屏幕**，把节点 id 写进一张 440×440 的
+ * word 格表（`[0x474938]`），再**逐行、行内逐列**扫出非 0 项进 `0x48b8c4`：
+ * ```asm
+ * 00409f3c  memset([0x474938], 0, 0x5e880)                        ; 440×440 word 格表
+ * 00409f4a  镜头X/Y = 0x407a2c(镜头) + 0xdc                       ; 镜头落在格表正中
+ * 00409f89  col = (node.x >> 5) − (cam.x >> 5) + 0xe ; row 同理   ; 0x409fb0 起：0..0x1c 才收
+ * 00409fd6  call 0x407a2c(node.x, node.y, &oX, &oY)             ; 块内余量过 0x474910 矩阵
+ * 00409fde  imul eax, [0x499088], 0xd24                          ; ★ [0x499088] = 视角档位
+ * 00409fef  屏幕X = 表[row][col] 第 2 个 int16（0x46ccf2）− oX + 镜头X
+ * 0040a000  屏幕Y = 表[row][col] 第 1 个 int16（0x46ccf0）− oY + 镜头Y
+ * 0040a010  屏幕X/Y 必须落在 0..0x1b8（440）内，越界跳过
+ * 0040a046  mov word [buf + (屏幕Y×440 + 屏幕X)×2], di           ; 同一像素：后写覆盖先写
+ * 0040a064  for 屏幕Y in 0..439: for 屏幕X in 0..439: 非 0 → 收   ; ★ 行优先（0x40a077 内层列）
+ * ```
+ * 投影与 `@rich4/data` 的 `projectWorld` 是同一套（表 `0x46ccf0` + 矩阵 `0x474910`，
+ * 按**视角档位**而非地图取）⇒ 次序随 `state.viewRotation` 变：同一盘面转过视角后，
+ * 两个同等级候选里 AI 先看到的是另一格。这是原版行为，照抄。
+ *
+ * 只复刻**次序**：谁算「在画面里」由调用方给（`visibleNodeIds` 现在用 Q-TOOL-1 的**屏幕方窗**
+ * `inView` / `inBoardWindow`，见 ai-move V-1；原版另有「投影落在 440×440 格表内」一道闸，
+ * 那一半现在也由同一个窗覆盖）。
+ * 同一像素上的两个节点原版只剩后写的（节点表靠后、id 大）那个——这里照样去重；
+ * 八张原版地图在八个视角下都没有这种重叠（见 tool-policy.test.ts），只在人造盘面里出现。
+ *
+ * @param nodes 候选节点，**按节点表顺序**（id 升序，与原版 `edi = 1..N` 同序）
+ * @param cam   镜头中心（世界像素）；本引擎恒为我脚下那格（D-005）
+ * @param viewRotation 视角档位 0..7（`state.viewRotation`，原版 `[0x499088]`）
+ * @returns 节点 id，按原版收集次序；投影落在 29×29 块窗口外的节点不收（原版同样跳过）
+ */
+export function screenScanOrder(
+  nodes: readonly MapNode[],
+  cam: { x: number; y: number },
+  viewRotation: number,
+): number[] {
+  const camTileX = cam.x >> 5;
+  const camTileY = cam.y >> 5;
+  const byPixel = new Map<number, number>();
+  for (const n of nodes) {
+    const p = projectWorld(viewRotation, n.x, n.y, camTileX, camTileY, cam.x, cam.y);
+    if (p === null) continue;
+    // 行优先的键。不用原版的 `屏幕Y×440 + 屏幕X`：D-005 的方窗里有投影落在 440 格表外的节点，
+    //   那样算会串行；这里给每行留足 2^16 宽（投影表实测 |值| ≤ 715，远小于 2^15）。
+    //   常数偏移 0xdc 不影响次序，略去。
+    byPixel.set((p.y + ROW_BIAS) * ROW_STRIDE + (p.x + ROW_BIAS), n.id);
+  }
+  return [...byPixel.entries()].sort((a, b) => a[0] - b[0]).map(([, id]) => id);
+}
+
+/**
+ * 画面里的**空**节点 id，按原版收集次序 @source 0x409ef9 / 0x40a050。
+ *
+ * ★★ 「空」：0x409ef9 逐节点先 `0x00409f7c test dword [node+0x24], 0xffff00 / jne 跳过` ——
+ *   有人站着 / 有惡人 / 已经有物件的格子**根本不进清单**（`placementBlockedAt` 同一道掩码）。
+ *   先前漏了这一层 ⇒ 地雷 / 定時炸彈会挑到已经有地雷的格（需求方 2026-09-24「Npc把地雷重叠放置了」）。
+ *   四个调用点（路障阶段二 0x4212b5 / 地雷 0x4213e8 / 定時炸彈 0x421597 / 傳送機 0x421cc1）都吃这一条。
+ * ★★ 次序：原版这张表是**投影后的屏幕行序**（见 `screenScanOrder`），先前按世界 (y,x) 排
+ *   ⇒ 并列候选选到不同格（§7.139(6) 第 2 条「并列次序」）。
+ */
 function visibleNodeIds(view: ToolAiView): number[] {
   const center = nodeAt(view, view.me.nodeId);
   if (center === undefined) return [];
-  return view.topo.nodes
-    .filter((n) => inView(center, n))
-    .sort((a, b) => a.y - b.y || a.x - b.x)
-    .map((n) => n.id);
+  const occupied = runtimeOccupiedNodes(view.state.players, view.state.objects, view.state.specialActors);
+  return screenScanOrder(
+    view.topo.nodes.filter((n) => inView(center, n) && !occupied.has(n.id)),
+    center,
+    view.state.viewRotation,
+  );
 }
 
 /**
@@ -158,14 +249,18 @@ function myStreetCount(view: ToolAiView, land: LandInfo): number {
 }
 
 /**
- * 「这格什么都没有」@source `test dword [node+0x24], 0x3fff00 / jne 跳过`
- * （bits 12-15 玩家、16-21 物件）。本引擎的运行时占用不进 `node.flags`（那是静态地图数据），
- * 改从 state 查；bits 8-11 语义未解，静态部分照查。
+ * 「这格什么都没有」@source 路障阶段一 `0x00421148 test dword [node+0x24], 0x3fff00 / jne 跳过`
+ * —— bits 8-11 玩家、12-15 惡人、16-21 物件（`runtimeOccupiedNodes` 同一份位语义）。
+ * 本引擎的运行时占用不进 `node.flags`（那是静态地图数据），改从 state 现算；静态部分照查。
+ *
+ * ★★ 审计（ai-move）：玩家那几位只在他**站在盘上**时才置 —— 关在監獄/醫院、住店、消失期间
+ *   原版把自己那一位清掉不置（`0x0043d61d` / `0x0040d5d2` / `0x0040d444`），那一格照样算空。
+ *   旧实现按「谁的 nodeId 是它」一律算占用，住店的人脚下那格就放不了路障。
  */
 function nodeClear(view: ToolAiView, node: MapNode): boolean {
-  if ((node.flags & 0xf00) !== 0) return false;
-  if (anyoneOnNode(view, node.id)) return false;
-  return objectOnNode(view, node.id) === undefined;
+  if ((node.flags & 0x3fff00) !== 0) return false;
+  const s = view.state;
+  return !runtimeOccupiedNodes(s.players, s.objects, s.specialActors).has(node.id);
 }
 
 // ============================================================
@@ -184,7 +279,7 @@ const doll: Handler = (view) => {
   const { state, me } = view;
   const pi = state.priceIndex;
   const me1 = view.meIndex + 1;
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.doll);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.doll, view.roll);
   if (ahead.forked) return null;
   for (const nid of ahead.nodes) {
     const obj = objectOnNode(view, nid);
@@ -226,7 +321,7 @@ const luzhang: Handler = (view) => {
   const pi = state.priceIndex;
   const me1 = view.meIndex + 1;
 
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.luzhang);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 4, SALT.luzhang, view.roll);
   // @source 0x42109d：forked 直接跳阶段二
   if (!ahead.forked) {
     const rich = me.cash + me.moneyInBank > 10000 && me.fortune >= 0 && me.blocking.tortoiseWalking === 0;
@@ -267,7 +362,8 @@ const luzhang: Handler = (view) => {
     best = toll;
     bestNode = nid;
   }
-  return bestNode !== 0 ? place(bestNode) : null;
+  if (bestNode === 0) return null;
+  return place(bestNode);
 };
 
 /**
@@ -309,7 +405,8 @@ function mineLike(view: ToolAiView, salt: number, enemyOnly: boolean): AiToolCho
   }
   if (candidates.length === 0) return null;
   // @source 0x42153e：两件道具共用的收尾——call rand / idiv 候选数
-  return place(candidates[aiRoll(view.state, 0x42153e, candidates.length)]!);
+  const picked = candidates[aiRand(view.state, view.roll, 0x42153e, candidates.length)]!;
+  return place(picked);
 }
 
 const dilei: Handler = (view) => mineLike(view, SALT.dilei, true);
@@ -317,11 +414,11 @@ const dingzha: Handler = (view) => mineLike(view, SALT.dingzha, false);
 
 /** 5 機車 @source 0x00421644：徒步（traffic & 3 == 0）且 rand()%4 == 0 → 用 */
 const jiche: Handler = (view) =>
-  (view.me.trafficMethod & 3) === 0 && aiRoll(view.state, SALT.jiche, 4) === 0 ? PLAIN : null;
+  (view.me.trafficMethod & 3) === 0 && aiRand(view.state, view.roll, SALT.jiche, 4) === 0 ? PLAIN : null;
 
 /** 6 汽車 @source 0x00421675：(traffic & 3) < 2 且 rand()%4 == 0 → 用 */
 const qiche: Handler = (view) =>
-  (view.me.trafficMethod & 3) < 2 && aiRoll(view.state, SALT.qiche, 4) === 0 ? PLAIN : null;
+  (view.me.trafficMethod & 3) < 2 && aiRand(view.state, view.roll, SALT.qiche, 4) === 0 ? PLAIN : null;
 
 /**
  * 7 飛彈 @source 0x00421717
@@ -347,19 +444,30 @@ const feidan: Handler = (view) => {
       }
     });
     if (rivals.length === 0) return null;
-    target = rivals[aiRoll(state, SALT.feidan + 1, rivals.length)]!;
+    target = rivals[aiRand(state, view.roll, SALT.feidan + 1, rivals.length)]!;
   }
   const tp = state.players[target];
   if (tp === undefined || !isAlive(tp)) return null;
   const myNode = nodeAt(view, me.nodeId);
   const tNode = nodeAt(view, tp.nodeId);
   if (myNode === undefined || tNode === undefined || !inView(myNode, tNode)) return null;
-  // 爆风扫描：a0b1 只画**当前玩家**的 0x80xx，故任何玩家标记都是我（Q-TOOL-1 的方窗）
+  // 爆风扫描 @source `0x40a0b1(目标x, 目标y, 0x64)`：同一个屏幕方窗，中心 = **目标玩家**的坐标
+  //   （AI 的参数表存的是玩家标记 `0x80xx`，`0x40af12` 把它翻成那位玩家的世界坐标）。
+  //   清单里只有：**当前玩家**的 0x80xx 与**有主的**地块/設施（`0x40a220 cmp byte [esi+0x19],0 / je 跳过`）
+  //   ⇒ 凡出现「我的标记 / 我的地 / 我的設施」就不打。★ Q-TOOL-1：先前是节点坐标方窗，
+  //   且地块/設施按**节点**坐标判 —— 锚点其实是记录自己的 x/y（差 ~40 像素）。
   for (const n of view.topo.nodes) {
-    if (Math.abs(n.x - tNode.x) > MISSILE_RADIUS || Math.abs(n.y - tNode.y) > MISSILE_RADIUS) continue;
-    if (n.id === me.nodeId) return null;
-    if (n.ref.kind === 'land' && landById(view, n.ref.index)?.owner === me1) return null;
-    if (n.ref.kind === 'facility' && facilityById(view, n.ref.index)?.owner === me1) return null;
+    if (n.id === me.nodeId) {
+      if (inBoardWindow(tNode, n, MISSILE_RADIUS)) return null;
+      continue;
+    }
+    if (n.ref.kind === 'land') {
+      const l = landById(view, n.ref.index);
+      if (l !== undefined && l.owner === me1 && inBoardWindow(tNode, l, MISSILE_RADIUS)) return null;
+    } else if (n.ref.kind === 'facility') {
+      const f = facilityById(view, n.ref.index);
+      if (f !== undefined && f.owner === me1 && inBoardWindow(tNode, f, MISSILE_RADIUS)) return null;
+    }
   }
   return { kind: 'missile', nodeId: tp.nodeId };
 };
@@ -367,7 +475,7 @@ const feidan: Handler = (view) => {
 /**
  * 8 遙控骰子 @source 0x00421827
  * 闸：godInfo ∈ {7,8,15}（衰神/死神附身）、龜行中、現金+存款 < 10000、財運 < 0 → 不用；
- * 前瞻 6 格必须无岔路。逐格（步数 i+1）：格上有玩家、或有坏物件
+ * 前瞻 6 格必须无岔路。逐格（步数 i+1）：格上有**惡人**（bits 12-15）、或有坏物件
  * （类型 5,6,7,8,10,11,16,17,18）→ 跳过。
  *   - 无主住宅地：同區我的地 ≥ 2 且 現金 > 地價×2.5 → **立即定**；
  *   - 我的住宅（type 0、等级 < 5）：同區 ≥ 2、現金 > 房價×2.5、等级 > 目前最佳 → 记下不立即定；
@@ -387,7 +495,7 @@ const yaokong: Handler = (view) => {
   if (me.blocking.tortoiseWalking !== 0) return null;
   if (me.cash + me.moneyInBank < 10000) return null;
   if (me.fortune < 0) return null;
-  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 6, SALT.yaokong);
+  const ahead = lookahead(view.topo, state, me.nodeId, me.lastNodeId, 6, SALT.yaokong, view.roll);
   if (ahead.forked) return null;
 
   let bestLevel = 0;
@@ -396,7 +504,8 @@ const yaokong: Handler = (view) => {
     const nid = ahead.nodes[i]!;
     const node = nodeAt(view, nid);
     if (node === undefined) continue;
-    if (anyoneOnNode(view, nid)) continue;
+    // @source 0x00421a12 `and edx, 0xf000 / jne 跳过` —— 格上有惡人（不是玩家）
+    if (villainOnNode(view, nid)) continue;
     const obj = objectOnNode(view, nid);
     if (obj !== undefined && DICE_BAD_OBJECTS.includes(obj.type)) continue;
     if (node.ref.kind === 'land') {
@@ -506,13 +615,9 @@ const chuansong: Handler = (view) => {
  */
 const gongcheng: Handler = (view) => {
   if ((view.me.trafficMethod & 3) === 3) return null;
-  return aiRoll(view.state, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
+  return aiRand(view.state, view.roll, SALT.gongcheng, 15) <= view.me.personality ? PLAIN : null;
 };
 
-/** 核子飛彈爆风窗的半宽（格）@source 0x0040a236 `add ebx,0xe` / 0x0040a251 `cmp ebx,0x1c` */
-const NUKE_WINDOW_HALF = 0xe;
-/** 原版格距口径的 32px/格 @source 0x0040a22d `sar ebx,5`（与 `test_nuke_card_ai.py` 同） */
-const NUKE_TILE_SHIFT = 5;
 /** 原版最多重摇候选的次数 @source 0x00422160 `cmp ecx,0xa` */
 const NUKE_MAX_TRIES = 10;
 
@@ -529,9 +634,17 @@ const NUKE_MAX_TRIES = 10;
  * 多大范围（`@source 0x0040a3e9 cmp edx,-1 / 0x0040a3f4 mov ebp,0x1b8` = 全图）
  * ——即「把刚建好的那一窗全要了」，不是全地图的地产。
  * ⇒ 中止判据 `test bh,0x80`（`@source 0x00421fe2`）的真语义是
- * **「我的棋子落在候选 ±14 格（448px）内」**，对随机挑中的候选完全可能为假
+ * **「我的棋子落在以候选为心的那一幅画面里」**，对随机挑中的候选完全可能为假
  * ⇒ 原版会发核彈。差分实证：`rich4-spec/tests/test_nuke_card_ai.py` 的 [Q] 组
  * （113 例全绿），以及该文件头部的 Q-TOOL-3 裁决。
+ *
+ * ★★ Q-TOOL-1（2026-09-25）：那一幅画面里到底有谁，**不是「格距 ≤ 14 格」** ——
+ *   建图那两段的判据是「**投影后**的屏幕点落在 440×440 棋盘区内」
+ *   （`@source 0x0040a27f..0x0040a2c4`：`屏幕X ∈ [0,0x1b8)` 且 `屏幕Y ∈ [0,0x1b8)`，
+ *   相对量就是 ±220），格距 ±14 只是它的前置筛子（画得进 29×29 表的实例才可能进棋盘区）。
+ *   ⇒ 判据 = `inBoardWindow(候选, 锚点, BOARD_VIEW_HALF)`（视角 0，见 `rules/board-window.ts`）。
+ *   格距口径下「14 格 = 448px 也进窗」是错的：视角 0 的实测边界是 **行 ±8 格、列 ±6 格**
+ *   （±9 行 → py = 229、±7 列 → px = 251，都出窗）。
  *
  * ## 算法（逐条照机器码）
  * ```
@@ -576,7 +689,7 @@ const NUKE_MAX_TRIES = 10;
  * ⚠️ 本函数**没有钱闸**：`0x421e62` 全程不读現金/存款/財運（「我出不起」由
  *   效果侧与回合流程管）。候选只看 归属/等级 三项。
  *
- * ⚠️ D-004：原版**每次 try 摇一次** `rand()`（最多 10 次）。本引擎 `aiRoll`
+ * ⚠️ D-004：原版**每次 try 摇一次** `rand()`（最多 10 次）。本引擎（FU-2 后走真随机流；替身仅单测）`aiRoll`
  *   不推进序列，故逐次用 `SALT.hedan + try` 区分；否则 10 次会取到同一个候选、
  *   重试循环成了死码（「中止后换下一个候选」这条可观测行为就没了）。
  *
@@ -614,10 +727,9 @@ const hedan: Handler = (view) => {
     if (v !== 0 && !nodeByValue.has(v)) nodeByValue.set(v, n.id);
   }
 
-  // ── 爆风窗 = 以候选为中心、格距 ≤ 14 格（原版 0x40a0b1 的建图口径）──
-  //    原版比较的是 `(要素像素 >> 5) − (候选像素 >> 5) + 0xe ∈ [0,0x1c]`，
-  //    即两侧格号的差 ≤ 14；这里同口径（`>> 5` = `sar 5`）。
-  const tileOf = (v: number): number => v >> NUKE_TILE_SHIFT;
+  // ── 爆风窗 = 以候选为心的**画面**（原版 `0x40a0b1(x, y, -1)` 建图 + 全图回收）──
+  //    @source 0x0040a27f..0x0040a2c4：投影后的屏幕点要在 440×440 棋盘区内
+  //    （格距 ±14 只是「画得进 29×29 表」的前置筛子）。
   const myNode = nodeAt(view, me.nodeId);
   // @source 0x40a117：住店/消失/坐牢/住院（+0x32 起的 4 字节）任一非 0 ⇒ 不画我的标记
   const b = me.blocking;
@@ -630,11 +742,10 @@ const hedan: Handler = (view) => {
   const alivePlus2 = state.players.filter((p) => isAlive(p)).length + 2;
 
   for (let attempt = 0; attempt < NUKE_MAX_TRIES; attempt++) {
-    const pick = cands[aiRoll(state, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
-    const cx = tileOf(pick.x);
-    const cy = tileOf(pick.y);
+    const pick = cands[aiRand(state, view.roll, SALT.hedan + attempt, cands.length)]!; // @source 0x42216f
+    /** 这一窗里有谁：以候选的锚点为心的那幅画面（±220 屏幕像素，Q-TOOL-1） */
     const inWindow = (x: number, y: number): boolean =>
-      Math.abs(tileOf(x) - cx) <= NUKE_WINDOW_HALF && Math.abs(tileOf(y) - cy) <= NUKE_WINDOW_HALF;
+      inBoardWindow(pick, { x, y }, BOARD_VIEW_HALF);
 
     // 中止：我的棋子也进了这一窗 ⇒ 放弃**本候选**（换下一个，中止标志每候选重置）
     // @source 0x421fd4 test bh,0x80 / 0x421fe7 mov [esp+0x414],1
@@ -700,8 +811,8 @@ const HANDLERS: Readonly<Record<number, Handler>> = {
  *   『我在爆风内』恒真 ⇒ 原版 AI 从不放核彈」。**Q-TOOL-3 已用机器码推翻**
  *   （差分见 `rich4-spec/tests/test_nuke_card_ai.py`，113 例；裁决见文件头）：
  *   半径 −1 只决定 `0x40a0b1` 回收时扫**它刚重建的那张图**的多大范围，而那张图
- *   里只有候选周围 ±14 格的有主地块/設施 + 当前玩家一个标记 ⇒ 中止判据可假
- *   ⇒ 原版会发核彈。13 已接线（见 `hedan`）。
+ *   里只有**候选那幅画面**（投影 ±220）里的有主地块/設施 + 当前玩家一个标记
+ *   ⇒ 中止判据可假 ⇒ 原版会发核彈。13 已接线（见 `hedan`）。
  */
 export const AI_NEVER_USES: readonly number[] = [10];
 

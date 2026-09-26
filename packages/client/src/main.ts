@@ -8,9 +8,17 @@
  *   是同一种 action，引擎分不出也不需要分出来源。
  */
 
-import { CARD_IMPLS, CHARACTERS, TOOLS, stocksOfMap } from '@rich4/data';
+import { BAIL_CLERK_TEXT, CARD_IMPLS, CHARACTERS, INMATE_THANKS, TOOLS, stocksOfMap } from '@rich4/data';
 import { parseVoiceCode } from '@rich4/data';
-import { playVoiceCode, setVoiceSink } from './voice-sink.ts';
+import {
+  captionExpired,
+  playVoiceCode,
+  setVoiceBusyProbe,
+  setVoiceSink,
+  setVoiceStopper,
+  stopVoice,
+  voiceBusy,
+} from './voice-sink.ts';
 import { LogRing } from './log-ring.ts';
 // ★ 开发用的状态注入口（`__rich4.debug.patch` 与三个现成配方，W-53）——
 //   只在 DEV 下挂；它**绕过 reduceRecorded**，故调用时会把记录仪标脏。
@@ -25,7 +33,8 @@ import {
 } from './dev-patch.ts';
 // ★ 魔法屋那一屏的 dev 直达钩子（`__rich4.magic` / `__rich4.magicHouse`，只在 DEV 下挂）——
 //   这一屏**要玩到才会出现**（落点随机），验收它只能反复进屏，见下面那个 dev 分支。
-import { magicScreenState } from './magic-screen.ts';
+import { isTextEntryTarget } from './text-entry.ts';
+import { magicAwaitingPick, magicHumanPickPoint, magicScreen, magicScreenState } from './magic-screen.ts';
 import {  autoAction,
   ACTOR_DOLL,
   directionOf,
@@ -48,43 +57,75 @@ import {  autoAction,
   parseSave,
   importOriginalSaveWithSnapshots,
   roomMapId,
+  roomOptions,
+  roomHostSeat,
   specialSlotOf,
   SPECIAL_KIND,
   STOCK_STATUS,
   stockStatus,
   serializeGame,
   actingSeat,
+  cardPassiveHolder,
+  TOOL_GET_OFF,
+  TOOL_TELEPORTER,
   isAiControlled,
   stateFingerprint,
   toolCount,
+  GAME_INITIAL_FUNDS,
   winConditionsOf,
   type Action,
   type CardTarget,
+  type PresentCue,
   type GameState,
+  type JoinMode,
   type MapTopology,
   type Rich4Map,
   type RoomInfo,
   type TargetClass,
   orphanedAuction,
+  confineViewTargets,
+  type ConfineView,
 } from '@rich4/core';
 import { NetClient, defaultWsUrl, netParamsFrom } from './net-client.ts';
-import { browserStorage, inviteLink, inviteRoomFrom, loadClientId, showFoyer } from './foyer.ts';
+import { initialNetState } from './net-start.ts';
+import { defaultSaveName, promptSaveName } from './net-save.ts';
+import {
+  browserStorage,
+  foyerEntry,
+  loadClientId,
+  loadName,
+  showFoyer,
+  withoutRoomParam,
+} from './foyer.ts';
 import { NetToasts } from './net-toast.ts';
-import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND } from './dice-roll.ts';
+import { DiceRollFx, DICE_SOUND as DICE_ROLL_SOUND, rollsWithoutDice } from './dice-roll.ts';
 import { RENDER_MS, tickMs } from './tick.ts';
-import { walkTweenFor } from './tween.ts';
-import { drawLobby, hitLobby, isHostSeat, lobbySlots, type LobbyHit } from './lobby.ts';
-import { PANEL_ROWS } from './hud.ts';
+import { landingPauseRemaining, turnEndPauseTicks, type LandingPause } from './landing-pause.ts';
+import { hideLandingPlayer, landingFilmSpec, landingTrigger, openingLandingPlayer } from './landing-fx.ts';
+import { walkTweenFor, type WalkTween } from './tween.ts';
+import {
+  drawLobby,
+  hitLobby,
+  lobbyIsHost,
+  lobbySlots,
+  LOBBY_OPTION_ROWS,
+  optionIndexOf,
+  optionValueOf,
+  type LobbyHit,
+} from './lobby.ts';
+import { PANEL_ROWS, panelActorSlot, panelPlayerOf } from './hud.ts';
 import { panelRows } from './panel.ts';
 import {
-  aiSettingsDraft,
-  applyAiSettingsHit,
+  aiSettingsDown,
+  aiSettingsDrag,
+  aiSettingsUp,
   AI_ORIGIN,
   drawAiSettings,
   hitAiSettings,
-  rowMatchesPlayer,
+  aiCommitActions,
+  openAiSettingsModel,
   type AiSettingRow,
-  type AiSettingsHit,
+  type AiSettingsModel,
 } from './ai-settings.ts';
 import {
   archivesFromBytes,
@@ -96,6 +137,7 @@ import {
   SpriteCache,
   loadHolidayArt,
   loadMinigameBackground,
+  readRawBytes,
   loadMinimapBackground,
   screenDirection,
   type ArchiveName,
@@ -103,18 +145,35 @@ import {
   type Sprite,
 } from './assets.ts';
 import { loadAllArchives, type LoadProgress } from './asset-loader.ts';
-import { onEventBoxArtReady, setEventBoxArchives } from './event-box-screen.ts';
+import {
+  cardUsePopupActive,
+  dropOwnCardUse,
+  eventBoxPending,
+  eventBoxScreen,
+  eventBoxTailPending,
+  eventBoxTailTick,
+  setEventBoxStartGate,
+  startCardRevealPopup,
+  startRemoteCardUsePopup,
+  onEventBoxArtReady,
+  setEventBoxArchives,
+  startOwnCardUsePopup,
+} from './event-box-screen.ts';
 // ★ 「請選擇設施類別」那扇窗（Q-TOOL-4）—— 真人盖**等级 0 的設施**时要先选种类
 //   （原版 `fcn_00440aac` / 窗口过程 `fcn_0043fae4`）。
 import {
   PICKER_HIT,
   PICKER_STRIDE,
   PICKER_TOOL_ID,
+  facilityPickerOpen,
   openFacilityPicker,
   pickerNeededFor,
+  resetFacilityPicker,
+  setFacilityPickerGate,
 } from './facility-picker.ts';
-import { needsStealPick, openStealPicker } from './steal-picker.ts';
-import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue } from './amount-window.ts';
+import { needsStealPick, openStealPicker, resetStealPicker, stealPickerOpen } from './steal-picker.ts';
+import { staleLocalModals, type LocalModal } from './turn-modals.ts';
+import { AMOUNT_BAR_DRAG_SOUND, amountBarDragValue, parseAmountHitMap, setAmountHitMap } from './amount-window.ts';
 import {
   Hud,
   SIDEBAR,
@@ -123,10 +182,12 @@ import {
   hitMinimapArrow,
   hitMinimapBody,
   hitPanelTag,
+  hitMinimapArea,
   hitSidebar,
   minimapToWorld,
+  sidebarLayout,
+  type CalendarPage,
   type MinimapArrowId,
-  type SidebarView,
 } from './hud.ts';
 import {
   CONTROL,
@@ -162,15 +223,31 @@ import {
   type DateDraft,
   type OptionsOutcome,
 } from './options-pages.ts';
-import { SoundPlayer, shouldRetriggerVoice } from './audio.ts';
+import { SoundPlayer, VoiceChannel, shouldRetriggerVoice } from './audio.ts';
 import {
-  cardPlaySpeech,
-  openingSpeech,
+  cardPlaySpeechLines,
+  toolUseSpeechLines,
+  toolLineOf,
+  ownToolLineSpoken,
+  TOOL_LINE_ORDER,
+  type OwnToolLine,
   speechEventsFor,
   speechLinesFor,
   type SpeechLine,
 } from './speech.ts';
-import { deferSpeech, filmWaitsForSpeech, stageBusy, type StageFlags } from './stage-gate.ts';
+import { filmWaitsForSpeech, stageBusy, type SpeechOrder, type StageFlags } from './stage-gate.ts';
+// ★★ 第十五份：台词气泡 × 各种框的先后与互斥 —— 一把尺子、两道闸（规格见该模块文件头）
+import {
+  SCREEN_BOX_TIER,
+  insertByRank,
+  lineMayEnter,
+  lineRank,
+  speechAheadOfFilms,
+  type BoxSnapshot,
+  type SpeechCue,
+  type SpeechSnapshot,
+} from './presentation-order.ts';
+import { fastForwardPresentations, presenterMovedOn } from './follow-presenter.ts';
 import {
   SpeechQueue,
   drawSpeechBubble,
@@ -179,7 +256,18 @@ import {
 } from './speech-bubble.ts';
 // 台词字幕用的是 canvas 文字（原版 `_rich4_create_font(0x10, 0x101010, …)` 那一路）
 import { font } from './font.ts';
-import { GOD_LINE_AT, GOD_LINE_COLOR, GOD_LINE_FONT_PX, GOD_LINE_LINE_HEIGHT, GOD_LINE_SHADOW, godLineActive, godLineRows, godLineTrigger } from './god-line.ts';
+import {
+  GOD_LINE_AT,
+  GOD_LINE_COLOR,
+  GOD_LINE_FONT_PX,
+  GOD_LINE_LINE_HEIGHT,
+  GOD_LINE_SHADOW,
+  godFilmFrameHeld,
+  godLineActive,
+  godLineRows,
+  godLineShown,
+  godLineTrigger,
+} from './god-line.ts';
 import { MusicPlayer, shouldResumeAfterUnlock } from './music.ts';
 // Q8：音色库（.sf2）—— 用户自备，有就用采样还原音色，没有就退回振荡器
 import { parseSoundFont } from './soundfont.ts';
@@ -190,6 +278,7 @@ import {
   configStore,
   initSaveStore,
   hdBase,
+  hdTierDir,
   isDesktop,
   hostLog,
   writeReport,
@@ -216,6 +305,7 @@ import {
   CARD_FLIGHT_TYPE,
   THROW_SETTLE_MS,
   cardFlightPlan,
+  cardLandSfx,
   flightDone,
   makeObjectFlight,
   objectFacing,
@@ -231,26 +321,49 @@ import {
   buildClip,
   buildFxBitmap,
   buildFxPlan,
+  buildHammerDone,
   buildUpgradesOf,
+  clipDone,
   BUILD_FX_ARCHIVE,
   manifestSoundFor,
+  MANIFEST_BUILD_SOUND,
   stepBuildFx,
   type BuildClipName,
   type BuildFx,
 } from './build-fx.ts';
 // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 的「受管辖但仍未接」之一）——
 //   与建屋影片同一套：整幅 FLIC 直接盖在棋盘上、**阻塞**、播完才放行回合驱动。
-import { confineClip, confineFxTrigger } from './confine-fx.ts';
+import { confineAfterEventBox, confineClip, confineFxTriggers } from './confine-fx.ts';
+// ★★ 第二十五份試玩回報「为什么忽然出现拍卖」：破產那一刻的整屏影片（`Data.mkf` 0x22b）。
+//   它是一条**整屏**（`screens.ts` 里排在拍賣屏之前），宿主这边只需要它的「还在演」那一位，
+//   用来把事件 25（`afterStage`）与回合驱动押到影片之后。
+import { bankruptFilmActive, resetBankruptScreen } from './bankrupt-screen.ts';
 // ★ 神明降臨／發威那一段影片（Q-ANIM-1）—— 与住院/入獄同一支 `fcn_0045144f`，
 //   于是共用 `board-film.ts` 的播放与下面那一份「棋盘影片」宿主状态。
 import { godFilmSpec, godFxTrigger } from './god-fx.ts';
+import { GOD_ASCEND_MAX_MS, GOD_ASCEND_SOUND, godAscendTrigger, type GodAscendCue } from './god-ascend-fx.ts';
 // ★ 「踩到惡犬」那一段影片（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
 //   同一支 `fcn_0045144f` 的第三位客人，规格与判据见 `dog-fx.ts`。
-import { dogBiteFxTrigger } from './dog-fx.ts';
+import { dogBiteFxTrigger, filmPrecedesSendToHospital } from './dog-fx.ts';
 // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報）—— 同一支 `fcn_0045144f`，
 //   规格与判据见 `alien-news-fx.ts`。
 import { alienNewsFxTrigger, NEWS_ALIEN_ID } from './alien-news-fx.ts';
+// 第十二份試玩回報：新聞 5 / 15 / 20 / 21 的整块影片（龍捲風 0x217 等），见 `news-place-fx.ts`
+import { newsPlaceFxTrigger } from './news-place-fx.ts';
+// ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪的白闪 + 静置 —— 规格见 `news-flash-fx.ts`
+// ★ A-2：命運 0 拆屋 / 1 徵收走同一支 `fcn_00451985`（共用尾巴 `0x0044bf46`）⇒ `fortuneFlashTrigger`
+import { fortuneFlashTrigger, newsFlashPhase, newsFlashTrigger, type NewsFlashCue } from './news-flash-fx.ts';
 import { disappearFxTrigger } from './disappear-fx.ts';
+// ★ 魔法屋「就地拆除房屋」那一段 0x211（女巫窗口关掉之后 `0x431caa` 里播的）—— 规格/判据见 `magic-fx.ts`
+import {
+  MAGIC_DEMOLISH_FILM,
+  freshMagicBeats,
+  freshTurnBeats,
+  magicDemolishFxTrigger,
+  magicSequenceStart,
+  magicSequenceStep,
+  type MagicSequence,
+} from './magic-fx.ts';
 // ★ W-55 行 4：「惡魔顯靈拆屋」那一段 110×110 的爆破片 —— 规格/判据见 `devil-fx.ts`。
 import {
   DEVIL_DEMOLISH_FRAME_MS,
@@ -265,25 +378,51 @@ import {
   beginBoardFilm,
   boardFilmBitmap,
   boardFilmDone,
-  enqueueBoardFilm,
+  boardFilmHolding,
+  boardFilmRedrawn,
+  boardFilmWaitsForEventBox,
   type BoardFilm,
   type BoardFilmSpec,
 } from './board-film.ts';
 // ★ 影片窗口内棋盘按 **before** 那一帧画（试玩3 #1/#9，issue #19）——
 //   原版 `fcn_0045144f` 是阻塞的，播完才重绘棋盘；core 却一条 action 就把
 //   等级/附身写完了。纯函数与逐项判据见 `deferred-board.ts`。
-import { boardFilmWindowOpen, boardStateForFilm, type BoardFilmWindow } from './deferred-board.ts';
+import { boardFilmWindowOpen, boardStateForFilm, visibleBoardState, type BoardFilmWindow } from './deferred-board.ts';
+import { AI_TOOL_NOTICE_KEY, applyVehicleHold, vehicleHoldOf, type VehicleHold } from './vehicle-hold.ts';
 import { TOOLBAR_LABELS, loadSetupScene as loadSetupSceneAsset } from './assets.ts';
 import { interactionUi, type InteractionUi } from './interactions.ts';
 // ★ 「取消」那一拍的梯子 —— ESC 与右键**共用同一份**（原版就是这么干的：
 //   钩子把取消键变成 `WM_RBUTTONUP 0x205`，主窗口过程只交给栈顶那扇窗）。
 //   取证与全表见 `panel-cancel.ts` 头部。
-import { CANCEL_SOUND, cancelLayerOf, type CancelLayer } from './panel-cancel.ts';
+import { CANCEL_SOUND, cancelLayerOf, type CancelLayer, type CancelSnapshot } from './panel-cancel.ts';
+import { isExternalRejection } from './external-rejection.ts';
+// ★ 触屏的「右键」：长按 = 右键 + 可见的「取消」钮（需求方 2026-09-24，见 `touch-input.ts`）
+import {
+  bindTouchGestures,
+  cancelButtonPlacement,
+  dispatchMouse,
+  isTouchDevice,
+  longPressAllowed,
+  rightClickMeaningful,
+} from './touch-input.ts';
+import {
+  REMINDER_BGM,
+  REMINDER_CANCEL_SOUND,
+  REMINDER_CLICK_SOUND,
+  reminderCancel,
+  reminderClick,
+  reminderStart,
+  reminderTick,
+  type LoanReminderUi,
+} from './loan-reminder.ts';
 // ★ 股市柜台的填数页壳 —— 与銀行/公佈欄/上市企業**同一个**通用填数页。
-import { stockAmountForm } from './amount-form.ts';
+import { stockAmountForm, stockCounterTradeSound } from './amount-form.ts';
 // ★ 通用填数窗**自己那张键盘表**（@source `loc_00452e4b`）：0-9 / 退格 / C / M / H / Enter。
 import {
+  AMOUNT_WINDOW,
+  resetAmountWindowPos,
   amountKeyOfVk,
+  amountKeySound,
   amountKeyStep,
   amountSlotOfId,
   amountVkOf,
@@ -299,16 +438,39 @@ import {
   hitDialog,
   layoutDialog,
   usesYesNo,
+  AmountPressLatch,
   type AmountPage,
   type DialogHit,
 } from './dialog.ts';
-import { DICE_FLIC_BASE, GO_IMAGE, type SpriteFn } from './gameui.ts';
+import { DICE_FLIC_BASE, GO_IMAGE, YESNO_IMAGE, YESNO_RESOURCE, type SpriteFn } from './gameui.ts';
 import { GO_SIZE, goButton, boardToScreen } from './go-button.ts';
 import { createCursorWarper, measureCanvas, type CursorWarpFrame } from './cursor-warp.ts';
 // ★ W-60：回到棋盘那一帧续回合驱动（阻断级 bug 的唯一闸门）—— 判据见该模块文件头。
-import { shouldResumeDriver } from './driver-resume.ts';
-import { tollFlashLevel } from './toll-flash-fx.ts';
-import { setNoticeStartGate } from './notice-box-screen.ts';
+import { driverParkedByScreen, shouldResumeDriver } from './driver-resume.ts';
+import { TOLL_FLASH_TOTAL_MS, tollFlashLevel } from './toll-flash-fx.ts';
+import {
+  noticeHoldsFilms,
+  noticeKeyShowing,
+  noticePendingRanks,
+  noticeShowing,
+  setNoticeCardPopup,
+  setNoticeOverlayGate,
+  setNoticeSpeechGate,
+  setNoticeStartGate,
+  queueLocalNotice,
+  noticeBoxScreenState,
+} from './notice-box-screen.ts';
+// ★ 第十三份試玩回報 #1：顯靈加蓋那一格等「顯靈框」收掉才画成新等级（两次重画、两声音效 50）
+import {
+  MANIFEST_NOTICE_KEY,
+  applyManifestHold,
+  immediateManifestHints,
+  manifestHoldOf,
+  type ManifestHold,
+} from './manifest-hold.ts';
+// ★ 2026-09-22（第十一份試玩回報 #15）：訊息框的起播閘要看「轉盤 / 神明老虎機在不在播」
+import { setWheelStartGate, wheelScreenState } from './wheel-screen.ts';
+import { godSlotState, setGodSlotStartGate } from './god-slot.ts';
 // ★ W-66-a：走子时那串**剩余步数**的大数字（规格/判据见该模块文件头）。
 import {
   STEPS_COUNTER_ARCHIVE,
@@ -332,7 +494,7 @@ export const inputTrace: {
   earlyReturn: string | null;
 } = { stage: null, diceToggle: null, goPressed: false, rollRequested: false, earlyReturn: null };
 import { moveSoundId } from './move-sound.ts';
-import { CHARACTER_POSE, characterSetBase, type LoadedFlic } from './assets.ts';
+import { CHARACTER_POSE, characterSetBase, characterSleepwalkSprite, type LoadedFlic } from './assets.ts';
 import { HOTKEY, hotkeyOf, vkOf, type KeyBinding } from './hotkeys.ts';
 import {
   configHotkeyKeys,
@@ -340,9 +502,22 @@ import {
   encodeConfig,
 } from './config-file.ts';
 import { SCENE_ARCHIVE, sceneFor } from './scenes.ts';
-import { onMinigameBackgroundReady, setMinigameBackground } from './minigame-bg.ts';
+import { onMinigameBackgroundReady, setMinigameBackground, setPenguinHitMask } from './minigame-bg.ts';
+import { PENGUIN_HIT_RES, parsePenguinHitMask } from './minigame-screen.ts';
+import {
+  CURSOR_ARCHIVE,
+  CURSOR_RESOURCE,
+  createSoftCursorLayer,
+  cursorShape,
+  localTurn,
+  resolveCursor,
+  type CursorFrame,
+  type CursorShape,
+  type CursorWant,
+} from './soft-cursor.ts';
 import {
   AUTOSAVE_SLOT,
+  autosaveStep,
   LOAD_SLOTS,
   SAVE_SLOTS,
   drawSaveLoad,
@@ -360,8 +535,25 @@ import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { FlightRecorder, reportFileName } from './flight-recorder.ts';
 import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
+import { parseBoard } from './board-data.ts';
+import {
+  boardPanelDom,
+  boardPanelFoyer,
+  fetchBoardText,
+  installBoardPanel,
+  readBoardView,
+  type BoardStorage,
+} from './board-panel.ts';
+import { installTextEntryRecovery, installViewportFit, iosViewportContent, isIosWebKit } from './viewport.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
-import { drawIntro, introDone } from './intro.ts';
+import {
+  INTRO_ARCHIVE,
+  INTRO_DOOR_RESOURCE,
+  drawIntro,
+  introDone,
+  introFallResource,
+  introJumpResource,
+} from './intro.ts';
 import {
   activePlayers,
   assetRows,
@@ -431,14 +623,17 @@ import {
 import {
   atmAmount,
   atmLimit,
+  atmOp,
+  atmOpen,
   atmPress,
+  atmPressSound,
   drawBankAtm,
   hitAtmButton,
   type AtmState,
 } from './bank-screen.ts';
 import {
   ATM_BAR,
-  LOAN_BUBBLE_MS,
+  LOAN_SLIDE,
   LOAN_TICK_MS,
   atmApplyCode,
   atmCodeOfKey,
@@ -449,14 +644,14 @@ import {
   drawLoanPressed,
   loanDueDays,
   loanBubbleVoice,
-  loanSlideDone,
-  loanSlideStep,
+  loanTickSlide,
   loanStart,
   loanStep,
   type LoanPanelsView,
   type LoanUi,
 } from './bank-dynamic.ts';
 import {
+  INV_SLOTS,
   INV_VEHICLE_IMAGE,
   REMOTE_DICE_TOOL,
   cardEntries,
@@ -472,6 +667,9 @@ import {
   SHOP_SLIDE_MS,
   blinkStart,
   blinkStep,
+  keeperPaintAfter,
+  keeperPaintStart,
+  type ShopKeeperPaint,
   cellItemAt,
   drawShopScreen,
   hitShopCell,
@@ -484,27 +682,44 @@ import {
   shopEntryOf,
   shopMessage,
   shopRows,
+  shopShellMayAnswer,
+  shopWindowMayOpen,
   slideDone,
   slideStart,
   slideStep,
   type ShopBlink,
   type ShopPage,
-  type ShopShelfRow,
   type ShopSlide,
 } from './shop-screen.ts';
 import {
+  BAIL_CLERK_MS,
+  BAIL_INMATE_AT,
+  BAIL_INMATE_RESOURCE,
+  BAIL_PLACES,
+  BAIL_YESNO_CENTER,
+  HOSPITAL_BYE_NURSE,
+  bailFlowHasBubble,
+  bailFlowOpen,
+  bailFlowStep,
   canPayOnScreen,
+  drawBailClerk,
   drawBailScreen,
   hitBailSlot,
+  hitBailYesNo,
+  type BailClerkBubble,
+  type BailClerkKey,
+  type BailEvent,
+  type BailFlow,
   type BailSlotView,
 } from './bail-screen.ts';
 import { SCREENS } from './screens.ts';
 // ★ 只给「挪指针」那条判据用（`cursor-warp.ts` 的另外三处固定落点）
 import { facilityPickerScreen } from './facility-picker.ts';
+import { setScapegoatPickerGate } from './scapegoat-picker.ts';
 import { researchScreen } from './research-screen.ts';
 // ★ 只给 dev 钩子用（`__rich4.auctionView()`）：竞价轮转发生在 canvas 屏里，
 //   自动化看不见就没法验收「电脑跟不跟价、落槌演没演」。
-import { auctionHumanPassPoint, auctionRunForTest } from './auction-screen.ts';
+import { auctionHumanPassPoint, auctionRunForTest, auctionTrace } from './auction-screen.ts';
 // ★ 镜头该盯谁：判据是纯函数（第四份回报第 2/5 条）
 import { cameraFollowTarget } from './camera-follow.ts';
 // ★ 只给 dev 钩子用（`__rich4.lotteryDraw()`）：開獎屏要等到 15 号才出现
@@ -514,9 +729,12 @@ import { openBigMap } from './big-map-screen.ts';
 //   ESC 与右键都走那条登记契约（本屏的 `hotkey` / `contextmenu` 是同一支）。
 import { openHelpAt } from './help-screen.ts';
 import type { UiScreen, UiScreenEnv } from './ui-screen.ts';
+import { pendingScreens } from './overlay.ts';
+import { BLOCKING_PRESENTATIONS, DAY_AND_MAGIC_BOXES, PresentationHost } from './presentation-host.ts';
+import { dividendDayCrossed } from './shares-screen.ts';
+import { DisplayList, installBitmapCloseGuard } from './display-list.ts';
+import { installPageVisibility } from './page-visibility.ts';
 import {
-  CURSOR_ARCHIVE,
-  CURSOR_RESOURCE,
   PICK_CLASS,
   PICK_CURSOR_INVALID,
   PICK_EDGE,
@@ -531,11 +749,12 @@ import {
   pickScrollCamera,
   pickScrollNextStep,
   startPick,
+  COMPANY_BUILD_PARAM,
+  teleportTargetParam,
   type PickEdge,
   type PickSession,
 } from './picking.ts';
 import {
-  MONEY_VALUES,
   defaultSetup,
   drawSetup,
   fillComputerSeats,
@@ -546,25 +765,34 @@ import {
   setupUp,
   type SetupState,
 } from './setup.ts';
+import {
+  HD_STORAGE_KEY,
+  MAX_SURFACE_SCALE,
+  drawSprite,
+  drawSurface,
+  hdStageRequested,
+  setCurrentSurfaceScale,
+  sizeSurface,
+  surfaceScaleCap,
+  surfaceScaleFor,
+} from './hd-stage.ts';
 
 /**
  * HD 清单的文件名 —— `hdBase()` 是 `${assetBase() 去掉 /game}/hd`，清单在它旁边。
  * 与 `packages/server/src/static.ts` 的素材白名单无关（HD 走另一条路）。
  */
-const HD_MANIFEST_NAME = 'hd-manifest.json';
+const HD_MANIFEST_NAME = `${hdTierDir()}-manifest.json`;
 
 /**
- * 网页版要不要去问 HD 素材。
+ * 超分清单的版本（`assets-manifest.json` 里登记了它就有：sha256 前 8 位）。
  *
- * · `true`＝问一次（`loadHdSource` 内部拿到 404 自己会退回原图，不报错）；
- * · `false`＝**一次都不发**。
- *
- * ★ 初值 `true` 是有意的：桌面壳、以及**没有** `assets-manifest.json` 的
- *   开发服务器都要走老路（那时候没有清单可查）。只有网页版读到清单之后，
- *   才可能把它改成 `false`（任务书 W-72 §5）。
- * @see loadArchivesForWeb
+ * ★ 2026-09-24（W-80 §8 上线）改了口径：先前是「清单里**没有**就一次都不问」（W-72 §5 —— 那时
+ *   仓库里那份 3.8 MB 的规划清单没有一张产物，白拉）。线上的超分清单现在是 `tools/hd-deploy.ts`
+ *   只挑已验证那几组生成的小清单（brotli 后约 20 KB），没登记时问一次、404 就整包走原图，代价可忽略；
+ *   登记了就带 `?v=` 去拉，服务器按不可变长期缓存（`static.ts` 的 `cacheControlFor`）。
+ *   这样部署 HD 不必重跑 `precompress` 改 `assets-manifest.json`（那份清单同时管着 7 个档案的长度校验）。
  */
-let hdListed = true;
+let hdManifestVersion: string | null = null;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -572,11 +800,42 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
+/**
+ * 佈告欄的收起状态存在这里（见 `board-panel.ts` 的 `BOARD_STATE_KEY`）。
+ * Safari 隐私模式下**碰一下 `localStorage` 就抛**，所以包起来 —— 拿不到就只是不记忆。
+ */
+function boardStorage(): BoardStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 const canvas = $<HTMLCanvasElement>('board');
+// ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏 —— 页面钉在 `visualViewport` 上，
+//   不再用 `100vh`（见 viewport.ts）。越早越好：大厅/门厅也在这块区域里。
+const refitViewport = installViewportFit(window, document.body.style);
+// ★ 第二十七份（iPhone Safari）「输入文字后画面显示不全」：iOS 上 meta viewport 常驻
+//   `maximum-scale=1`（只挡聚焦自动放大，双指缩放照旧），文字框失焦 / 转向后把卷动、缩放
+//   收拾回来并按可视区重钉舞台（见 viewport.ts 的 `installTextEntryRecovery`）。
+const viewportMeta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+if (viewportMeta !== null && isIosWebKit(navigator)) viewportMeta.content = iosViewportContent(viewportMeta.content);
+installTextEntryRecovery({
+  win: window,
+  doc: document,
+  meta: viewportMeta,
+  isTextEntry: (t) => isTextEntryTarget(t as EventTarget | null),
+  refit: () => {
+    refitViewport();
+    requestRender();
+  },
+});
 // ⚠️ 側欄不再是独立的 HTML 画布 —— 它是舞台 640×480 里的一块
 //   （见 stage.ts 的 LAYOUT.panel），跟着一起缩放，命中判定也走舞台坐标。
 const ctx = (() => {
-  const c = canvas.getContext('2d');
+  // ★ 第十九份：不透明画布（每帧先铺黑再贴舞台，本来就没有透明像素）—— 合成时少一次与页面的混合
+  const c = canvas.getContext('2d', { alpha: false });
   if (c === null) throw new Error('无法取得 2D 绘图上下文');
   return c;
 })();
@@ -591,8 +850,6 @@ const loadBarEl = $('loadbar');
 const loadFillEl = $('loadfill');
 const loadHintEl = $('loadhint');
 const loadRetryEl = $<HTMLButtonElement>('loadretry');
-// ★ W-73 大厅里的「複製邀請連結」（DOM，盖在 canvas 下缘）
-const inviteEl = $<HTMLButtonElement>('invite');
 // ★ 一键回报（左下角）
 const feedbackBtnEl = $<HTMLButtonElement>('feedback');
 const feedbackPanelEl = $<HTMLDivElement>('feedbackpanel');
@@ -622,6 +879,20 @@ const autopilotBannerEl = $('autopilotbanner');
 const netToasts = new NetToasts(document, toastsEl, autopilotBannerEl);
 /** 上一份房间快照 —— `roomToasts()` 靠前后两份比出「谁进来了 / 谁掉线 / 谁被託管」 */
 let lastToastRoom: RoomInfo | null = null;
+/**
+ * **进房那一刻这一局开了没有**（`RoomInfo.started`，`hub.ts`：`started: t.room !== null`）。
+ *
+ * ★★ 第九份试玩回报（2026-09-22，Charles）「多人模式开局没有机舱跳伞的过场动画」——
+ *   联机要接 `screen = 'intro'`，但**只有「刚开局」那一次**：
+ *   刷新 / 断线重连时服务器会补发 `start`（`hub.ts` 的 `since` 补发），
+ *   若无条件播过场，每刷新一次就得重看 13 秒。
+ *   `since === undefined` 区分不开这两件事（刷新后它本来就是 undefined），
+ *   而 `onJoined` 拿到的 `started` 分得开：刚开局 = false、重连 = true。
+ *
+ * 在 `onJoined` 里写、在 `onStart` 里读（两者同一个 `connectOnline` 闭包，
+ * 且 `onJoined` 必先于 `onStart`）。
+ */
+let roomJoinedUnstarted = false;
 
 // ★ W-74 回合计时（棋盘右上角，剩余 ≤ 20 秒才露出来）
 const clockEl = $('clock');
@@ -663,11 +934,22 @@ let hoverNode: number | null = null;
 let nodeTip: TipModel | null = null;
 let renderer: BoardRenderer;
 /**
- * 右下角那块 200×200 现在显示哪一面。
- * @source RICH4.CFG offset 5：00 日曆 / 01 小地圖 / 02 兩者輪流
- *   —— 原版默认哪一个没查证，这里先开日曆（那是它的原生面貌）。
+ * 日曆那一面画哪个版式（原版 `[0x497164]` = `RICH4.CFG` +12，出厂 0 = 日曆）。
+ *
+ * ★★ 第二十一份（「设置里配置组合画面时和原版不符」）：先前这里是一个把**两件事**揉在一起的
+ *   `sidebarView: 'calendar' | 'month' | 'map'` —— 右栏版式（`cfg+5`）与日/月曆版式（`[0x497164]`）。
+ *   于是 `cfg+5 = 2`（組合畫面）没处可放，被当成日曆。现在拆开：
+ *   **右栏版式每帧直接读 `options.windowView`**（原版每次重画都直接读 `cfg+5`，
+ *   `fcn_00416e6d` 的 `0x416e74`、`fcn_004169bc` 的 `0x4169c3`、WM_PAINT 的 `0x418bcd`）。
+ *
+ * ★★ pt22 #12：日/月曆那一格也不再是模块级变量 —— 它就是 cfg 的 +12（`options.calendar`），
+ *   开机随 cfg 读回（`loadConfigFromStore`）、点太阳 / 月亮时写回（`saveConfigToStore`），
+ *   刷新 / 重开不再回到日曆。原版 `fcn_004169bc` 每次重画都直接读 `[0x497164]`（`0x004169fd`），
+ *   这里同样每帧从 `options` 取，没有另存的一份。
  */
-let sidebarView: SidebarView = 'calendar';
+function calendarPageOf(o: GameOptions): CalendarPage {
+  return o.calendar !== 0 ? 'month' : 'calendar';
+}
 
 /**
  * 右上角面板现在显示第几页（0 資金 / 1 地產 / 2 股票 / 3 其他）—— **每个玩家一份**。
@@ -763,17 +1045,25 @@ let optionsKeys: number[] = [...HOTKEY_DEFAULT_KEYS];
  */
 function loadConfigFromStore(): void {
   const cfg = decodeConfig(configStore().read());
-  if (cfg === null) return;
-  options = {
-    ...options,
-    speed: cfg.speed,
-    animation: cfg.animation,
-    music: cfg.music,
-    sound: cfg.sound,
-    autoSave: cfg.autoSave,
-    windowView: cfg.view,
-  };
-  optionsKeys = configHotkeyKeys(cfg);
+  if (cfg !== null) {
+    options = {
+      ...options,
+      speed: cfg.speed,
+      animation: cfg.animation,
+      music: cfg.music,
+      sound: cfg.sound,
+      autoSave: cfg.autoSave,
+      windowView: cfg.view,
+      // cfg+12 日/月曆（pt22 #12）；旧档没有这一格时 decode 读到的是 0 = 日曆（与出厂同）
+      calendar: cfg.calendar ?? 0,
+    };
+    optionsKeys = configHotkeyKeys(cfg);
+  }
+  // ★★ 第十一份 #8 / 第十六份：侧栏与設定屏必须同源 —— 现在右栏版式**每帧直接读
+  //   `options.windowView`**（`hud.draw` 的 `windowView`），不再有另存的一份，
+  //   开机、設定「確定」、熱鍵「切換視窗組」改的都是 `options` 这一处 ⇒ 单机与联机同一条路。
+  // 音量也在开机就按 cfg（或出厂值）作用上 —— 只有音量，不写档、不起停曲子（见 `applyVolumes`）
+  applyVolumes(options);
 }
 
 /**
@@ -795,6 +1085,7 @@ function saveConfigToStore(): void {
     sound: options.sound,
     autoSave: options.autoSave,
     view: options.windowView,
+    calendar: options.calendar,
     year: d.year,
     month: d.month,
     day: d.day,
@@ -855,17 +1146,19 @@ const AMOUNT_INITIAL = 0;
  * `atmFill` 就是那条选项自带的 `amount.fill`（金额定了才发得出去）。
  */
 let atm: AtmState | null = null;
-/** 金额定了怎么变成 action；`mode` = 按確認那一刻的存/提（路过銀行那台两个键都能用）*/
+/** 金额定了怎么变成 action；`mode` = 按確認那一刻的提/存（见 `ATM_MODE`：0 提款、1 存款）*/
 let atmFill: ((n: number, mode: number) => Action) | null = null;
 let atmLabel = '';
 /**
- * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 与落点銀行屏里那台是同一块面板，
- *   只是没有貸款屏垫底、办完一笔就关（原版 `fcn_004379c9` 的 ATM 窗是模态的，走子在它后面）。
- *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉，下一次路过再开。
+ * ★ 第八份试玩回报 #4：**路过銀行**的 ATM（`pending.kind === 'atm'`）—— 原版 `fcn_004379c9` 的 ATM 窗是模态的，
+ *   办完一笔（或关窗）就返回，走子在它后面。
+ * ★ 第十三份试玩回报 #2：**落在**銀行上也是先开这一台（`pending.landing`），答掉之后 core 才换成貸款屏
+ *   （`0x0041b396 call 0x4379c9` → `0x0041b3af call 0x436668`）。
+ *   本标志记「这一次 pending 已经开过窗」：玩家右键关掉后 `declineDecision` 把 pending 清掉（或换成貸款屏），下一次再开。
  */
 let atmPassOpened = false;
 
-/** 每次 action 之后：路过銀行给出 `pending.kind === 'atm'` ⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
+/** 每次 action 之后：core 给出 `pending.kind === 'atm'`（路过 / 落点）⇒ 给本机座位开 ATM；pending 没了 ⇒ 复位 */
 function syncAtmPending(): void {
   const p = state.pending;
   if (p === null || p.kind !== 'atm') {
@@ -876,9 +1169,10 @@ function syncAtmPending(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
   atmPassOpened = true;
-  atm = { mode: 0, digits: '', limits: [me.cash, me.moneyInBank] };
-  atmFill = (n, mode) => ({ type: 'bank', op: mode === 1 ? 'withdraw' : 'deposit', amount: n });
-  atmLabel = '路過銀行';
+  // ★ 第十三份试玩回报 #1：模式 0 = 提款（左上）、1 = 存款（中间）；暫停放款时默认存款 —— 见 `bank-screen.ts` 文件头
+  atm = atmOpen(me.cash, me.moneyInBank, bankFrozen());
+  atmFill = (n, mode) => ({ type: 'bank', op: atmOp(mode), amount: n });
+  atmLabel = p.landing === true ? '銀行' : '路過銀行';
   // 原版 `fcn_004379c9` 开窗那段（`0x437a2d..0x437a76`）只装 Panel #24 + 跑模态窗，**没有**开窗音效
   requestRender();
 }
@@ -891,6 +1185,12 @@ function syncAtmPending(): void {
  */
 let atmCode: number | null = null;
 let atmCodeAt = 0;
+
+/** ATM 按下那一声（Effect.mkf）—— 码 → 音效见 `atmPressSound` */
+function atmSound(code: number): void {
+  const id = atmPressSound(code);
+  if (id !== null) sound.play('Effect.mkf', id);
+}
 
 /** 关掉 ATM 面板 */
 function closeAtm(): void {
@@ -908,6 +1208,55 @@ function dismissAtm(): void {
   closeAtm();
   if (state.pending?.kind === 'atm') dispatch({ type: 'declineDecision' });
   requestRender();
+}
+
+/**
+ * 本机模态窗跟着回合走（判据在 `turn-modals.ts`）：ATM 只随本机回合里的 `pending{atm}` 活着；
+ * 选目标 / 点数盘 / 选股 / 設施类别 / 搶奪挑件在回合离开本机真人时收掉。
+ * ★ 被收走不是「本人取消」：不回调、不放取消音、不重开卡片欄、不派 action。
+ */
+function dropStaleLocalModals(): void {
+  const stale = staleLocalModals(
+    { pendingKind: state.pending?.kind ?? null, localTurn: localTurn({ state, localSeat: net?.seat ?? null }) },
+    {
+      atm: atm !== null,
+      pick: pick !== null,
+      dicePick: dicePick !== null,
+      stockPick: stockPick !== null,
+      facilityPicker: facilityPickerOpen(),
+      stealPicker: stealPickerOpen(),
+    },
+  );
+  for (const k of stale) dropLocalModal(k);
+  if (stale.length > 0) {
+    log(`▷ 回合已不在本機：收掉 ${stale.join(' / ')}`);
+    requestRender();
+  }
+}
+
+function dropLocalModal(k: LocalModal): void {
+  switch (k) {
+    case 'atm':
+      closeAtm();
+      return;
+    case 'pick':
+      endPick();
+      return;
+    case 'dicePick':
+      dicePick = null;
+      return;
+    case 'stockPick':
+      stockPick = null;
+      stockPickAt = null;
+      if (screen === 'stock') closeStock();
+      return;
+    case 'facilityPicker':
+      resetFacilityPicker();
+      return;
+    case 'stealPicker':
+      resetStealPicker();
+      return;
+  }
 }
 
 /**
@@ -971,6 +1320,8 @@ function atmKey(code: number): void {
   if (st === null) return;
   atmCode = code;
   atmCodeAt = performance.now();
+  // 键盘那一声：`0x00437571` 放 7；H（码 4）改发一次按下走金额栏那一支 ⇒ 9（`atmPressSound` 同一张表）
+  atmSound(code);
   const btn = code - 1;
   if (btn === 3) {
     // @source `loc_004375dc`：合成一次金额栏点击，坐标 (0xdc, 0xdf) = (220,223)
@@ -1030,6 +1381,7 @@ function openLoanAmount(op: LoanOp): void {
   );
   const c = idx >= 0 ? ui.choices[idx] : undefined;
   if (c?.amount === undefined) return;
+  amountWindowOpened();
   amountPage = { choice: idx, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
@@ -1048,6 +1400,10 @@ const BANK_TICK_MS = LOAN_TICK_MS;
 
 /** 气泡是哪一刻挂上的（到点自收，与商店同一支 `fcn_0044ee18`）*/
 let loanBubbleAt = 0;
+/** 进门那扇「銀行暫停放款」还在弹，开场押着（记的是那条 action 的 `notices` 引用）*/
+let loanFrozenWait: GameState['notices'] | null = null;
+/** 已经等过的那一份 `notices`（押过一次就不再押）*/
+let loanFrozenHandled: GameState['notices'] | null = null;
 
 /**
  * 董事長眨眼（Q-BANK-1a）—— 子对话框 `fcn_00434492` 那一支的 100 ms 定时器。
@@ -1066,6 +1422,13 @@ function syncLoanUi(): void {
     return;
   }
   if (loanUi === null) {
+    // ★ 2026-09-23：进门正暫停放款时，原版在 `0x405` 那一拍**先**弹「銀行暫停放款」（阻塞 1500 ms，
+    //   `0x004351f8 call 0x440cac`），框收了才往下走到招呼（`0x00435200`）⇒ 框还在就先不开场。
+    if (state.notices !== loanFrozenHandled && state.notices.some((n) => n.key === 'bank.loanFrozen')) {
+      // 这一拍訊息框还没入队（`notifyApplied` 里整屏的 `event` 在本函数之后）⇒ 先记下，交给 `bankTick` 等它收
+      loanFrozenWait = state.notices;
+      return;
+    }
     // ★ 那一句招呼归「動畫過程」管：@source `loc_00435200`（VA 0x00435200，銀行 `0x405` 那一拍）
     //   `cmp byte [0x497159], 0 / je → st = 3`（`[0x48c3d5]` 直接跳到「需要我為您服務嗎」
     //   那一档，**不**说 `#0075`）。`[0x497159]` 就是 `RICH4.CFG+1`（`rich4_read_config()`
@@ -1090,6 +1453,10 @@ function syncLoanUi(): void {
 function loanEffect(ui: LoanUi, effect: ReturnType<typeof loanStep>['effect']): void {
   const hadBubble = loanUi?.bubble ?? null;
   loanUi = ui;
+  // ★★ 第二十六份 panel #2：点掉 / 右键（`0x44ee18(1)`，`0x00434b6c` / `0x00435c1f` / `0x00435f8b` …，`0x0044ee30`
+  //   停语音）—— 这几条路都会换掉或收掉气泡，故「气泡变了」就停。换成带语音的新句时这一停是多余的
+  //   （`VoiceChannel` 起新句本来就先停旧句），但换成无语音 / 收掉那几条路少不了它，留着。
+  if (hadBubble !== null && ui.bubble !== hadBubble) stopVoice();
   if (loanBubbleVoice(hadBubble, ui.bubble)) loanBubbleAt = performance.now();
   if (effect === null) return;
   if (effect.kind === 'close') {
@@ -1137,6 +1504,58 @@ function loanFormClosed(amount: number): void {
   });
 }
 
+// ── 还款提醒窗（距还款日 3 天、恰好真人，`0x43695e` → `0x436034`）──────────
+//
+// core 挂 `pending {kind:'loanReminder'}`（相位 `turnStart`）；演法全在 `loan-reminder.ts`，
+// 这里只接 IO：开场、每拍、鼠标、关窗时派 `declineDecision`。
+
+/** 提醒窗的演出状态；`null` = 没开 */
+let reminderUi: LoanReminderUi | null = null;
+/** 已经关过的那一份 pending（联机时关窗那一条还没广播回来，别把同一扇再开一次）*/
+let reminderClosed: GameState['pending'] = null;
+
+/** 提醒窗上称呼的名字（`0x00436176 mov ecx, [player+0x00]` → `0x452946` 取名）*/
+function reminderName(): string {
+  const me = state.players[state.currentPlayer];
+  return me === undefined ? '' : (CHARACTERS[me.character]?.name ?? '');
+}
+
+/** 该不该开 / 该不该还开着 */
+function syncLoanReminder(now: number): void {
+  const p = state.pending;
+  if (p === null || p.kind !== 'loanReminder' || isAiTurn(state) || p === reminderClosed) {
+    reminderUi = null;
+    return;
+  }
+  if (reminderUi !== null) return;
+  // ★ 这扇窗在 `0x41c84f` 里，排在同一条 `endTurn` 的日推进（月結屏 / 開獎 / 訊息框…）之后 ⇒ 那些先收场
+  if (activeUiScreen() !== null) return;
+  // ★★ 第二十六份 panel：换人那一条还在演分界之前那一段（惡人那一趟 / 推日期）⇒ 等它
+  if (turnHandoffPending()) return;
+  reminderUi = reminderStart(reminderName(), now);
+  // @source `0x004369e0 push 4 / call 0x4549cf` —— 貸款屏那一首
+  void playTrackFile(REMINDER_BGM);
+  requestRender();
+}
+
+/** 每帧：开场 / 50 ms 一拍的换句 / 第三句收了就关窗 */
+function reminderFrame(now: number): void {
+  syncLoanReminder(now);
+  if (reminderUi === null) return;
+  const r = reminderTick(reminderUi, now, reminderName(), voiceBusy());
+  if (r.ui !== reminderUi) {
+    reminderUi = r.ui;
+    requestRender();
+  }
+  if (r.close) {
+    // @source `0x0043622f KillTimer` / `0x00436240 call 0x401966(0)` —— 窗关了，`0x41c84f` 接着走
+    reminderClosed = state.pending;
+    reminderUi = null;
+    requestRender();
+    dispatch({ type: 'declineDecision' });
+  }
+}
+
 /**
  * 貸款屏每帧走一次（对应原版那支 50ms 的 `0x113` 定时器）：
  * 推滑入、气泡到点（`fcn_0044ee18` —— **没有气泡时它也返回 1**）、
@@ -1144,6 +1563,15 @@ function loanFormClosed(amount: number): void {
  */
 function bankTick(now: number): void {
   if (atmCode !== null && now - atmCodeAt >= BANK_TICK_MS) atmCode = null;
+  reminderFrame(now);
+  // ★ 2026-09-23：进门那扇「銀行暫停放款」收了才开场（见 `syncLoanUi`）
+  if (loanUi === null && loanFrozenWait !== null) {
+    if (noticeBoxScreenActive()) return;
+    loanFrozenHandled = loanFrozenWait;
+    loanFrozenWait = null;
+    if (!aiVenuePending(state)) syncLoanUi();
+    requestRender();
+  }
   if (loanUi === null) return;
   // ★ 董事长眨眼：**子对话框那一支自己的 100 ms 定时器**，与下面那 50 ms 分开数；
   //   而且它只在「填数页没开着」时才走 @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`。
@@ -1156,11 +1584,11 @@ function bankTick(now: number): void {
   }
   if (now - loanAt < LOAN_TICK_MS) return;
   loanAt = now;
-  if (!loanSlideDone(loanUi.slide)) {
-    loanUi = { ...loanUi, slide: loanSlideStep(loanUi.slide) };
-  }
+  // 先走滑入那一段（退净 + 办成过一笔 → st = 0xb），再轮到气泡到点那张表 —— 与原版同一拍的次序
+  loanUi = loanTickSlide(loanUi);
   const bubble = loanUi.bubble;
-  if (bubble === null || now - loanBubbleAt >= LOAN_BUBBLE_MS) {
+  // ★★ 第二十六份 panel #2：`fcn_0044ee18(0)`（`0x00434766` / `0x00435669`）—— 满 `LOAN_BUBBLE_MS` **且**语音放完才到点
+  if (bubble === null || captionExpired(loanBubbleAt, now)) {
     loanSend({ kind: 'bubbleEnd' });
   }
 }
@@ -1177,7 +1605,7 @@ function bankTick(now: number): void {
  * | 節日插画 | `fcn_004521f0(今天) != −1` 时整张盖掉季节底图 |
  * | 距還款日 | `player+0x2c`（还款到期日）与今天的天号差 @source `fcn_004521aa` |
  */
-function loanPanelView(ui: LoanUi): LoanPanelsView {
+function loanPanelView(ui: Pick<LoanUi, 'slide'>): LoanPanelsView {
   const me = state.players[state.currentPlayer];
   const today = { year: state.year, month: state.month, day: state.day };
   const packed = me?.loanDueDate ?? 0;
@@ -1284,8 +1712,29 @@ function stockDetailView(): StockDetailView | null {
   );
 }
 
+/**
+ * ★ 2026-09-25 审计补：谁在**自己的回合**里开的股市屏 —— 关屏时替他交 `{type:'stockScreen', op:'close'}`
+ *   （`0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a`：三种模式的出口都强制收回特別融資）。
+ *   别人的回合里开着看（或联机里不是本机的回合）⇒ 不交。
+ */
+let stockOpenedOnOwnTurn = false;
+
+function markStockOpener(): void {
+  stockOpenedOnOwnTurn = localTurn({ state, localSeat: net?.seat ?? null });
+}
+
+function dispatchStockClose(): void {
+  if (!stockOpenedOnOwnTurn) return;
+  stockOpenedOnOwnTurn = false;
+  if (!localTurn({ state, localSeat: net?.seat ?? null })) return;
+  const a: Action = { type: 'stockScreen', op: 'close' };
+  // 只在真会改局面时才发（空操作在联机里会被定序器当非法拒掉）
+  if (reduce(state, a, topo) !== state) dispatch(a);
+}
+
 function openStock(): void {
   if (screen === 'stock') return;
+  markStockOpener();
   stockPage = 0;
   stockHover = null;
   stockSel = null;
@@ -1298,6 +1747,7 @@ function openStock(): void {
 
 function closeStock(): void {
   if (screen !== 'stock') return;
+  dispatchStockClose();
   screen = 'game';
   stockDetail = null;
   stockAmount = null;
@@ -1317,6 +1767,7 @@ function closeStock(): void {
  *   非 0 返回 = 行号（1 基）= 选中的股票。
  */
 function openStockPick(cardId: number, mode: StockPickMode): void {
+  markStockOpener();
   stockPage = 0;
   stockHover = null;
   stockSel = null;
@@ -1370,8 +1821,9 @@ function cancelStockPick(playSound = true): void {
   stockPick = null;
   stockPickAt = null;
   closeStock();
-  // 抛回 0 ⇒ `_rich4_ui_use_card_entry` 把卡片欄再开回来（@source `loc_00441ce1`）
-  openInventory('cards');
+  // 抛回 0 ⇒ 紅卡/黑卡函数返回 0（`0x0044501e test esi,esi / je 0x445032` → `mov eax, ebx`）
+  //   ⇒ `_rich4_ui_use_card_entry` 失败音 3 + 把卡片欄再开回来（@source `0x00441cd9` / `loc_00441ce1`）
+  cardUseFailed();
 }
 
 /** 12 支股票的名字 —— core 的状态不带名字，在 `@rich4/data` 的表里 */
@@ -1423,7 +1875,11 @@ function stockTrade(kind: 'buy' | 'sell'): void {
   const status = stockStatus(st.openPrice, st.price);
   if (kind === 'buy') {
     if (status === STOCK_STATUS.limitUp) {
-      log(`▶ ${STOCK_NO_BUY}`); // @source 串 0x464088
+      // ★ 2026-09-23：原版弹訊息框「漲停無法買進！」—— `0x0042af18 push 0x800003e8` / `0x0042af1d mov eax,0x464088`
+      //   / `0x0042af23 call 0x440cac`：**1000 ms、整扇右移 100**（bit31）。先前只写了一行日志。
+      log(`▶ ${STOCK_NO_BUY}`);
+      queueLocalNotice({ key: 'stock.limitUpNoBuy', args: [], holdMs: 1000, shiftRight: true });
+      requestRender();
       return;
     }
     // 上限 = min(流通量, 存款 ÷ 股价) @source `loc_0042af30`
@@ -1433,14 +1889,20 @@ function stockTrade(kind: 'buy' | 'sell'): void {
     if (max <= 0) return;
     stockAmount = { kind: 'buy', stock: row, max };
   } else {
-    if (status === STOCK_STATUS.limitDown) {
-      log(`▶ ${STOCK_NO_SELL}`); // @source 串 0x464097
-      return;
-    }
+    // ★ 次序照原版：先看有没有持股（`0x0042b019 cmp [持股], 0 / je 退`），再看跌停 —— 没持股就连框都不弹
     const held = state.holdings[state.currentPlayer]?.[row]?.amount ?? 0;
     if (held <= 0) return;
+    if (status === STOCK_STATUS.limitDown) {
+      // ★ 2026-09-23：「跌停無法賣出！」—— `0x0042b04b push 0x800003e8` / `0x0042b050 mov eax,0x464097`
+      //   / `jmp 0x42af22`（与漲停同一处 `call 0x440cac`）：1000 ms、右移 100
+      log(`▶ ${STOCK_NO_SELL}`);
+      queueLocalNotice({ key: 'stock.limitDownNoSell', args: [], holdMs: 1000, shiftRight: true });
+      requestRender();
+      return;
+    }
     stockAmount = { kind: 'sell', stock: row, max: held };
   }
+  amountWindowOpened();
   amountPage = { choice: 0, value: AMOUNT_INITIAL };
   dialogHot = null;
   requestRender();
@@ -1467,6 +1929,12 @@ let saveLoadSlots: SlotInfo[] = [];
 let saveLoadHot: number | null = null;
 
 function openSaveLoad(mode: SaveLoadMode, from: Screen): void {
+  // ★ 聯機存檔（v6）：聯機時「存檔」存到**伺服器**（房主取名）；「讀檔」會把本機拉離大家的局面，不給
+  if (net !== null) {
+    if (mode === 'save') void promptNetSave();
+    else showNetNotice('聯機中不能讀檔：要接著玩以前的局，請從房間列表「建立房間 → 從存檔繼續」');
+    return;
+  }
   saveLoadMode = mode;
   saveLoadReturn = from;
   saveLoadSlots = readSlots(mode === 'load' ? LOAD_SLOTS : SAVE_SLOTS + 1);
@@ -1529,6 +1997,10 @@ function loadState(next: GameState, mapOverride: Rich4Map | null = null): void {
   hoverNode = null;
   nodeTip = null; // 换局面/读档时把名牌收掉（Q-HOVER-1）
   amountPage = null;
+  // ★ 读档进棋盘也走 `sub_00401981(1)`（標題读档 `0x401d08 push 1 / jmp 0x401cfe`）⇒ 同样 Post 0x401
+  //   ⇒ 面板页号归零（`0x48be24`）；自動存檔从读进来的那一天重新算起（`autosaveStep`）
+  panelPages.fill(0);
+  autosaveDateKey = null;
   const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? 1];
   camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
   screen = 'game';
@@ -1624,16 +2096,7 @@ let npcWalksDrawn: GameState['lastNpcWalks'] | null = null;
  * ⚠️ 只列**纯演出**的屏。待决交互类（拍賣 / 樂透投注 / 研究所 / 小遊戲 / 買賣框）不在此列 ——
  *   它们要靠回合驱动或屏自己把 `pending` 答掉，挡了会死锁。
  */
-const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
-  'shares',
-  'lottery-draw',
-  'monthly',
-  'magic',
-  'eventBox',
-  'notice',
-  'wheel',
-  'god-slot',
-]);
+// ★ 第十六份：表本体搬到 `presentation-host.ts`（`BLOCKING_PRESENTATIONS`），与单测共用
 
 /**
  * 此刻是不是有一段**纯演出**在接管整屏（判据就是上面那张表）。
@@ -1642,8 +2105,14 @@ const BLOCKING_PRESENTATIONS: ReadonlySet<string> = new Set([
  *   以及各屏自己的判断。
  */
 function blockingPresentation(): boolean {
-  const overlay = activeUiScreen();
-  return overlay !== null && BLOCKING_PRESENTATIONS.has(overlay.id);
+  // ★★ 第十六份：判据收在 `presentation-host.ts`（与单测同一份）—— 保釋收尾 / 押着的推日期屏 /
+  //   接管整屏的那一屏是演出类（女巫窗等点格、訊息框只是排着等台词这两种除外）
+  return presentationHost.screensBlocking();
+}
+
+/** 保釋屏答完之后那段收尾还在演（见 `blockingPresentation`）*/
+function bailClosing(): boolean {
+  return bailFlow !== null && state.pending?.kind !== 'bail';
 }
 
 /**
@@ -1665,37 +2134,89 @@ function blockingPresentation(): boolean {
  *   - `walkDone`：走子补间（`renderer.walkDone()`，**已含替身那条**）；
  *   - `diceFxActive`：掷骰三段（预动作 / 滚骰 / 定格）。
  */
-function stageBusyFlags(): StageFlags {
+function stageBusyFlags(withScreens = true): StageFlags {
   return {
-    blockingPresentation: blockingPresentation(),
+    // ★ 第十六份：`withScreens = false` 给「影片那一类」用（`presentationHost` 的 `filmsBusy`）——
+    //   那条路**不许**回头问整屏判据（上一版就是在这里转成了无限递归）
+    blockingPresentation: withScreens ? blockingPresentation() : bailClosing(),
     boardFilm: boardFilm !== null,
     pendingBoardFilm: pendingBoardFilm !== null,
     pendingBoardFilmAfter: pendingBoardFilmAfter !== null,
     buildFx: buildFx !== null,
     pendingBuildFx: pendingBuildFx !== null,
-    objectFlight: objectFlight !== null,
+    // ★ 挂起的卡片飞行（等亮牌收屏）也算「台上还忙」—— 否则亮牌一收、飞行起播之前那一拍
+    //   回合驱动会抢先派下一步
+    objectFlight: objectFlight !== null || pendingCardFlight !== null,
     walkDone: renderer.walkDone(),
     diceFxActive: diceFx.active,
     // ★ W-69：過路費閃爍（`fcn_00451985` 是阻塞的，原版在費用訊息框之前）
-    tollFlash: tollFlash !== null,
+    // ★ 第二十二份：新聞 18 / 19 那一段（排着 / 闪 / 静置）同算这一位 —— 同一支阻塞的 `fcn_00451985`
+    // ★ A-2：命運 0 / 1 那一支（共用尾巴 `0x0044bf46 call 0x451985`）也走这同一个槽
+    tollFlash: tollFlash !== null || newsFlash !== null,
     godLine: godLine !== null || pendingGodLine !== null,
+    godAscend: godAscend !== null,
+    // ★★ 第二十五份：破產影片（`Data.mkf` 0x22b，排在拍賣屏之前的那条整屏）——
+    //   原版它是阻塞的，事件 25「不過是運氣差了點～」（`afterStage`）排在它后面。
+    //   ⚠️ 判据直接问那一屏自己的状态（它不含任何规则，也不回头问这里 ⇒ 不成环）。
+    bankruptFx: bankruptFilmActive(),
   };
 }
 
+/**
+ * ★ 第十九份（iPhone 发烫）：页面在后台。浏览器此时不跑 rAF ⇒ 演出全冻住，
+ *   回合驱动 / 联机收件箱若照旧按渲染周期重排，只是在后台每秒空转几十次。
+ */
+let pageHidden = false;
+/** 后台时有驱动被停在闸口上（回前台要叫醒它们） */
+let driversParked = false;
+
 function holdForActorWalk(reschedule: () => void): boolean {
-  if (screen !== 'game') return false;
+  // ★ 第十九份：后台时不重排 —— 停在这里，回前台由 `onPageShown()` 统一叫醒
+  //   （action 还没派 / 收件箱那条还没施加，醒来重新判一次，一条不丢）
+  if (pageHidden) {
+    driversParked = true;
+    return true;
+  }
+  const held = holdForActorWalkReason();
+  noteHold(held);
+  if (held === null) return false;
+  if (held === 'npcWalk') requestAnimationFrame(reschedule);
+  else reschedule();
+  return true;
+}
+
+/** `holdForActorWalk` 的判据本体：挡着就返回原因，放行返回 null（第十六份：拆出来好计时）*/
+function holdForActorWalkReason(): string | null {
+  // ★★ 审计 #15：过场期间一步都不派（定时器在过场开始前就排好的那一拍也挡住）
+  if (driverParkedByScreen(screen)) return 'intro';
+  if (screen !== 'game') return null;
+  // ★ D-MAGIC-16：魔法屋逐人那几段还没演完（原版 `0x431caa` 整个循环是阻塞的）
+  if (magicSeq !== null) {
+    return 'magicSeq';
+  }
   // ★ 台上还有演出 ⇒ 等它收摊再派下一步。判据收在 `stageBusy()`（W-51）里，
   //   与 `queueSpeech` / `speechTick` 共用同一份清单 —— 逐位的来历见 `stageBusyFlags`。
   //   （原先这里是九个 `if` 各写一遍：纯演出整屏 / 走子补间 / 物件飞行 / 建屋片 /
   //     棋盘影片 / 两段影片之间的空档；现在一位不多、一位不少地收在一处。）
   if (stageBusy(stageBusyFlags())) {
-    reschedule();
-    return true;
+    return `stage:${stageBusyReason()}`;
+  }
+  // ★ 第十四份：飛機 / 飛碟那一段还押着（等台词 / 理賠框）—— 它不进 `stageBusy`
+  //   （否则押后的台词永远等它，而它又在等台词），回合驱动单独在这里等
+  if (pendingDisappearFx !== null) {
+    return 'disappearFx';
+  }
+  // ★ 审计 #17：住进旅館那一段还没起步（等落点例程的框 / 台词收完）—— 同上，不进 `stageBusy`
+  if (pendingRelocateWalk !== null) {
+    return 'relocateWalk';
+  }
+  // ★ 第十五份：命運 pass 1 里的演出之后还要对着棋盘停 800 ms（`0x0044dd7b`），数完才轮下一步
+  if (eventBoxTailPending()) {
+    return 'eventBoxTail';
   }
   if (state.lastNpcWalks.length > 0 && state.lastNpcWalks !== npcWalksDrawn) {
     npcWalksDrawn = state.lastNpcWalks;
-    requestAnimationFrame(reschedule);
-    return true;
+    return 'npcWalk';
   }
   // ★★ 还有台词在演 → 等它演完再派下一步。
   //
@@ -1708,32 +2229,84 @@ function holdForActorWalk(reschedule: () => void): boolean {
   //
   //   ★ 判据取 `speechQueue.length > 0`：队列只在 `speechTick()` 里逐段收
   //   （`speechQueue.tick`），而 `speechTick` 会把**演出期间**派生出来的台词
-  //   押在 `deferredSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
+  //   押在 `heldSpeech` 里（见 `queueSpeech`），所以「屏还在演」与
   //   「台词还没说完」两件事由这一条一并挡住。
-  if (speechQueue.length > 0 || deferredSpeech !== null) {
-    reschedule();
-    return true;
+  if (speechQueue.length > 0 || heldSpeech.length > 0) {
+    return 'speech';
   }
-  return false;
+  // ★ 第十四份試玩回報：落在地産格上，落点例程收尾之后原版还要**原地停 8 个 tick** 才换人
+  //   （`0x0041b111` 返回 0x88 → `0x0040d840` 每 tick 减一 → 数完才 `0x0040d86f call 0x418ebd`）；
+  //   回合开头就被挡（坐牢/住院…框收掉之后）是 3 个 tick（`0x00418ead` 0x83）。
+  //   台上刚空下来那一拍起算（顯靈框收掉、2 级露面的那一次重画就在这 8 tick 里被看见）。
+  if (landingPause !== null) {
+    if (state.phase !== 'turnEnd' || (state.pending !== null && state.pending.kind !== 'none')) {
+      if (state.phase !== 'turnEnd') landingPause = null;
+    } else {
+      const r = landingPauseRemaining(landingPause, performance.now(), tickMs(options.speed));
+      landingPause = r.pause;
+      if (r.waitMs > 0) {
+        return 'landingPause'; // 与上面几道闸同一个重排：一个渲染周期后回头再看
+      }
+      landingPause = null;
+    }
+  }
+  return null;
+}
+
+/** 台上忙的是哪一位（`stageBusy` 为真时）—— 计时 / 日志用；`blockingPresentation` 再细到哪一屏 */
+function stageBusyReason(): string {
+  const f = stageBusyFlags();
+  if (f.blockingPresentation) return `screen:${activeUiScreen()?.id ?? (bailClosing() ? 'bail' : deferredScreenEvents.length > 0 ? 'deferred' : '?')}`;
+  for (const [k, v] of Object.entries(f)) if (k === 'walkDone' ? v === false : v === true) return k;
+  return '?';
 }
 
 /**
- * 自動存檔。
- *
- * @source RICH4.CFG offset 4 `auto save: 01 enabled`；原版的自動存檔占
- *   **0 号槽**，所以 LOAD 屏比 SAVE 屏多一行（见 saveload.ts）。
- *
- * ⚠️ 什么时机存、存几次，原版没查证。这里取「每个真人回合开始存一次」——
- *   与時光機的快照同一个时机，也是最有用的那个点。
+ * ★ 第十六份：回合驱动 / 联机收件箱**被挡了多久、挡在哪**（每条原因累计毫秒）—— `__rich4.presStats()` 读。
+ * 两次询问之间的时间记给上一次的原因（驱动每个渲染周期问一次）。
  */
-function autosaveIfEnabled(): void {
-  if (!options.autoSave) return;
-  if (screen !== 'game') return;
-  if (state.phase !== 'awaitingRoll') return;
-  if (isAiTurn(state)) return;
-  // 联机的局面由服务器的 action 流决定，读档会把本机拉离同步；先不存
+const presentationStats: { holdMs: Record<string, number>; unwinds: number; lastAt: number; lastReason: string | null } = {
+  holdMs: {},
+  unwinds: 0,
+  lastAt: 0,
+  lastReason: null,
+};
+function noteHold(reason: string | null): void {
+  const now = performance.now();
+  const prev = presentationStats.lastReason;
+  if (prev !== null && presentationStats.lastAt > 0) {
+    const dt = Math.min(now - presentationStats.lastAt, 1000);
+    presentationStats.holdMs[prev] = (presentationStats.holdMs[prev] ?? 0) + dt;
+  }
+  presentationStats.lastAt = now;
+  presentationStats.lastReason = reason;
+}
+
+/** 落点收尾后的那 8 tick（`landing-pause.ts`）；`null` = 没有要停的 */
+let landingPause: LandingPause | null = null;
+
+/**
+ * 自動存檔：上一次「已经算过」的游戏日期（`gameDateKey`）。`null` = 这一局还没看过 ——
+ * 新局（单机 `startGame` / 联机 `onStart`）与读档（`loadState`）都把它清成 `null`。
+ */
+let autosaveDateKey: number | null = null;
+
+/**
+ * 自動存檔 —— **每推进一天存一次**（0 号槽），时机与判据见 `saveload.ts` 的 `autosaveStep`
+ * （@source `0x00419041..0x0041904d`：游标绕回 → 推日期 → 新行动者回合边界 → `cfg+4` 开着就存）。
+ *
+ * ★ 2026-09-24 订正：先前是「每个真人回合开始存一次」（当时注明「原版没查证」）。
+ *   原版不分人机、只在推过日期那一次存。
+ * ⚠️ 联机**不存**：局面由服务器的 action 流决定（服务器那边另有存档），本机 0 号槽
+ *   若存进联机局面，单机读档会把它当单机局开出来。
+ */
+function autosaveIfEnabled(next: GameState): void {
   if (net !== null) return;
-  const err = writeSlot(AUTOSAVE_SLOT, state);
+  // 只在对局里才有 action 施加（`reduceRecorded` 是唯一入口），不会误存標題那份占位局
+  const step = autosaveStep(next, autosaveDateKey);
+  autosaveDateKey = step.key;
+  if (!step.save || !options.autoSave) return;
+  const err = writeSlot(AUTOSAVE_SLOT, next);
   if (err !== null) log(`⚠ 自動存檔失敗：${err}`);
 }
 
@@ -1832,7 +2405,13 @@ function maxDiceOf(p: { trafficMethod: number }): number {
  * @returns true = 这一拍有人接了（调用方该把事件吃掉）
  */
 function cancelTopPanel(): boolean {
-  const layer = cancelLayerOf({
+  const layer = cancelLayerOf(cancelSnapshot());
+  return layer === null ? false : applyCancelLayer(layer);
+}
+
+/** 梯子的输入 —— 全是纯查询（`cancelTopPanel` 与触屏「取消」钮的显隐共用这一份）*/
+function cancelSnapshot(): CancelSnapshot {
+  return {
     screen,
     overlay: activeUiScreen() !== null,
     pick: pick !== null,
@@ -1846,10 +2425,41 @@ function cancelTopPanel(): boolean {
     stockAmount: stockAmount !== null,
     stockPage,
     shop: shopUi !== null,
-    bail: state.pending?.kind === 'bail',
+    bail: bailScreenOn(),
     loan: bankPending() !== null,
+    loanReminder: reminderUi !== null,
+  };
+}
+
+/**
+ * 此刻右键**有没有东西可取消/可跳过** —— 与下面 `contextmenu` 处理同一串判据
+ * （纯查询；判定本身在 `touch-input.ts` 的 `rightClickMeaningful`，单测钉着）。
+ * 触屏上的「取消」钮只在它为真时露出来。
+ */
+function rightClickMeaningfulNow(): boolean {
+  const overlay = activeUiScreen();
+  let overlayContextmenu: boolean | null = null;
+  if (overlay?.contextmenu !== undefined) overlayContextmenu = overlay.contextmenuLive?.(uiEnv()) ?? true;
+  return rightClickMeaningful({
+    tollFlash: tollFlash !== null,
+    overlayContextmenu,
+    cancel: cancelSnapshot(),
+    pickCancellable: pick?.cancellable ?? false,
+    minimapMarker: minimapMarker !== null,
   });
-  return layer === null ? false : applyCancelLayer(layer);
+}
+
+/**
+ * 触屏：这一次落指，长按算不算右键 —— 金额条 / 数字键盘那几屏不算
+ * （需求方 2026-09-24「在金额条界面就不要用长按取消逻辑了，反正还有按钮」；
+ * 判定本身在 `touch-input.ts` 的 `longPressAllowed`，单测钉着）。
+ */
+function longPressAllowedNow(): boolean {
+  const overlay = activeUiScreen();
+  return longPressAllowed({
+    overlayAmountEntry: overlay === null ? null : (overlay.amountEntry?.(uiEnv()) ?? false),
+    cancel: cancelSnapshot(),
+  });
 }
 
 /** 真正动手的那一半 —— 与 `cancelLayerOf` **一对一**（梯子上每层恰好一条） */
@@ -1859,7 +2469,16 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       // @source loc_004466b8：可取消的才退；目标必选（`[0x48c594]` bit3）的不认
       if (pick !== null && pick.cancellable) {
         sound.play('Effect.mkf', CANCEL_SOUND);
+        const source = pick.source;
         endPick();
+        // ★ 卡片那一类：拾取窗 `Post(0)` ⇒ 卡片函数返回 0（如均貧卡 `0x004421e2 je 0x443069`）
+        //   ⇒ `_rich4_ui_use_card_entry` 失败音 3 + 卡片欄重开（`0x00441cd9` / `0x00441ce3`）
+        if (source.kind === 'card') cardUseFailed();
+        // ★ v8：道具那一类取消只有这一声音效 4（`0x4466b8`）—— 联机时同桌也听得到
+        else if (source.kind === 'tool') presentToTable({ kind: 'toolCancel', toolId: source.toolId });
+        // ★ 建設公司选地窗右键 ⇒ 窗交回 0（`0x004466c6`）⇒ core 的 `declineDecision` 那一支
+        //   （别人家照收 1000 × 物價 / 自家直接到出口）
+        else if (source.kind === 'build') dispatch({ type: 'declineDecision' });
       }
       return true;
     case 'dicePick':
@@ -1944,13 +2563,27 @@ function applyCancelLayer(layer: CancelLayer): boolean {
       return true;
     // @source loc_0043d266（監獄）/ loc_0043e7c7（醫院）：关屏，返回 0 = 不保釋
     case 'bail':
+      // ★ 2026-09-23：走保釋屏自己的流程 —— 字框挂着 = 收框、YES/NO 开着 = NO、等点时 = 不保
+      //   （監獄当场关屏；醫院先道别「要保重身體喔！」再关）
       bailHot = null;
-      dispatch({ type: 'declineDecision' });
+      if (bailFlow !== null) bailSend({ kind: 'cancel' });
+      else dispatch({ type: 'declineDecision' });
       return true;
     // @source loc_00435f6d：放取消音 + 说再见 + 关贷款屏（状态机自己走）
     case 'loan':
       loanSend({ kind: 'cancel' });
       return true;
+    // @source loc_004365b4：还没到第三句 ⇒ 取消音 + 跳到第三句并收掉（下一拍关窗）；第三句时不理
+    case 'loanReminder': {
+      const cut = reminderUi === null ? null : reminderCancel(reminderUi);
+      if (cut !== null) {
+        sound.play('Effect.mkf', REMINDER_CANCEL_SOUND);
+        stopVoice(); // `0x004365c3 … push 1 / call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
+        reminderUi = cut;
+        requestRender();
+      }
+      return true;
+    }
   }
 }
 
@@ -1990,6 +2623,9 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(true);
         return true;
       }
+      // ★ 貸款屏开着时不认：原版那扇窗（`fcn_00435062`）的消息分派里**没有** `0x100`（键盘），
+      //   只有鼠标与自定义消息；它背后那份后备对话框的 choices 不能被 Y/N 键偷点到
+      if (loanUi !== null) return false;
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: 0 });
@@ -2000,6 +2636,7 @@ function handleHotkey(fn: number): boolean {
         answerYesNo(false);
         return true;
       }
+      if (loanUi !== null) return false; // 同上：貸款屏不收键盘
       const ui = currentDialog();
       if (ui === null) return false;
       onDialogHit(ui, { kind: 'choice', index: Math.min(1, ui.choices.length - 1) });
@@ -2042,9 +2679,17 @@ function handleHotkey(fn: number): boolean {
       return true;
     case HOTKEY.switchOption:
     case HOTKEY.switchWindowGroup:
-      // 右下角那块 200×200 轮换：日曆 → 月曆 → 小地圖
-      sidebarView =
-        sidebarView === 'calendar' ? 'month' : sidebarView === 'month' ? 'map' : 'calendar';
+      // ★★ 第二十一份：熱鍵「切換視窗組」轮的是 **`cfg+5` 三态**（日、月曆 → 縮小地圖 → 組合畫面），
+      //   不是「日曆 → 月曆 → 小地圖」（日/月曆只由太阳/月亮两颗钮换，`[0x497164]` 不归它管）。
+      // @source VA 0x0040121b..0x0040125d（棋盘窗口的熱鍵分派，键 = `[0x497176]` = 熱鍵表第 7 条）：
+      //   `inc byte [cfg+5] / cmp dh, 3 / jne / mov [cfg+5], 0` → `fcn_00419703` + `fcn_0041906a(1)` 整屏重画，不放音效。
+      //   ⚠️ 原版只改内存里的 cfg，**「結束程式」时**才写档（`0x0040148f call 0x411f80`）；
+      //   浏览器没有「结束」那一下，故这里当场写回 —— 与原版退出时落盘的结果相同。
+      //   `[0x497174]`（熱鍵第 6 条「切換選項」）在这个分派里没有引用，两条默认都是 Tab，照旧同一支。
+      if (screen !== 'game') return false;
+      options = { ...options, windowView: (options.windowView + 1) % 3 };
+      saveConfigToStore();
+      requestRender();
       return true;
     case HOTKEY.query:
       openAssets();
@@ -2058,6 +2703,8 @@ function handleHotkey(fn: number): boolean {
         pageEstateList(fn === HOTKEY.pageUp ? -1 : 1);
         return true;
       }
+      // 組合畫面那块窄版面板**没有页**：原版 `0x004014b1 cmp [cfg+5], 2 / je 0x401523` 把两键吃掉
+      if (sidebarLayout(options.windowView).panel !== 'full') return true;
       cyclePanelPage(fn === HOTKEY.pageUp ? -1 : 1);
       return true;
 
@@ -2257,8 +2904,13 @@ function diceFlicNow(count: number): LoadedFlic | null {
  * 「手持骰子的走路」每向几帧 —— 预动作要几个 tick。
  * @source VA 0x0040d975：数到 `图数 / 8` 那一 tick 才掷
  */
-function diceAnticipateTicks(me: { character: number; trafficMethod: number }): number {
-  const count = sprites?.imageCount('Data.mkf', characterSetBase(me.character, me.trafficMethod) + CHARACTER_POSE.dice) ?? 0;
+function diceAnticipateTicks(me: { character: number; trafficMethod: number; blocking: { sleepWalking: number } }): number {
+  // ★ 夢遊中掷骰那一组是**走路那组的 k2**（不看交通方式）@source 0x0040ba91 `add edi, 2`
+  const res =
+    me.blocking.sleepWalking !== 0
+      ? characterSleepwalkSprite(me.character, CHARACTER_POSE.dice)
+      : characterSetBase(me.character, me.trafficMethod) + CHARACTER_POSE.dice;
+  const count = sprites?.imageCount('Data.mkf', res) ?? 0;
   return count > 0 ? Math.max(1, count >> 3) : 9;
 }
 
@@ -2277,6 +2929,13 @@ function requestRoll(): boolean {
   if (diceFx.active) return false;
   const me = state.players[state.currentPlayer];
   if (me === undefined) return false;
+  // ★ 审计 2026-09-25（loop F5）：停留 / 龜行**不进掷骰态** —— 原版起步 `fcn_0040dd1f` 在
+  //   `0x0040dd64`（停留：走子态 0）/ `0x0040dd7e`（龜行：`jne 0x40dd40` 直接走一步）就分走了，
+  //   预动作（`0x0040d975` 的逐帧计数）与滚骰影片（`0x419572`）都轮不到 ⇒ 当场 `rollDice`、不起动画。
+  if (rollsWithoutDice(me)) {
+    dispatch({ type: 'rollDice' });
+    return true;
+  }
   const count = Math.max(1, Math.min(3, me.ndices || 1));
   diceFlicNow(count);
   diceFx.begin(performance.now(), diceAnticipateTicks(me), tickMs(options.speed), count);
@@ -2293,6 +2952,27 @@ let anticipateFrame = 0;
 let rollRequestedAt = 0;
 /** 催过之后最多等这么久 —— 联机时服务器不答复不能一直空转 */
 const ROLL_WAIT_TIMEOUT_MS = 3000;
+/**
+ * **本机这一掷的 intent 已经发出、还在等服务器回包**（联机）。
+ *
+ * ★★ 第九份试玩回报「多人模式下玩家扔骰子有个很明显的延迟卡顿」（2026-09-22）。
+ *
+ *   改动前是一条**死锁**：`pumpNetInbox` 的节拍闸 `holdForActorWalk` 里有
+ *   `diceFxActive` 这一位，而自己的 `rollDice` 回包恰恰是**唯一能清掉这一位的东西**
+ *   （`diceFx.roll()` 只在 `applyAction` 里调，而 `applyAction` 正被这道闸挡着）
+ *   ⇒ 每掷固定空转到 `ROLL_WAIT_TIMEOUT_MS`（3 秒）才由超时 `cancel()` 松开。
+ *   单机约 1.7 s 的一段，联机变成 4.7 s + RTT。
+ *
+ *   现在两点一起改：
+ *   ① 这一位为真且队首是 `rollDice` 时，**放行**那条回包（它不是在「打断演出」，
+ *      它就是演出在等的东西）；
+ *   ② `dicePoll` 在 dispatch 那一刻就调 `diceFx.predictRoll()` 先滚起来，
+ *      回包只负责补权威点数 ⇒ 连 RTT 也不必等。
+ *
+ * 置位：`dispatch` 的联机分支。清位：`applyNetAction` 施加掉那条回包时 /
+ * 3 秒超时收摊时 / 服务器拒绝时 / 失步自愈时。
+ */
+let awaitingOwnRoll = false;
 
 /**
  * 掷骰那一段的轮询：数满预动作就掷，掷完继续要帧直到 500 ms 定格走完。
@@ -2352,11 +3032,23 @@ function dicePoll(): void {
     dispatch({ type: 'rollDice' });
     // 影片可能还没解完；解完的回调会再挂一次
     diceFx.attachFlic(diceFlic.get(diceFx.diceCount) ?? null);
+    // ★★ 联机预测（第九份试玩回报「掷骰延迟」）：本地不 reduce 自己的输入（等回包），
+    //   但滚骰这一段只是「骰子在滚」的画面、**不含点数**（点数图只在 `hold` 相位画），
+    //   所以可以**当场开滚**，回包到了由 `applyAction` 的 `diceFx.roll()` 补上权威点数
+    //   （`roll()` 对已经在滚的那一段只更新点数、不重启相位）。
+    //   没有这一步就还得白等一个 RTT 才看见骰子动。
+    if (net !== null && diceFx.predictRoll(performance.now(), diceFlic.get(diceFx.diceCount) ?? null)) {
+      // 原版音效随影片一起起；预测起播时就得响，否则会晚一个 RTT
+      playDiceSound();
+    }
   }
 
   // 联机兜底：催过之后服务器迟迟不回就收摊，别一直空转
   if (diceFx.phase === 'anticipate' && rollRequestedAt > 0 && now - rollRequestedAt > ROLL_WAIT_TIMEOUT_MS) {
     diceFx.cancel();
+    // ★ 这条回包不来了（服务器没答）⇒ 撤掉「在等回包」这一位，
+    //   否则 `pumpNetInbox` 会一直放行队首那条 `rollDice`（见 `awaitingOwnRoll`）。
+    awaitingOwnRoll = false;
     // ★ 收摊同样要让回合驱动接着跑（`cancel()` 把相位摆回 idle，而这道闸
     //   一旦没人重排就再也没人叫 `scheduleHumanTurn`）。
     resumeTurnDriver();
@@ -2399,8 +3091,43 @@ function awaitingHumanRoll(): boolean {
  *   联机的 `localSeatActive()` 管的是另一头（别的**真人**座位别替他答），
  *   两者都要有。
  */
+/**
+ * ★★ 卡片路径里「持卡人那一问」（免費卡 / 嫁禍卡，core `CardPassiveTail`）由**持卡人**答，
+ *   与轮到谁无关：出牌的可能是电脑（热座下仍要弹给真人持卡人）、联机下只有持卡人那一端弹。
+ *   返回 null = 这一刻不是这种问；否则 = 本机该不该弹。
+ */
+function cardPassiveDialogOpen(): boolean | null {
+  const holder = cardPassiveHolder(state.pending);
+  if (holder < 0) return null;
+  if (net !== null && net.seat !== holder) return false;
+  const h = state.players[holder];
+  return h !== undefined && !isAiControlled(h);
+}
+
 function currentDialog(): InteractionUi | null {
   if (screen !== 'game') return null;
+  // ★★ 20260925-134801926（「为什么直接没让我进商店」）：商店那一趟**开窗之前**不许有能作答的东西。
+  //   原版进店三段全是阻塞的（框 → 台词 → 建窗，@source 见 `shopWindowMayOpen`），
+  //   而本引擎的商店窗要等框 / 台词都下了台才建 —— 这中间若把 `interactions.ts` 那份
+  //   后备壳画到棋盘上并收点击，玩家在框上多点一下就当场 `declineDecision`：
+  //   回报现场日志 `付费訊息框：shop.chairmanGift` → `付费訊息框：跳过` → `▶ 百貨公司：EXIT`，
+  //   全程没有 `♪ midi07.mid`（商店窗从没建起来）。判据与开窗共用 `shopOpenGate()`。
+  //   ⚠️ 这一处也是键盘（是/否/確定）、右键取消梯子与触屏「取消」钮的唯一入口
+  //   （`cancelSnapshot().dialog` 读的就是本函数），所以框住这里 = 四条路一起框住。
+  if (
+    !shopShellMayAnswer({
+      pendingKind: state.pending?.kind ?? null,
+      windowOpen: shopUi !== null,
+      windowMayOpen: shopOpenGate,
+    })
+  ) {
+    return null;
+  }
+  // ★ 20260925-153539948（「建设公司加盖房子不是展现列表，是我可以自己在地图上任意选择」）：
+  //   建設公司选地原版是**点地图**（`0x446ae8`，参数 `0x2090086`），走拾取模式（`tickBuildPick`），不摆后备壳
+  if (state.pending?.kind === 'chooseBuildTarget') return null;
+  const passive = cardPassiveDialogOpen();
+  if (passive !== null) return passive && state.pending !== null ? interactionUi(state.pending, state) : null;
   // 联机：待决交互只由当前座位的客户端回答；旁人不弹窗，免得替别人答
   if (!localSeatActive()) return null;
   // 电脑/托管的回合由 AI 自己答，人不要替他答
@@ -2414,6 +3141,57 @@ function closeAmountPage(): void {
   dialogHot = null;
 }
 
+/**
+ * 填数窗鼠标的「按下记账、抬手动作」（原版 `[0x48cac2]`，见 `dialog.ts` 的 `AmountPressLatch`）。
+ * 棋盘对话框、銀行（貸款屏借 / 還、特別融資）、股市屏三处的填数页共用这一个 —— 它们本来就是同一扇窗。
+ */
+const amountPress = new AmountPressLatch();
+
+/** 开一扇填数窗：落点回到 (0x100, 0x90)、按键记账清空 @source `fcn_00453544` 0x0045359c..0x004535a5 */
+function amountWindowOpened(): void {
+  resetAmountWindowPos();
+  amountPress.reset();
+}
+
+/** 此刻开着的填数页属于哪一份交互：股市屏借的那一扇，或棋盘 / 銀行上的对话框；没开就 `null` */
+function amountDialogUi(): InteractionUi | null {
+  if (amountPage === null) return null;
+  if (screen === 'stock') return stockAmount !== null ? stockAmountUi() : null;
+  return currentDialog();
+}
+
+/**
+ * 填数窗**按下**（`WM_LBUTTONDOWN` → `loc_00452d0e`）：记下按在哪一号、放按键音 7 —— 数值不动。
+ * @returns 这一下落在填数窗上（调用方不再往下传）
+ */
+function amountWindowDown(q: { x: number; y: number }): boolean {
+  const ui = amountDialogUi();
+  if (ui === null || amountPage === null) {
+    amountPress.reset();
+    return false;
+  }
+  const h = hitDialog(boardCtx, ui, amountPage, q.x - LAYOUT.board.x, q.y - LAYOUT.board.y);
+  const r = amountPress.down(h, q);
+  if (r.sound !== null) sound.play('Effect.mkf', r.sound);
+  if (r.consumed) requestRender();
+  return r.consumed;
+}
+
+/**
+ * 填数窗**抬手**（`WM_LBUTTONUP` → `loc_00452fce`）：照按下时记下的那一号动作（不看抬手坐标，不再放音）。
+ * @returns 这一下办了事
+ */
+function amountWindowUp(): boolean {
+  const pressed = amountPress.up();
+  if (pressed === null) return false;
+  const ui = amountDialogUi();
+  if (ui !== null) onDialogHit(ui, pressed);
+  // 股市屏借的那一扇：確定 / 取消都会把填数页关掉 ⇒ 顺手收掉 `stockAmount`
+  if (screen === 'stock' && amountPage === null) stockAmount = null;
+  requestRender();
+  return true;
+}
+
 /** 对话框上点到了什么 */
 const __devHits: unknown[] = [];
 function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
@@ -2421,31 +3199,12 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
   if (hit.kind === 'choice') {
     const c = ui.choices[hit.index];
     if (c === undefined) return;
-    // ★ 存款 / 提款：原版走的是**銀行那台 ATM**（资源 24 的面板 + 数字键盘），
-    //   不是通用填数页 —— 见 bank-screen.ts 头部的取证。
-    if (
-      c.amount !== undefined &&
-      c.action.type === 'bank' &&
-      (c.action.op === 'deposit' || c.action.op === 'withdraw')
-    ) {
-      atm = {
-        mode: c.action.op === 'deposit' ? 0 : 1,
-        digits: '',
-        limits: [
-          c.action.op === 'deposit' ? c.amount.max : 0,
-          c.action.op === 'withdraw' ? c.amount.max : 0,
-        ],
-      };
-      atmFill = c.amount.fill;
-      atmLabel = c.amount.label;
-      dialogHot = null;
-      requestRender();
-      return;
-    }
+    // （存款 / 提款不在任何对话框里：它们只在 ATM（`pending.kind === 'atm'`，`syncAtmPending`）里办）
     // 要填数的选项：先进填数页，别直接派 action
     if (c.amount !== undefined) {
       // ★ 开窗初值：原版認購股份那一支把**上限**当第一个实参传进填数窗
       //   （见 `interactions.ts` 的 `amount.initial`），其余各条照旧从 0 起
+      amountWindowOpened();
       amountPage = {
         choice: hit.index,
         value: c.amount.initial ?? AMOUNT_INITIAL,
@@ -2470,21 +3229,22 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
     case 'amountSlot': {
       const slot = amountSlotOfId(hit.id);
       if (slot === null) return;
+      // ★ 鼠标那一路：按键音已在**按下**放过（`amountWindowDown`，0x00452d95），这里只动作
       switch (slot.kind) {
         case 'digit':
-          onAmountKey(ui, { kind: 'digit', digit: slot.digit });
+          onAmountKey(ui, { kind: 'digit', digit: slot.digit }, false);
           return;
         case 'backspace':
-          onAmountKey(ui, { kind: 'backspace' });
+          onAmountKey(ui, { kind: 'backspace' }, false);
           return;
         case 'clear':
-          onAmountKey(ui, { kind: 'clear' });
+          onAmountKey(ui, { kind: 'clear' }, false);
           return;
         case 'max':
-          onAmountKey(ui, { kind: 'max' });
+          onAmountKey(ui, { kind: 'max' }, false);
           return;
         case 'ok':
-          onAmountKey(ui, { kind: 'ok' });
+          onAmountKey(ui, { kind: 'ok' }, false);
           return;
         default:
           return; // 金额栏光标不在这张表里（原版是拖动）
@@ -2518,6 +3278,9 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
         return;
       }
       log(`▶ ${ui.title === '' ? '' : `${ui.title}：`}${amount.label} ${n}`);
+      // ★★ 第二十一份：股市柜台成交那一下 —— 買進 40 / 賣出 41（`0x0042afab` / `0x0042b093`，在买卖之前）
+      const tradeSfx = stockCounterTradeSound(stockAmount, n);
+      if (tradeSfx !== null) sound.play('Effect.mkf', tradeSfx);
       dispatch(amount.fill(n));
       return;
     }
@@ -2535,10 +3298,18 @@ function onDialogHit(ui: InteractionUi, hit: DialogHit): void {
  *
  * ⚠️ 取消不在那张表里 —— 见 `amount-keys.ts` 头部：ESC 是钩子补成 `0x205` 关的窗。
  */
-function onAmountKey(ui: InteractionUi, key: AmountKey): void {
+function onAmountKey(ui: InteractionUi, key: AmountKey, playSfx = true): void {
   const page = amountPage;
   const amount = page === null ? undefined : ui.choices[page.choice]?.amount;
   if (page === null || amount === undefined) return;
+  // ★ 按键音 7（gap-audit #13）：键盘 0x00452f0e（放完才合成 0x202 ⇒ 音与动作同一拍）。
+  //   ★ 鼠标那一路**不在这里放**：原版在**按下**就放了（0x00452d95，`amountWindowDown`），
+  //   抬手（0x202）进这里只动作 ⇒ `playSfx = false`。
+  //   填数窗只开在本机行动者那一台（别的座位没有 `amountPage`），各端自己放。
+  // 键盘那一路先清 `[0x48cac2]`（0x00452e4b）⇒ 拖到一半的窗就此停下
+  if (playSfx) amountPress.stopDrag();
+  const keySfx = playSfx ? amountKeySound(key) : null;
+  if (keySfx !== null) sound.play('Effect.mkf', keySfx);
   const step = amountKeyStep(page.value, amount.max, key);
   if (step.submit) {
     onDialogHit(ui, { kind: 'amountOk' });
@@ -3147,8 +3918,9 @@ function hotkeyCaptureSlot(sub: { capture: number | null }): number | null {
  */
 function openAiSettings(from: Screen): void {
   aiReturn = from;
-  aiDraft = aiSettingsDraft(state);
-  aiHot = null;
+  // 选中行的初值：轮到的那位（原版 `[0x49910c]`）；联机里本机只动得了自己那一座 ⇒ 用本机座位
+  aiModel = openAiSettingsModel(state, net !== null ? net.seat : state.currentPlayer, aiLastSel);
+  aiLastSel = aiModel.sel;
   screen = 'aiSettings';
   requestRender();
 }
@@ -3160,41 +3932,75 @@ function openAiSettings(from: Screen): void {
  * 免得往 `history` 里塞一堆空动作、也免得联机时白占序号。
  */
 function closeAiSettings(commit: boolean): void {
-  const draft = aiDraft;
-  aiDraft = null;
-  aiHot = null;
+  const draft = aiModel?.rows ?? null;
+  if (aiModel !== null) aiLastSel = aiModel.sel;
+  aiModel = null;
   screen = aiReturn;
 
   if (commit && draft !== null) {
-    let changed = 0;
-    for (const row of draft) {
-      const p = state.players[row.player];
-      if (p === undefined || rowMatchesPlayer(row, p)) continue;
-      dispatch({
-        type: 'setAi',
-        player: row.player,
-        whoPlays: row.whoPlays,
-        aiFlags: row.aiFlags,
-        personality: row.personality,
-        cashRatio: row.cashRatio,
-        stockRatio: row.stockRatio,
-      });
-      changed++;
-    }
-    log(changed === 0 ? '託管設定：未變更' : `託管設定：已更新 ${changed} 位`);
+    // 联机：只提交本机座位那一行（别人的行本来就改不动，见 `aiCanEdit`）
+    const acts = aiCommitActions(draft, state.players, aiCanEdit);
+    for (const a of acts) dispatch(a);
+    log(acts.length === 0 ? '託管設定：未變更' : `託管設定：已更新 ${acts.length} 位`);
   }
   requestRender();
+}
+
+/**
+ * 託管AI 屏上这一行本机能不能改。
+ *
+ * - 单机 / 热座：每一行都能（原版一台机器、一只鼠标，谁点都算）。
+ * - 联机：**只有本机座位那一行** —— 别人的行照样能点选（看他的设置），但不翻托管、不改选项，
+ *   「確定」也只提交自己那一行。服务器那一道（`sequencer` 只收轮到那一座的 `setAi`）不变。
+ */
+function aiCanEdit(row: AiSettingRow): boolean {
+  return net === null || row.player === net.seat;
+}
+
+/** 託管AI 屏的**按下**（原版 `WM_LBUTTONDOWN` / `WM_LBUTTONDBLCLK` → `loc_0041de95`）*/
+function onAiSettingsDown(p: { x: number; y: number }): void {
+  if (aiModel === null) return;
+  const local = { x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y };
+  const hit = hitAiSettings(local, aiModel.rows, aiModel.sel);
+  aiModel = aiSettingsDown(aiModel, hit, aiCanEdit);
+  aiLastSel = aiModel.sel;
+  requestRender();
+}
+
+/** 託管AI 屏的**抬手**（原版 `WM_LBUTTONUP` → `loc_0041e0b1`：只认按下时记下的控件）*/
+function onAiSettingsUp(): void {
+  if (aiModel === null) return;
+  const { model, close } = aiSettingsUp(aiModel, aiCanEdit);
+  aiModel = model;
+  if (close !== null) {
+    closeAiSettings(close === 'ok');
+    return;
+  }
+  requestRender();
+}
+
+/**
+ * 只把两档音量作用到播放器上 —— 開機（`loadConfigFromStore`）与設定「確定」（`applyOptions`）共用。
+ *
+ * ★ 2026-09-24：先前开机不调它 ⇒ cfg 里存的音量（包括「关掉」）要等打开設定屏按一次「確定」才生效。
+ *   第十一份 #8 当时不在开机跑 `applyOptions`，顾虑的是它另外那几件（`saveConfigToStore()` 写档、
+ *   「音乐刚打开」时补起播 `playBoardBgm(0)` / `music.stop()`）—— 这里只取音量那三行，那几件照旧只在「確定」时做。
+ * @source 原版的放音例程**每次起播都直接读 cfg**：音效 `cfg+3`（`rich4_sound_effect.asm:451/484/717`）、
+ *   配乐 `cfg+2`（`rich4_media_music.asm:331/344/370`）⇒ 不存在「开机一套、設定屏另一套」。
+ */
+function applyVolumes(o: GameOptions): void {
+  sound.setMuted(o.sound === 0);
+  sound.volume = volumeOf(o.sound);
+  music.setVolume(o.music === 0 ? 0 : volumeOf(o.music) * 0.25);
 }
 
 /** 把設定的取值真的作用到播放器与側欄上 */
 function applyOptions(next: GameOptions): void {
   options = next;
-  sound.setMuted(next.sound === 0);
-  sound.volume = volumeOf(next.sound);
-  music.setVolume(next.music === 0 ? 0 : volumeOf(next.music) * 0.25);
-  // 設定里那三项：00 日曆 / 01 小地圖 / 02 兩者輪流（RICH4.CFG offset 5）
-  // ⚠️ 「兩者輪流」怎么轮没查证，先当日曆（点一下可以手动换）
-  sidebarView = next.windowView === 1 ? 'map' : 'calendar';
+  applyVolumes(next);
+  // 設定里「視 窗」三选一（RICH4.CFG +5）：右栏每帧直接读 `options.windowView`，这里不必另存。
+  // @source 設定屏「確定」VA 0x00410969..0x00410a10：整份 16 字节拷回 cfg，`cfg+5` 变了就回 0x8000
+  //   让棋盘窗口整屏重画 —— 下一帧 `hud.draw` 按新版式画（组合画面见 `sidebarLayout`）。
   // ⚠️ 换曲**不在这里** —— 原版是点列表那一下就立刻换（见 `onOptionsDown`），
   //   「確定」只负责把 cfg 写回去、并按新的音量档调播放器（VA 0x004109e2）。
   //   这里只在「音乐本来是关的、现在打开了」时补一次起播。
@@ -3295,6 +4101,13 @@ const sound = new SoundPlayer();
 //   `VOICE_RETRIGGER_GAP_MS`。这里记住上一声真正起播的号与时刻。
 let lastVoiceCode: number | null = null;
 let lastVoiceAt = 0;
+// ★★ 第二十六份 panel：语音**只有一路**（原版 `[0x47e750]`，`0x45441a` 起播前 `call 0x454493`）——
+//   `#NNNN`（下面的 sink）与角色台词（`speechTick`）都经这一个出口放，起一句新的就停上一句。见 `audio.ts` 的 `VoiceChannel`。
+const voiceChannel = new VoiceChannel({
+  play: (r) => sound.play('Speaking.mkf', r),
+  stop: (r) => sound.stop('Speaking.mkf', r),
+  isPlaying: (r) => sound.isPlaying('Speaking.mkf', r),
+});
 setVoiceSink((voice) => {
   // ★ 语音档案按需装载：`Speaking.mkf` 57MB，开机不装。此前只有**角色台词**
   //   那条路（`playSoundFor` → `ensureSpeakingArchive`）会拉它，于是文本里的
@@ -3308,8 +4121,13 @@ setVoiceSink((voice) => {
   if (!shouldRetriggerVoice(lastVoiceCode, lastVoiceAt, voice, now, stillPlaying)) return;
   lastVoiceCode = voice;
   lastVoiceAt = now;
-  sound.play('Speaking.mkf', voice);
+  voiceChannel.play(voice);
 });
+// ★ 字框的到期判据要问「语音还在响吗」（`fcn_0044ee18` → `0x4544b9`，音效档 `[0x49715b]` 关掉不问）
+//   与「立刻收起时停掉语音」（`fcn_0044ee18(1)` → `0x454493`）—— 见 `voice-sink.ts`。
+//   ★★ 两者问的都是**那一路**（`0x4544b9` / `0x454493` 只认 `[0x47e750]`，不分是谁起的）。
+setVoiceBusyProbe(() => options.sound > 0 && voiceChannel.busy());
+setVoiceStopper(() => voiceChannel.stop());
 
 /**
  * 背景音乐。
@@ -3417,14 +4235,14 @@ let bailBgmOn = false;
  *   两处紧跟着就是各自的模态循环，返回后 `sub_00454bcc` 接回背景曲（`boardBgmDue`）。
  */
 function syncBailBgm(): void {
-  const p = state.pending;
-  if (screen !== 'game' || p === null || p.kind !== 'bail') {
+  const place = bailPlace();
+  if (screen !== 'game' || place === null) {
     bailBgmOn = false;
     return;
   }
   if (bailBgmOn) return;
   bailBgmOn = true;
-  void playTrackFile(p.place === 'prison' ? 'midi15.mid' : 'midi16.mid');
+  void playTrackFile(place === 'prison' ? 'midi15.mid' : 'midi16.mid');
 }
 
 /**
@@ -3436,7 +4254,11 @@ function boardBgmDue(): boolean {
   if (screen !== 'game' || bgmBackground) return false;
   // 節日曲还在放 ⇒ 不接背景曲 @source `sub_00454bcc` 的 0x00454bd5 同一道闸
   if (holidayBgmDays > 0) return false;
-  if (activeUiScreen() !== null) return false;
+  // ★ 棕色訊息框（`0x440cac`）不是场所：原版场所的模态循环一返回就 `sub_00454bcc`，之后才弹框。
+  //   例：魔法屋 `0x004338b9 call 0x454bcc`（关窗影片播完、窗口返回）在 `0x004339c6 call 0x431caa`
+  //   （逐人弹「名字\n\n效果」）之前 —— 先前这里被訊息框挡着，背景曲要等四扇框全弹完才接回。
+  const overlay = activeUiScreen();
+  if (overlay !== null && overlay.id !== 'notice') return false;
   const kind = state.pending?.kind;
   if (kind !== undefined && kind !== 'none') return false;
   return true;
@@ -3461,9 +4283,21 @@ async function loadAndPlay(name: string, fromS: number): Promise<void> {
 }
 
 /** 第一次用户手势：把音效与音乐一起解锁，并补播解锁前点过的那一首 */
+/**
+ * `?mute=1`：整页静音 —— 自动化测试（net-e2e / 子代理的浏览器验证）用，别在需求方前台出声。
+ * 做法是**不解锁**：AudioContext 一直不建，音效 / 语音 / MIDI 全都发不出声；游戏逻辑与演出时序不受影响
+ * （台词与开奖等「等语音说完」的闸在没有上下文时按最短时长走，与关掉音效时相同）。
+ */
+const MUTED_BY_URL = new URLSearchParams(window.location.search).get('mute') === '1';
+
 function unlockAudio(): void {
-  sound.unlock();
+  if (MUTED_BY_URL) return;
+  // ★ 第十九份（iPhone 发烫）：音效与背景音乐**共用一个** AudioContext（先前各建一个 ⇒
+  //   手机上两条音频渲染线程一直开着）。音乐先建，音效挂上去；万一没建成再退回音效自建。
   music.unlock();
+  const shared = music.context;
+  if (shared !== null) sound.attach(shared);
+  else sound.unlock();
   if (musicStarted) return;
   musicStarted = true;
   // ★ 解锁**之前**点过的那一首（标题 MIDI01 就是开机就点的）由
@@ -3491,6 +4325,69 @@ function unlockAudio(): void {
  * `capture` + `once`：捕获相先于任何业务监听，命中一次就摘掉。解锁后立刻
  * 补播当前该放的那首（见 `unlockAudio`）。桌面版与浏览器同源，**不写平台分支**。
  */
+/**
+ * ★ 第十九份（iPhone 发烫）：切后台 / 回前台。
+ *
+ * 后台：挂起音频上下文（音乐停在原处）、回合驱动与收件箱停在闸口（`holdForActorWalk`）、
+ *   演出看门狗不计时、GO 鈕闪烁不要帧。浏览器自己会停 rAF。
+ * 前台：恢复音频（iOS 若要求再来一次手势，就挂一次性监听）；整帧重画一次；叫醒驱动；
+ *   联机收件箱若在后台攒了一大截，**静默**施加到只剩最后 `NET_INBOX_KEEP` 条再照常播
+ *   （与中途进房的 `catchUpSilently` 同一口径：不补演看不见的那段；每条照样 `noteApplied` 报校验和）。
+ */
+function bindPageVisibility(): void {
+  pageHidden = document.hidden;
+  installPageVisibility(document, window, {
+    onHide: () => {
+      pageHidden = true;
+      void music.setBackground(true);
+    },
+    onShow: onPageShown,
+  });
+}
+
+function onPageShown(): void {
+  pageHidden = false;
+  presentationStallKey = '';
+  void music.setBackground(false).then((running) => {
+    if (running || pageHidden) return;
+    const once: AddEventListenerOptions = { once: true, capture: true };
+    for (const type of ['pointerdown', 'touchend', 'keydown'] as const) {
+      window.addEventListener(type, () => void music.setBackground(false), once);
+    }
+  });
+  displayList.invalidate();
+  stageBlitOwed = true;
+  requestRender();
+  if (net !== null) catchUpNetAfterHidden();
+  if (driversParked) {
+    driversParked = false;
+    resumeTurnDriver();
+    pumpNetInbox();
+  }
+}
+
+/** 回前台时收件箱积压过多 ⇒ 前面那一截静默施加（见 `bindPageVisibility`） */
+function catchUpNetAfterHidden(): void {
+  if (netInbox.length <= NET_INBOX_KEEP || screen === 'intro') return;
+  const burst = netInbox.splice(0, netInbox.length - NET_INBOX_KEEP);
+  if (netPumpTimer !== null) {
+    clearTimeout(netPumpTimer);
+    netPumpTimer = null;
+  }
+  for (const item of burst) {
+    // ★ v8：演出提示不补演（与静默追上同一口径）
+    if (!isNetAction(item)) continue;
+    const next = reduce(state, item.action, topo);
+    if (next !== state) history.push(item.action);
+    state = next;
+    if (item.action.type === 'rollDice') awaitingOwnRoll = false;
+    net?.noteApplied(item.seq);
+  }
+  settleAfterSilentRebuild();
+  log(`⟳ 回到前台：靜默施加 ${burst.length} 條 action（第 ${state.turnCount} 回合）`);
+  pumpNetInbox();
+}
+
 function bindAudioUnlock(): void {
   const once: AddEventListenerOptions = { once: true, capture: true };
   const types: readonly (keyof WindowEventMap)[] = [
@@ -3579,7 +4476,27 @@ let viewTargetActive = false;
  *   镜头不该提前切回去。
  */
 function syncViewTarget(): void {
-  const t = state.lastViewTarget;
+  // ★ D-MAGIC-16：魔法屋逐人那几段读**这一段**的 `view_to`，而且要等这一段的訊息框收掉
+  //   （原版 `0x440cac` 在前、`0x41d476` 在后）；整趟没演完之前不撤标记（`0x431caa` 里没有 `refresh_screen`）
+  if (magicSeq !== null && noticeHoldsFilms()) return;
+  // ★★ 第十四份試玩回報（协调方拍板）：**用卡亮牌期间镜头不动**（不落新目标、也不撤旧标记）。
+  //   原版用卡是 `0x00441cbc`（真人）/ `0x00441def`（电脑）`call 0x441f73` —— 亮牌，**阻塞** 1500 ms ——
+  //   返回之后才 `0x00441cc6` / `0x00441e00 call [0x475d5c + 卡号*4]` 进卡片函数；卡片里的 `view_to`
+  //   （含它调的 `send_to_prison` 的 `0x0043d5cc` / `0x0043d6f1`）全在亮牌之后，而清标记的
+  //   `refresh_screen`（`0x41d546`）在卡片函数**末尾**（例：陷害卡 `0x00444685`，排在受害者那句
+  //   `0x0043d71c call 0x44ef41` 之后）。
+  //   本引擎的 core 一条 action 就把卡用完，`lastViewTarget` 在亮牌起播那一拍就已经到了（电脑 / 联机旁观：
+  //   `useCard` 到达时才弹亮牌；真人自己那一张的亮牌在派发之前就演完了，不受影响）⇒ 等亮牌收屏再照做。
+  //   撤标记那一头沿用下面「台上不忙 + 台词说完」的判据（= 卡片函数末尾的 `refresh_screen`）。
+  //   联机旁观被行动者甩下时 `followPresenter` → 事件框 `fastForward` 把亮牌直接收掉 ⇒ 这里当拍放行。
+  if (cardUsePopupActive()) return;
+  // ★ 第十五份：`beforeStage` 的台词（出牌 / 道具台词…）还没说完 ⇒ 新目标先不落。
+  //   原版卡片 / 道具函数里的 `view_to` 全在那一句 `player_say` 之后（查稅 `0x0044526b` → 飞 `0x004452c6`；
+  //   怪獸 `0x0044398f` → `0x00443a76`；拆除 `0x00443b8a` → `0x00443c04`；請神符 `0x00444e8a` → `0x00444eb6`），
+  //   而 `player_say` 自己先把镜头移到说话人（`0x0044efbd call 0x41d476`，见 `viewToSpeaker`）——
+  //   先前亮牌一收，镜头就被这里拉去目标，出牌台词的气泡于是指着被害人。
+  if (speechAheadOfFilms(speechSnapshot()) > 0) return;
+  const t = magicSeq !== null ? (magicSeq.shown?.lastViewTarget ?? null) : state.lastViewTarget;
   if (t !== null && t !== shownViewTarget) {
     shownViewTarget = t;
     viewTargetActive = true;
@@ -3591,9 +4508,22 @@ function syncViewTarget(): void {
     requestRender();
     return;
   }
+  // ★ 第十四份試玩回報（协调方追加）：关押 / 消失影片前后的 `view_to`（`applyFilmView` 排进来的）——
+  //   与上面同一个标记，排在 `lastViewTarget` 之后：原版卡片 / 道具自己的 `view_to` 在前，
+  //   `send_to_*` 里那一次在后（例：陷害卡 `0x0044467d call 0x43d593`）。
+  const q = queuedFilmView;
+  if (q !== null) {
+    queuedFilmView = null;
+    viewTargetActive = true;
+    minimapMarker = { x: q.x, y: q.y };
+    camera = pixelCamera(q.x, q.y, camera.view);
+    requestRender();
+    return;
+  }
   if (!viewTargetActive) return;
   // 演出全部收完 ⇒ 清标记（= 原版 `refresh_screen`），镜头回行动者
-  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null) return;
+  if (stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0) return;
+  if (magicSeq !== null) return;
   viewTargetActive = false;
   minimapMarker = null;
   requestRender();
@@ -3723,6 +4653,21 @@ function localSeatActive(): boolean {
 
 function dispatch(action: Action): void {
   if (net !== null) {
+    // ★ 第十二份試玩回報：还在静默追「进房之前」那一段 ⇒ 本地状态是旧的，拿它做的决定一律作废
+    //   （先前刷新后按旧局面替自己出手，服务器回「拒绝：notYourTurn」）。
+    if (net.catchingUp) return;
+    // ★ 记下「本机这一掷在等回包」——`pumpNetInbox` 据此放行，`dicePoll` 据此先滚起来。
+    //   见 `awaitingOwnRoll` 的注释（第九份试玩回报「掷骰延迟」的死锁）。
+    if (action.type === 'rollDice') {
+      awaitingOwnRoll = true;
+      // ★★ 兜底（必须有）：这一位会让队首的 `rollDice` 广播**绕过整个节拍闸**，
+      //   所以绝不能让它一直挂着。回包要是永远不来（断线、被拒、服务器重启），
+      //   到点自己撤掉 —— 之后回包照旧按正常节拍落地，只是不再插队。
+      //   （预测的滚骰只演约 1 s，`dicePoll` 到那时就停了，靠它兜不住这一位。）
+      window.setTimeout(() => {
+        awaitingOwnRoll = false;
+      }, ROLL_WAIT_TIMEOUT_MS);
+    }
     net.submit(action);
     return;
   }
@@ -3749,6 +4694,9 @@ function reduceRecorded(action: Action): GameState {
     const dayMoved = next.day !== before.day || next.month !== before.month || next.year !== before.year;
     if (dayMoved && action.type !== 'setDate') onDayAdvancedBgm(next);
   }
+  // ★ 自動存檔挂在**这个漏斗**上：真人（`applyAction`）与电脑（`scheduleAi` 的直路）两条都经过这里 ——
+  //   先前挂在 `applyAction` 末尾，电脑那条直路看不到（新一天第一位是电脑时就漏存，浏览器实测）。
+  autosaveIfEnabled(next);
   return next;
 }
 
@@ -3835,7 +4783,13 @@ function applyAction(action: Action): void {
   if (state !== before) {
     // ★ 掷骰那一段：点数到手 → 开滚。影片没解好先挂着，解完再补。
     //   纯表现，`diceFx` 不读也不写 state（C-DET-4）。
-    if (action.type === 'rollDice') {
+    if (action.type === 'rollDice' && state.dice.length === 0) {
+      // ★ 审计 2026-09-25（loop F5）：停留 / 龜行这一「掷」没有骰子（core 给 `dice: []`）——
+      //   原版不进掷骰态、不播滚骰影片（`0x0040dd64` / `0x0040dd7e`）⇒ 不起动画、不放骰子音效。
+      //   （联机旁观端也走这里：谁的回合都一样。）
+      forcedRollSkipFx = false;
+      diceFx.cancel();
+    } else if (action.type === 'rollDice') {
       // ★ 遥控骰子（8）：点数已经由玩家选定 ⇒ **这一掷不播预动作/滚骰**（试玩回报）。
       //   原版这一段仍会播滚骰影片（`fcn_00419572` 的 `call 0x45144f`），
       //   跳过动画是需求方要求的偏离，见 `forcedRollSkipFx` 的注释。
@@ -3843,6 +4797,9 @@ function applyAction(action: Action): void {
         forcedRollSkipFx = false;
         diceFx.cancel();
       } else {
+        // ★ 联机预测（`dicePoll` 的 `predictRoll`）已经让这一段滚起来了 ——
+        //   记下来：既不该再 `begin()` 一段新的预动作，也不该把音效放第二遍。
+        const predicted = diceFx.phase === 'tumble' || diceFx.phase === 'hold';
         // 单机的预动作已经在 `requestRoll` 里起好了；联机时点数由服务器定序，
         // 本机这一按只负责把动画领走（不动画就自己起一段）。
         if (!diceFx.active) {
@@ -3856,7 +4813,8 @@ function applyAction(action: Action): void {
           }
         }
         diceFx.roll(performance.now(), state.dice, diceFlic.get(state.dice.length) ?? null);
-        playDiceSound();
+        // 预测已经起播的那一掷，音效在起播那一刻就响过了（原版音效随影片一起起）
+        if (!predicted) playDiceSound();
       }
     } else if (state.phase !== 'moving' && !diceFx.active) {
       diceFx.cancel();
@@ -3874,7 +4832,20 @@ function applyAction(action: Action): void {
   renderPanel();
   scheduleAi();
   scheduleHumanTurn();
-  autosaveIfEnabled();
+}
+
+/**
+ * 当前这个 `pending` 是不是「电脑在逛店 / 进银行」—— 那样**不铺场**（原版按 `whoPlays` 分流）。
+ *
+ * @source `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp byte [player+0x15],1 / jne 0x42ed8d`
+ *   与 `_rich4_ui_bank_entry` 的 `0x004366a3` 同形：电脑那一支只跑买卖循环，不读面板、不开窗。
+ *
+ * ★ 2026-09-22（第十一份試玩回報 #16/#18）：抽成一处是为了让**两条**入口
+ *   （`notifyApplied` 与 `requestRender` 里的每帧补呼）用**同一道闸** ——
+ *   先前只有前者有，后者漏了，于是 NPC 的店会被铺起来、放 BGM 与招呼语音。
+ */
+function aiVenuePending(s: GameState): boolean {
+  return isAiTurn(s) && (s.pending?.kind === 'shop' || s.pending?.kind === 'bank');
 }
 
 /**
@@ -3888,6 +4859,19 @@ function applyAction(action: Action): void {
  *   原版这些都**不分人机**。与 `startActionFx` 同一个教训：两条来源必须共用出口。
  */
 function notifyApplied(before: GameState): void {
+  // ★ D-MAGIC-16：魔法屋这一条带着逐人分段 ⇒ 表现改由 `tickMagicSequence` 逐段演（见那里），
+  //   这里只做与演出无关的收尾 + 女巫窗口那一屏的收场（它要看到 pending 撤掉）。
+  const beats = freshMagicBeats(before, state);
+  if (beats !== null) {
+    notifyMagicApplied(before, beats);
+    return;
+  }
+  // ★★ 第二十六份 panel：换人那一条（惡人那一趟 / 推日期 | 下一位走一天）同样逐段演
+  const turnBeats = freshTurnBeats(before, state);
+  if (turnBeats !== null) {
+    notifyMagicApplied(before, turnBeats, 'turn');
+    return;
+  }
   // ★ W-69：先认出「这笔过路费算进了哪几块地」—— 下面那一圈 `s.event?.()` 里
   //   訊息框那一屏要靠它押着不起播（闪 880 ms 之后才轮到框）。
   //   （`speech.test.ts` 数的是这个函数名带左括号的出现次数，注释里别写全。）
@@ -3897,23 +4881,35 @@ function notifyApplied(before: GameState): void {
   //   （`pending` 换了一种，甚至换了人）。一律收掉。
   amountPage = null;
   dialogHot = null;
+  // ★ pt22：本机那几扇只属于这一回合的窗（ATM、选目标、点数盘、选股…）—— `pending` 在别处答掉 /
+  //   回合被计时託管拿走时收掉（不论谁答的都经过这里；放在下面那道「电脑逛店」闸之外）
+  dropStaleLocalModals();
   // ★ 商店的界面状态跟着 `pending` 走：进店时快照货架、铺开场；离店时清掉。
   //   放在这里是因为不管谁答的（本地点、AI、服务器广播）都会经过这一条。
   // ⚠️ 电脑自己逛店 / 进銀行时**不铺场**（保持先前的行为：那两屏是给真人点的，
   //   电脑那一手由 `decidePending` 直接答掉；原版此刻是否铺场未查证，不擅自改）。
-  const aiVenue = isAiTurn(state) && (state.pending?.kind === 'shop' || state.pending?.kind === 'bank');
+  const aiVenue = aiVenuePending(state);
   if (!aiVenue) {
-    syncShopUi();
+    // ★★ 第二十一份：商店窗挪到下面「台词上账 + 各屏 `event()` 登记」**之后**才同步（见 `syncShopUi` 的闸）
     // ★ 銀行貸款屏的界面状态（T-029c）同理：`pending.kind === 'bank'` 时铺场，
     //   离场时清掉。状态机自己会跨 action 活着，所以只在**首次**看见它时建。
     syncLoanUi();
     // ★ 第八份 #4：路过銀行的 ATM
     syncAtmPending();
   }
+  // ★★ 第十五份：台词**先**押进 `heldSpeech`（还不上台），**再**让各整屏认这一条 action ——
+  //   各框起播前要问「有没有排在我前面的台词」（`boxMayStart`），那几句此刻就得已经在账上；
+  //   先前台词在 `event()` 之后才交出来，框只好一律当场起播（或一律推到下一帧）。
+  holdSpeech(said);
   // ★ 登记的整屏：把「刚刚发生了什么」告诉它们（開獎 / 月結 / 魔法屋 / 事件框靠这个起播）
   const env = uiEnv();
-  for (const s of SCREENS) s.event?.(before, state, env);
-  queueSpeech(said);
+  for (const s of SCREENS) deliverScreenEvent(s, before, state, env);
+  releaseHeldSpeech(performance.now());
+  // ★★ 第二十一份（`20260924-144217689`「董事长踩到商店…首先地图界面上说欢迎董事长光临送xx东西」）：
+  //   商店窗**在这里**才同步 —— 董事長赠礼框（`0x0042ea14`）与那句台词（`0x0042ea23`）此刻已上账，
+  //   `shopWindowMayOpen` 看得见它们 ⇒ 先框、再台词、最后开窗（每帧那一处补呼负责演完之后开窗）。
+  if (!aiVenue) syncShopUi();
+  if (heldSpeech.length > 0) requestRender();
 }
 
 /**
@@ -3932,20 +4928,20 @@ function notifyApplied(before: GameState): void {
  *   ⇒ 原版**必定**是「盤停下來 → 訊息框 → 付款人的台詞」。
  *
  *   本引擎一条 action 就把后果写完、演出是事后补的，所以这里等 `SCREENS` 的
- *   `event()` 派完再按**每一句自己的 `order`**（W-51，来自 W-50 §2.2 的裁定表）分流：
+ *   `event()` 派完，把这一条 action 的台词按**档**（`order` → `lineRank`）排进 `heldSpeech`，
+ *   再由 `releaseHeldSpeech` 按 `presentation-order.ts` 的 `lineMayEnter` 一句一句放上台：
  *
- *   - `beforeStage`（例：壞神附身、回合开始那三句）⇒ **立即入队**，并反过来挡住
- *     这一条 action 的影片起播（`tickBoardFilm` / `tickBuildFx` 等 `speechQueue.length === 0`）；
- *   - `afterStage`（例：送醫院 / 送監獄 / 設施收費）⇒ `stageBusy()` 为真时押进
- *     `deferredSpeech`，由 `speechTick()` 在演出收摊之后放上台。
+ *   - `beforeStage`（道具 / 出牌台词、壞神附身、回合开始那三句）⇒ 只等 `lead` 档的框
+ *     （「使用%s」、亮牌、事件框）与屏上正开着的框；影片反过来等它（`speechAheadOfFilms`）；
+ *   - `afterStage`（送醫院 / 送監獄 / 設施收費…）⇒ 等 `stage` 档的框与影片那一类演完；
+ *   - `afterTailBox`（土地公 / 福神）⇒ 连 `tail` 档的框（顯靈框、理賠框）也等。
  *
- *   ⚠️ **死锁自查**：`beforeStage` 的句子**永不**进 `deferredSpeech`（`deferSpeech()`
- *     只对 `afterStage` 返回 true）。否则「台词等影片起播、影片等台词说完」互等。
- *     见 `stage-gate.ts` 的同名规则与它那条 2 秒用例。
+ *   ★★ 第十五份（「台词和棕色对话框又重叠了」）：先前 `beforeStage` 的句子「永不押后」，
+ *     于是电脑用道具时「使用定時炸彈」框（`0x00448070`，在道具函数**之前**）与道具台词同时上屏。
+ *     现在任何一句都不会在屏上有框时上台，框也不会在台上有气泡时起播（`boxMayStart`）。
  *
- *   ★ 押着的**至多只有一条 action 的那几句**（`deferredSpeech` 是单槽、整体覆写）：
- *     演出占着屏时 `holdForActorWalk` 不会派下一条 action，所以「押着的被下一条盖掉」
- *     到不了（真被盖掉也不算错 —— 后说的那句本来就该盖住前一句）。
+ *   ⚠️ **死锁自查**：台词只等**档更小**的框、框只等档更小的台词，影片只等 `beforeStage`；
+ *     没有环（`presentation-order.test.ts` 的长局逐拍模拟验证「不重叠、不卡死」）。
  *
  * ⚠️ 押后而不是「冻结队列」：`SpeechQueue` 的时间基准是**绝对时刻**（`shownAt`），
  *   冻结再解冻会把整段演出时长算进那 1000 ms 里，那一段台词就一闪而过。
@@ -3953,24 +4949,145 @@ function notifyApplied(before: GameState): void {
  */
 function queueSpeech(lines: readonly SpeechLine[]): void {
   if (lines.length === 0) return;
-  const busy = stageBusy(stageBusyFlags());
-  const deferred: SpeechBubble[] = [];
-  const immediate: SpeechBubble[] = [];
-  for (const line of lines) {
-    if (deferSpeech(line.order, busy)) deferred.push(line.bubble);
-    else immediate.push(line.bubble);
+  holdSpeech(lines);
+  releaseHeldSpeech(performance.now());
+  // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「框 / 演出收摊了没有」
+  //   （`requestRender` 的续帧条件里也有 `heldSpeech.length > 0`）
+  requestRender();
+}
+
+/** 按档押进 `heldSpeech`（不放行）—— `notifyApplied` 在各整屏认 action **之前**调 */
+function holdSpeech(lines: readonly SpeechLine[]): void {
+  if (lines.length === 0) return;
+  heldSpeech = insertByRank(
+    heldSpeech,
+    lines.map((l) => ({
+      bubble: l.bubble,
+      order: l.order,
+      rank: lineRank(l.order),
+      ...(l.cue === undefined ? {} : { cue: l.cue }),
+    })),
+  );
+}
+
+/**
+ * ★ 第十五份：这一句前面那一段演出（`SpeechCue`）演完了没有 —— 没演完它就不算数。
+ * 判据全是现取的表现状态位（与 `stageBusyFlags` 同一批变量）。
+ */
+function cueDone(cue: SpeechCue): boolean {
+  switch (cue) {
+    case 'godAscend':
+      return godAscend === null;
+    case 'godAttach':
+      return objectFlight === null && pendingCardFlight === null && godAscend === null;
+    case 'manifestBox':
+      return !noticeKeyShowing(MANIFEST_NOTICE_KEY);
+    case 'buildHammer':
+      // 大锤排着 / 正在敲 ⇒ 没完；停在「敲完、等台词」那一拍（`buildFxSeamHeld`）或没有大锤 ⇒ 完了
+      if (pendingBuildFx !== null && pendingBuildFx.first === 'hammer') return false;
+      return !(buildFx !== null && buildFx.clip === 'hammer' && !clipDone(buildFx, performance.now()));
   }
-  // ★ 立即说的那几句一上台，先前押着的就作废（后说的那句本来就该盖住前一句）
-  if (immediate.length > 0) {
-    deferredSpeech = null;
-    if (speechQueue.push(immediate, performance.now()) > 0) requestRender();
+}
+
+/**
+ * 押着的台词能上台的就上台（按档从小到大，只看队头：档更大的一定更受限）。
+ * 每帧由 `speechTick` 调，`queueSpeech` 交进来那一拍也调一次。
+ */
+function releaseHeldSpeech(now: number): void {
+  if (heldSpeech.length === 0) return;
+  const boxes = boxSnapshot();
+  const out: SpeechBubble[] = [];
+  const keep: typeof heldSpeech = [];
+  let blocked = false;
+  for (const h of heldSpeech) {
+    // ★ 第十五份：前一段还没演完的那几句（`cue`）不算数 —— 跳过它，别让它挡住后面的
+    if (blocked || (h.cue !== undefined && !cueDone(h.cue))) {
+      keep.push(h);
+      continue;
+    }
+    if (lineMayEnter(h.order, boxes)) out.push(h.bubble);
+    else {
+      blocked = true; // 档是排好的：这一句过不了，后面档更大的也过不了
+      keep.push(h);
+    }
   }
-  if (deferred.length > 0) {
-    deferredSpeech = deferred;
-    // ★ 押着也要续帧：`speechTick()` 靠每一帧回头看「演出收摊了没有」
-    //   （`requestRender` 的续帧条件里也有 `deferredSpeech !== null`）
+  heldSpeech = keep;
+  if (out.length > 0 && speechQueue.push(out, now) > 0) requestRender();
+}
+
+/**
+ * ★★ 第十六份：框 / 台词两侧的判据收在 `presentation-host.ts`（单测跑的是同一份），这里只交现取的状态。
+ * ⚠️ `filmsBusy` 用 `stageBusyFlags(false)`：不回头问整屏判据（断环，见那个文件的文件头）。
+ */
+const presentationHost = new PresentationHost({
+  screens: SCREENS,
+  env: () => uiEnv(),
+  filmsBusy: () => stageBusy({ ...stageBusyFlags(false), godLine: false }),
+  godLine: () => ({ showing: godLine !== null, pending: pendingGodLine !== null }),
+  speech: () => ({ onStage: speechQueue.length, held: heldSpeech }),
+  cueDone: (cue) => cueDone(cue),
+  deferredScreens: () => deferredScreenEvents.length,
+  magicAwaitingPick: () => magicAwaitingPick(),
+  bailClosing: () => bailClosing(),
+});
+
+/** 台词那一侧此刻的样子（框的起播闸用）*/
+function speechSnapshot(): SpeechSnapshot {
+  return presentationHost.speechSnapshot();
+}
+
+/** 框那一侧此刻的样子（台词的上台闸用）—— 见 `PresentationHost.boxSnapshot` */
+function boxSnapshot(): BoxSnapshot {
+  return presentationHost.boxSnapshot();
+}
+
+/**
+ * ★★ 第十五份（需求方拍板）：分紅 / 開獎 / 月结 / 魔法屋女巫窗也走同一道起播闸 ——
+ *   台上还有上一条 action 的气泡时先不起（原版 `player_say` 阻塞，说完才轮到这些模态屏）。
+ *   这几屏都是在 `event()` 里当场起播的，所以闸挡的是**派发**：把那一对 `before/after` 押着，
+ *   闸一开（`flushDeferredScreenEvents`，每帧）再原样派。押着期间算 `lead` 档的排队框、算台上在演。
+ */
+const deferredScreenEvents: { screen: UiScreen; before: GameState; after: GameState }[] = [];
+
+/** 这一对 `before/after` 会不会让这一屏**起播**（判据与各屏 `event()` 的第一道门同一条）*/
+function screenStarts(id: string, before: GameState, after: GameState): boolean {
+  switch (id) {
+    case 'monthly':
+      // ★ 第二十一份：与 `monthlyScreen.event` 同一道门 —— 跨月且 core 交下了这一次的月结现场
+      return after.totalMonths > before.totalMonths && (after.lastMonthlySettle ?? null) !== null;
+    case 'shares':
+      return dividendDayCrossed(before, after);
+    case 'lottery-draw':
+      return lotteryDrawCue(before, after) !== null;
+    case 'magic':
+      return after.pending?.kind === 'magicHouse' && after.pending !== before.pending;
+    default:
+      return false;
+  }
+}
+
+function deliverScreenEvent(s: UiScreen, before: GameState, after: GameState, env: UiScreenEnv): void {
+  if (
+    DAY_AND_MAGIC_BOXES.has(s.id) &&
+    (deferredScreenEvents.some((d) => d.screen === s) ||
+      (screenStarts(s.id, before, after) && presentationHost.boxBlocked(SCREEN_BOX_TIER.monthly)))
+  ) {
+    deferredScreenEvents.push({ screen: s, before, after });
     requestRender();
+    return;
   }
+  s.event?.(before, after, env);
+}
+
+/** 每帧：闸开了就把押着的那几条按原先后派出去 */
+function flushDeferredScreenEvents(): void {
+  if (deferredScreenEvents.length === 0) return;
+  if (presentationHost.boxBlocked(SCREEN_BOX_TIER.monthly)) {
+    requestRender();
+    return;
+  }
+  const env = uiEnv();
+  for (const d of deferredScreenEvents.splice(0)) d.screen.event?.(d.before, d.after, env);
 }
 
 /**
@@ -3985,13 +5102,40 @@ function queueSpeech(lines: readonly SpeechLine[]): void {
  * 纯表现：不读也不写 `GameState`（C-DET-4）。
  */
 function startActionFx(action: Action, before: GameState): void {
+  // ★ 第十四份試玩回報：换人前的倒数 —— 落在地産格上收尾 8 tick（0x88）、回合开头就被挡 3 tick（0x83）
+  //   （判据与出处见 `landing-pause.ts`）
+  const pauseTicks = turnEndPauseTicks(before, state, topo);
+  if (pauseTicks > 0) landingPause = { ticks: pauseTicks, idleAt: null };
+  // ★★ 第二十六份 panel：换人那一条切成两段逐段演（`tickMagicSequence`，每段各自走这里一遍）——
+  //   落地影片属于下一位回合开头，归第二段
+  if (freshTurnBeats(before, state) !== null) {
+    magicSeqAction = action;
+    return;
+  }
+  // ★★ 降落伞落地（需求方 2026-09-24）：轮到一个还没上盘的人 ⇒ core 在回合交接时摆人 + 落地，
+  //   这里补那一段 `0x22f + 角色` 的影片（`landing-fx.ts`）。它在原版是新回合的**第一件事**
+  //   （`0x418c55` 开头，掷骰 / 电脑决策之前）⇒ 排在本 action 其余演出之后也无妨：换人那条 action 没有别的片。
+  const landed = landingTrigger(before, state);
+  if (landed !== null) startLandingFx(landed);
+  // ★ D-MAGIC-16：魔法屋逐人分段由 `tickMagicSequence` 一段一段起（每段各自走这里一遍）
+  if (freshMagicBeats(before, state) !== null) {
+    magicSeqAction = action;
+    return;
+  }
   // 放置類道具（路障/地雷/定時炸彈）真正落地 → 投掷动效 + 落地音
   if (action.type === 'useTool') startObjectFlight(before, action);
   // 機器工人（9）/ 魔法屋「就地加蓋」/ 天使卡（9）原地建屋 → 大锤影片
   // （盖到 5 级时接 `0x20b`）。判据在 core 的 `lastBuildUpgrades` 里，不看 action 种类。
   startBuildFx(before);
+  // ★★ 第二十六份（「约翰乔的汽车哪里来的」）：电脑换车 ⇒ 「使用汽車」框底下还是旧图组，框收了才换
+  //   （原版 `0x00448070` 框 → `0x0044807e` 道具函数里 `0x40b93b` 换图组 → 道具台词；`vehicle-hold.ts`）
+  const vh = vehicleHoldOf(before, state);
+  if (vh !== null) vehicleHold = vh;
   // 卡片 / 請神符的飞行动效（Q-TOOL-5）—— 是否真的播由 exe 的闸门定
-  if (action.type === 'useCard') startCardFlight(before, action);
+  // ★★ 第十二份試玩回報：原版用卡是「亮牌 1500 ms（`fcn_00441f73`，阻塞）→ 卡片函数」，
+  //   飞行在卡片函数**里面** ⇒ 先挂起，等亮牌收屏再起（`tickPendingCardFlight`）。
+  //   亮牌本身由事件框那一屏认 `lastCardPlay` 起播（`event-box-screen.ts` 的 `cardUseView`）。
+  if (action.type === 'useCard') pendingCardFlight = { before, action, landSfx: cardLandSfx(action.cardId, before, state) };
   // ★★ 「踩到惡犬」那一段（試玩回報：踩到狗直接進醫院、没有咬人动画/配音）——
   //   **必须排在 `startConfineFx` 之前**：原版那一支先把 0x214 播完、才走到
   //   `send_to_hospital` 里的 0x20c（VA 0x0041b837 → 0x0043ed59）。
@@ -3999,28 +5143,44 @@ function startActionFx(action: Action, before: GameState): void {
   //   详见 `dog-fx.ts` / `startDogFx`。
   startDogFx(before, state);
   // ★★ 飛彈（7）/ 核彈（13）的爆炸影片 —— **必须排在 `startConfineFx` 之前**：
-  //   原版是 `view_to(爆心)` → `damage_area`（里面各次 `send_to_hospital` 播 0x20c）
-  //   → 最后才 `fcn_0045144f` 播自己那一段（0x210 / 0x212）。本引擎一次只播一段，
-  //   所以先来的排前面、后面的自动进 `pendingBoardFilmAfter`（`enqueueBoardFilm`）。
+  //   原版是 `view_to(爆心)` → `damage_area`（`0x0044707a`，只给波及者打 `+0x15 |= 0x40`）
+  //   → `0x0044708e fcn_0045144f` 播自己那一段（0x210 / 0x212）→ **之后**才逐人
+  //   `send_to_hospital`（`0x004470ac test [+0x15], 0x40` 那个循环，各播 0x20c）。
+  //   （2026-09-23 订正：先前这里写成「damage_area 里先播救护车、最后才播爆炸」，与 exe 相反；代码次序本来就对。）
+  //   先来的排前面、后面的自动排队（`queueBoardFilm`）。
   //   ⚠️ 不加 `options.animation` 闸（原版这两支里没有 `cmp [0x497159], 0`）。
   startMissileFx(action, before);
+  // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報：那一段被整个跳过）——
+  //   判据是 `lastEvent` 刚变成 `{ news, 4 }`（`alien-news-fx.ts`）。
+  //   ★★ 第十五份（2026-09-23 订正）：**排在住院影片之前**。`fcn_0044913d` pass 1 的次序是
+  //   `0x0044921d view_to(建筑)` → `0x0044922d damage_area`（只打 `0x40` 标记）→
+  //   `0x0044925b fcn_0045144f(0x213)` 飛碟 → `0x0044926e..0x0044928e` 逐人 `send_to_hospital`
+  //   （`0x00449285`，各播一辆救护车 0x20c）。先前把它排在住院之后、又用 `startBoardFilm` 顶掉了救护车。
+  //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
+  //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
+  startAlienNewsFx(before, state);
   // ★ 「送進監獄／醫院」那一段 FLIC（Q-ANIM-1 未接清单之一）—— 与 action 种类无关：
   //   判据是**占用表/计数变没变**（`confine-fx.ts` 的 `confineFxTrigger`），
   //   因为送去坐牢/住院的来源有十来个（卡、狗咬、踩雷、命運、新聞、罰款…），
   //   逐个 action 种类去接必漏。
   startConfineFx(before, state);
+  // ★★ 第十二份试玩回报 #1：神明**离身升天**（`god_detach` 0x40e32c）—— 必须排在
+  //   `startGodFx` 之前：换神那一支是 `god_activate` 里先 `0x40eb3f call 0x40e32c`
+  //   把旧神送走（升天），**然后**才播新神那一段影片（`tickBoardFilm` 会等它演完）。
+  startGodAscend(before, state);
   // ★ 神明降臨／發威（Q-ANIM-1）—— 判据是 `player.godInfo` 刚变（`god-fx.ts`）
   startGodFx(before, state);
-  // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 没影片就当场说
+  // ★ 第八份试玩回报 #5：附身影片之后那句开场白（`fcn_0040e2a2`，2400 ms）—— 写在影片钉住的最后一帧上；
+  //   ★ 第十八份：「動畫過程」关掉时没有（与影片同一道闸）
   startGodLine(before, state);
-  // ★ 新聞 4「外星人攻打地球」的飛碟影片（試玩回報：那一段被整个跳过）——
-  //   判据是 `lastEvent` 刚变成 `{ news, 4 }`（`alien-news-fx.ts`）。
-  //   ⚠️ **排在这里**（住院影片之后）：原版 `fcn_0044913d` 是先让
-  //   `damage_area` 里那几次 `send_to_hospital`（各自播 0x20c）跑完、
-  //   最后才 `read_mkf(0x213)` + `fcn_0045144f`（VA 0x00449245/0x0044925b）。
-  //   ⚠️ 也**不**加 `options.animation` 闸：原版这一支里没有
-  //   `cmp [0x497159], 0`（与住院/入獄/神明那三支不同），照 exe 走。
-  startAlienNewsFx(before, state);
+  // ★ 第十二份試玩回報：新聞 5 / 15 / 20 / 21「随机挑一处建筑」那一族的整块影片
+  //   （龍捲風 0x217 等，`news-place-fx.ts` 的表）。判据是 `lastEvent` 刚变成带 `place` 的
+  //   那几条新聞；与新聞 4 同样**不看**「動畫過程」开关、同样等訊息框收屏（`afterOverlay`）。
+  startNewsPlaceFx(before, state);
+  // ★ 第二十二份（gap-audit #6）：新聞 18 地震 / 19 山洪 —— 没有整块影片，是受灾地块白闪一遍再停一下
+  //   （`news-flash-fx.ts`）。同样等事件框收屏；19 的房主台词排在它之后（`stageBusy` 押着）。
+  // ★ A-2：命運 0 拆屋 / 1 徵收那一块也在这条路上（同一支 `0x451985`，见 `startNewsFlash`）。
+  startNewsFlash(before, state);
   // ★ 第八份试玩回报 #3：被外星人綁架的飛碟 / 出國的飛機（`disappear-fx.ts`，`fcn_0040d375` 的尾巴）——
   //   判据是 `blocking.disappearing` 刚从 0 变非 0；原版这一支同样没有「動畫過程」开关。
   startDisappearFx(before, state);
@@ -4028,6 +5188,127 @@ function startActionFx(action: Action, before: GameState): void {
   //   判据是 `notices` 里**新出现** `god.demolish`（`devil-fx.ts` 的 `devilDemolishFxTrigger`）。
   //   排在神明附身影片之后：顯靈是**落点尾块**（`0x0041b077`）的事，与 `godInfo` 变没变无关。
   startDevilFx(before, state);
+  // ★ 魔法屋「就地拆除房屋」（2026-09-23 补）：訊息框（`beforeFilms`）→ 0x211 影片。不看「動畫過程」。
+  startMagicDemolishFx(before, state);
+}
+
+// ============================================================
+//  魔法屋逐人演出（D-MAGIC-16）—— `0x431caa` 的逐人循环
+// ============================================================
+
+/**
+ * 正在逐段演的魔法屋那一趟；`null` = 没在演。
+ *
+ * ★ 原版 `0x431caa` 是**阻塞**的逐人循环：每位中签者整支演完（闸 → `0x41906a(1)` 重画 →
+ *   訊息框 → 镜头 / 影片 → 台词）才轮到下一位，「抽取命運三張」每一张也是一整段命運演出。
+ *   本引擎的 core 一条 action 就写完了，于是交出 `lastMagicBeats`（每段前后的完整状态，
+ *   段里当前玩家 = 那位中签者），这里**一段一段**喂给平常那条表现出口
+ *   （`startActionFx` + `notifyApplied`，训练有素的那些判据 —— 框在片前、台词在片后 —— 原样复用），
+ *   上一段的框 / 影片 / 台词全收了才起下一段。整趟演完之前回合驱动不往下走（`holdForActorWalk`）。
+ */
+let magicSeq: MagicSequence | null = null;
+/** 带出这一趟的那条 action（`startActionFx` 按 action 种类分流的几处要它；魔法屋这条不命中任何一处）*/
+let magicSeqAction: Action | null = null;
+/** 正在逐段演的是哪一种：魔法屋逐人（`lastMagicBeats`）/ 换人那一条的两段（`lastTurnBeats`，第二十六份 panel）*/
+let magicSeqKind: 'magic' | 'turn' = 'magic';
+
+/**
+ * ★★ 第二十六份 panel：换人那一条还在分界**之前**那一段（`0x41c84f` 还没轮到）——
+ * 还款提醒窗（`0x436a5a` → `0x43695e`）等它演完才开。
+ */
+function turnHandoffPending(): boolean {
+  return magicSeq !== null && magicSeqKind === 'turn' && magicSeq.next < 2;
+}
+
+/** 棋盘 / 侧栏 / 镜头此刻该按哪一份状态看（逐段演的时候是那一段的 after） */
+function magicShownState(): GameState {
+  return magicSeq?.shown ?? state;
+}
+
+/**
+ * 魔法屋那一条 action 落地：与演出无关的收尾照做，演出交给 `tickMagicSequence`。
+ * 女巫窗口要看到 `pending{magicHouse}` 撤掉才会收场（联机旁观 / 託管），所以只给它发 `event`。
+ */
+function notifyMagicApplied(before: GameState, beats: MagicSequence['beats'], kind: 'magic' | 'turn' = 'magic'): void {
+  // 音效那一半照放（落点那一声等），台词一句不要 —— 逐段演的时候各段自己说
+  playSoundFor(before, state);
+  amountPage = null;
+  dropStaleLocalModals();
+  dialogHot = null;
+  if (!aiVenuePending(state)) {
+    syncShopUi();
+    syncLoanUi();
+    syncAtmPending();
+  }
+  if (kind === 'magic') magicScreen.event?.(before, state, uiEnv());
+  magicSeqKind = kind;
+  magicSeq = magicSequenceStart(beats);
+  log(kind === 'magic' ? `魔法屋：逐人演出 ${beats.length} 段` : '換人：先演上一位 / 推日期，再換側欄');
+  requestRender();
+}
+
+/** 上一段还没演完吗（框 / 影片 / 建屋 / 走子 / 台词 —— 与回合驱动同一份判据）*/
+function magicSequenceBusy(): boolean {
+  // ★ 第十五份：「抽取命運三張」每一张的 800 ms（命運让出框之后那一截）也算 —— 原版 `0x44db81` 整段阻塞
+  return stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0 || eventBoxTailPending();
+}
+
+/** 每帧：上一段收了就起下一段；全部演完就收摊（镜头 / 侧栏交还施法者，= 原版 `0x004324fa` 还原当前玩家）*/
+function tickMagicSequence(): void {
+  const seq = magicSeq;
+  if (seq === null) return;
+  const step = magicSequenceStep(seq, magicSequenceBusy());
+  if (step.done) {
+    magicSeq = null;
+    log(magicSeqKind === 'magic' ? '魔法屋：逐人演出結束' : '換人：逐段演出結束');
+    requestRender();
+    renderPanel();
+    return;
+  }
+  const beat = step.beat;
+  if (beat === null) {
+    requestRender();
+    return;
+  }
+  magicSeq = step.seq;
+  // ★ 每一支开头的 `0x41906a(1)`：把主窗口 WM_PAINT 过程（`0x417e26` 的 `0x418bb9` 那一支）当场跑一遍 ——
+  //   `fcn_00415e70` 居中（有小地图标记就停在标记上，否则居中到**当前玩家** = 这位中签者）、重画侧栏。
+  //   影片待播时 `centerOnCurrentPlayer` 是冻住的，所以在这里当场居中一次。
+  // ★★ 第二十六份 panel：换人那一条 —— 第一段（惡人那一趟 / 推日期）没有这次重画；第二段开头只有
+  //   `0x436a5a` 真的重画了（`lastPanelTurn` 已是下一位）才居中到他，侧栏由 hud 按 `magicShownState` 换。
+  const recentre =
+    magicSeqKind === 'magic'
+      ? beat.before.currentPlayer
+      : step.seq.next === 2 && beat.after.lastPanelTurn?.actor === beat.after.currentPlayer
+        ? beat.after.currentPlayer
+        : null;
+  if (recentre !== null && minimapMarker === null && followPlayer) {
+    const who = (magicSeqKind === 'magic' ? beat.before : beat.after).players[recentre];
+    const at = cameraFollowTarget(null, who, (id) => map.nodes[id - 1]);
+    if (at !== null) camera = pixelCamera(at.x, at.y, camera.view);
+  }
+  // 平常那条表现出口，按**这一段**的前后状态走一遍（出口里读的是全局 `state`，这一刻换成这一段的 after）
+  const real = state;
+  state = beat.after;
+  try {
+    startActionFx(magicSeqAction ?? { type: 'settle' }, beat.before);
+    notifyApplied(beat.before);
+  } finally {
+    state = real;
+  }
+  const who = beat.after.players[beat.after.currentPlayer];
+  log(`${magicSeqKind === 'magic' ? '魔法屋' : '換人'}：第 ${step.seq.next}/${step.seq.beats.length} 段（P${(who?.index ?? 0) + 1}）`);
+  requestRender();
+  if (magicSeqKind === 'turn') renderPanel();
+}
+
+/** 魔法屋「就地拆除房屋」那一段 0x211 —— 判据见 `magic-fx.ts` 的 `magicDemolishFxTrigger` */
+function startMagicDemolishFx(before: GameState, after: GameState): void {
+  if (!magicDemolishFxTrigger(before, after)) return;
+  // 訊息框那 1500 ms 里房子还在（棋盘按 before 画）；起播那一刻放开（`releaseBoardOnStart`）
+  deferredBoardBefore = before;
+  startBoardFilm(MAGIC_DEMOLISH_FILM);
+  log(`影片：魔法屋拆房 0x${MAGIC_DEMOLISH_FILM.resource.toString(16)}（${MAGIC_DEMOLISH_FILM.frames} 帧 × ${MAGIC_DEMOLISH_FILM.frameMs} ms）`);
 }
 
 /**
@@ -4049,11 +5330,22 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
   // ★ 走一格的终点 = **踏上的那一格**（用引擎自己的 `pickNextNode` 从 before 回放），不是 after 的 `nodeId`
   //   —— 踩惡犬 / 地雷时 after 已经在醫院，拿它当终点是一段 4 秒横跨地图的补间（第八份 #8）
   const landing = action.type === 'step' ? nextNodeOf(before, topo) : null;
-  const t =
-    action.type === 'step' || action.type === 'startTurn'
-      ? walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing)
-      : null;
+  // ★ 审计 #17：其余 action 也问一次 —— 住进旅館那一趟（`0x40d5a5` 支 A）出在落点结算里
+  const t = walkTweenFor(action.type, before, state, (id) => map.nodes[id - 1], landing);
   if (t === null) return;
+  // ★★ 审计 #17：走进旅館要等落点例程**全部**收完才起步（`0x41a85e call 0x40d5a5` 是落点例程最后一件事，
+  //   之前是訊息框、住宿台词 `0x0041a7e0`、理賠框 `0x0041a82d`；走路在之后的 tick 里）⇒ 先原地站着，
+  //   由 `tickPendingRelocateWalk` 等台上空了再起。
+  if (t.relocate?.kind === 'enter') {
+    pendingRelocateWalk = t;
+    renderer.parkPlayer(t.player, t.from);
+    return;
+  }
+  beginTween(t);
+}
+
+/** 起一段玩家位移补间（`tweenStepIfMoved` 与挂起的「走进旅館」共用）*/
+function beginTween(t: WalkTween): void {
   const p = state.players[t.player];
   // ★ `t.special`（不写死 false）：走回棋盘走 `dist × 0.125` 那一支 —— 见 `tween.ts`
   noteWalkGap();
@@ -4064,7 +5356,37 @@ function tweenStepIfMoved(action: Action, before: GameState): void {
     (p?.trafficMethod ?? 0) & 3,
     t.special,
     tickMs(options.speed),
+    performance.now(),
+    t.relocate ?? null,
   );
+}
+
+/**
+ * ★★ 审计 #17：挂起的「走进旅館」—— `tweenStepIfMoved` 记下，台上全空了（訊息框 / 台词 / 理賠框 /
+ *   影片都收了）才起步。**不进** `stageBusy`（否则押后的住宿台词等它、它又等台词 ⇒ 互等），
+ *   回合驱动 / 联机收件箱在 `holdForActorWalkReason` 里单独等它（与 `pendingDisappearFx` 同一种闸）。
+ */
+let pendingRelocateWalk: WalkTween | null = null;
+
+function tickPendingRelocateWalk(): void {
+  const t = pendingRelocateWalk;
+  if (t === null) return;
+  if (
+    speechQueue.length > 0 ||
+    heldSpeech.length > 0 ||
+    deferredScreenEvents.length > 0 ||
+    activeUiScreen() !== null ||
+    presentationHost.boxSnapshot().pendingRanks.length > 0 ||
+    stageBusy(stageBusyFlags()) ||
+    pendingDisappearFx !== null ||
+    eventBoxTailPending()
+  ) {
+    requestRender();
+    return;
+  }
+  pendingRelocateWalk = null;
+  beginTween(t);
+  requestRender();
 }
 
 /**
@@ -4123,17 +5445,36 @@ function ensureSpeakingArchive(): void {
  *   而它所在的整段流程里，轉盤 / 訊息框 / 事件框… 都是**阻塞**调用，顺序由**调用顺序**定死
  *   （設施收費：`0x41a458` 轉盤 → `0x41a579` 訊息框 → `0x41a5c0` 收費 → `0x41a71e` 台词）。
  *   本引擎一条 action 就把后果写完，演出是事后补的 —— 于是台词必须**等演出完**
- *   才上台，见 `deferredSpeech`。
+ *   才上台，见 `heldSpeech`。
  */
 function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
-  // 有人出局
-  const deadBefore = before.players.filter((p) => p.whoPlays === 0).length;
-  const deadAfter = after.players.filter((p) => p.whoPlays === 0).length;
-  if (deadAfter > deadBefore) {
-    sound.play('Effect.mkf', SOUND_IDS.BANKRUPT);
-  } else if (after.pending?.kind === 'bank' && before.pending?.kind !== 'bank') {
-    // 落在银行
-    sound.play('Effect.mkf', SOUND_IDS.BANK);
+  // ★ 有人出局**没有**音效：先前这里放的 Effect #5 出自 `0x0040d1cb push 5`，紧跟的是 `call 0x4549cf`
+  //   = **播 MIDI**（id 5 = `MIDI06.MID`，拍賣配乐），而且只在释放的地产 > 3 处（`0x0040d1c6 cmp esi,3 / jle`）、
+  //   接下来要随机连拍 3 处（`0x0040d1d9..0x0040d1f5`）时才放 —— 那几场拍卖开屏时 `auction-screen.ts`
+  //   本来就会点 `midi06.mid`。破产那一刻原版不放 Effect.mkf 的任何音效（第十三份回报复核）。
+  // ★ 落在銀行**没有**音效：先前这里放的 Effect #4 出自 `0x0043674d push 4`，但那一句紧跟的是
+  //   `0x0043674f call 0x4549cf` —— 那是**播 MIDI**（`sprintf("open sequencer!%s alias mid", [0x47e793 + 4*id])`
+  //   → `mciSendString`），id 4 = `MIDI05.MID`，即貸款屏的配乐（`syncLoanUi` 里 `midi05.mid` 那一句），
+  //   不是 Effect.mkf 的第 4 个音效。它只在 `_rich4_ui_bank_entry` 的**真人**那一支（`0x004366a3
+  //   cmp byte [+0x15],1 / jne 0x4367ab`）；电脑那一支与 ATM 入口 `fcn_004379c9` 都不放音乐。
+
+  // ★★ 2026-09-22（第十一份試玩回報 #17「踩到卡片格子时应该有个提示音」）：
+  //   原版在**落地处理**的分派器**之前**先统一放一声（種類 2..16）——
+  //   @source `0x00419884 cmp ebx,2 / jb`（種類 0/1 含公園不放）、`0x00419889 cmp ebx,0x10 / ja`、
+  //     `0x00419892 mov al,[ebx + 0x475299]`（種類→下標）、`0x0041989b add eax,0x48234a`、
+  //     `0x004198a1 call 0x4542ce`。
+  //   下標表 `0x475299 = [9,0,10,10,10,10,10,10,10,10,16,16,16,16,10,10,10]` ⇒
+  //     種類 2..9 與 14..16 ⇒ Effect **43**；種類 10..13（得點×3 + **卡片**）⇒ Effect **48**。
+  //
+  //   判据取「**这一步真的走到了落点**」= `moving → settling`，而不是「nodeId 变了」——
+  //   后者对走子途中经过的每一个特殊格都会成立（原版只在**停下**那一拍的分派器前放）。
+  if (before.phase === 'moving' && after.phase === 'settling') {
+    const cur = after.currentPlayer;
+    const landed = after.players[cur];
+    const kind = landed === undefined ? 0 : (topo.nodes[landed.nodeId - 1]?.specialKind ?? 0);
+    if (kind >= 2 && kind <= 16) {
+      sound.play('Effect.mkf', kind >= 10 && kind <= 13 ? SOUND_IDS.CARD_SQUARE : SOUND_IDS.SPECIAL_SQUARE);
+    }
   }
 
   // ★ **使用道具 1（機器娃娃）**那一下 —— 音效 38（见 `SOUND_IDS.DOLL`）。
@@ -4145,14 +5486,57 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // ⚠️ 判据不能看替身记录：`runDoll` 走完就把它收回 `idleActor()`
   //   （`specialActors[4]` 在动作前后都是「未出场」），看记录等于永远认不出来。
   //   能认的只有 core **刚交出来的那趟路径** —— `lastNpcWalks` 是整体覆写，
-  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcRound` 走 0..3、
-  //   `bail` 走被保釋那个惡人的槽）。看动作类型也行，但这条对
+  //   数组换了身份就说明刚发生了一趟；槽 4 只可能是娃娃（`npcStepOnce` 走 0..3；保釋那一下不走）。看动作类型也行，但这条对
   //   「AI 用 / 服务器广播用」同样成立 —— 原版也是谁在场都听得见。
   if (
     after.lastNpcWalks !== before.lastNpcWalks &&
     after.lastNpcWalks.some((w) => w.slot === specialSlotOf(ACTOR_DOLL))
   ) {
-    sound.play('Effect.mkf', SOUND_IDS.DOLL);
+    // ★★ 2026-09-22（第十一份試玩回報 #9「机器娃娃清扫的语音应该是持续播放」）：
+    //   原版这一声是**循环播放**的 —— `0x40ded1 push 1`（arg3）→ `0x4542ce` →
+    //   `0x454100 call [eax+0x30]` = `IDirectSoundBuffer::Play(..., dwFlags=DSBPLAY_LOOPING)`；
+    //   走完整趟在 `0x40d8dc` 再 `call 0x4542e9`（vtable+0x48 = `Stop`）。
+    //   38 号本身只有约 **0.56 秒**，所以先前「不传 loop」等于整趟只响开头一声。
+    //   ⚠️ 玩家说的「语音」其实是**音效**：原版这一趟**没有**持续的角色语音
+    //      （只有那一次性的「替我除掉障礙物！」，属另一条缺口）。
+    // ★★ 第十四份 #5：娃娃**等用道具那句台词说完**才上路（`0x00446b2e call 0x44ef41` 同步，
+    //   之后才 `fcn_0040dd1f` 起步）⇒ 这一趟先押着（`renderer.holdActorWalk`），
+    //   `tickDollRelease` 在台词队列空了那一拍放开、再起这一声循环音。
+    renderer.holdActorWalk(specialSlotOf(ACTOR_DOLL));
+    dollWalkHeld = true;
+  }
+
+  // ★ **買地 / 買現成設施成功**那一下 —— 音效 49（见 `SOUND_IDS.BUY_PROPERTY`）。
+  //
+  // @source VA 0x0041a0f1（買地，`call 0x4542ce` 在 0x0041a0f6）/ VA 0x0041a939
+  //   （買現成設施），两条**同形**：`push 0x4823d2 / call rich4_play_sound_effect`。
+  //   同一张表 `0x48231a`（8 字节一项）的表项 23 ⇒ `Effect.mkf` 资源 49；
+  //   下一项 0x4823da 就是 `SOUND_IDS.GOD_MANIFEST` 的 50（换算见 audio.ts）。
+  //   全 exe 里 `push 0x4823d2` 只有这两处 ⇒ 買地与買設施**共用** 49。
+  //
+  // ⚠️ 判据是**归属真的变了没有**，不是「有没有点过买」：被衰神／死神拦下时
+  //   `purchase` 直接返回、归属一格都不写（`rules/purchase.ts` 的 `godBlockedPurchase`），
+  //   于是这里**不响** —— 与原版一致（原版那声在扣款/写归属**之后**）。
+  //   `buyLand` 的 pending 是 `{ kind:'buyLand', landId, … }`、比对 `landOwner`；
+  //   `buyFacility` 是 `{ kind:'buyFacility', facilityId, … }`、比对 `facilityOwner`
+  //   —— 两列都拿实体号当下标（`reduce.ts` 里就是 `landOwner[landIndex]` /
+  //   `facilityOwner[fac.id]` 这么写的）。
+  if (before.pending?.kind === 'buyLand') {
+    const id = before.pending.landId;
+    if (
+      after.landOwner[id] === after.currentPlayer + 1 &&
+      before.landOwner[id] !== after.currentPlayer + 1
+    ) {
+      sound.play('Effect.mkf', SOUND_IDS.BUY_PROPERTY);
+    }
+  } else if (before.pending?.kind === 'buyFacility') {
+    const id = before.pending.facilityId;
+    if (
+      after.facilityOwner[id] === after.currentPlayer + 1 &&
+      before.facilityOwner[id] !== after.currentPlayer + 1
+    ) {
+      sound.play('Effect.mkf', SOUND_IDS.BUY_PROPERTY);
+    }
   }
 
   // 角色語音（T-052）。`speechResourceFor` 已经把越界挡在外面 ——
@@ -4160,15 +5544,25 @@ function playSoundFor(before: GameState, after: GameState): SpeechLine[] {
   // 表现层不该因此把整局打断，故这里只播合法的那几个。
   // ★★ 先出**卡牌台词**（原版那句在卡片函数体内，先于效果引发的台词），
   //   再出状态跃迁派生的台词 —— 顺序与原版一致。
-  const cardBubbles = cardPlaySpeech(before, after);
+  const cardSpeech = cardPlaySpeechLines(before, after);
+  // ★★ 第十一份試玩回報 #3：**道具台词**（原版 `_tool_strings`，不分人机）。
+  // ★★ 第十四份試玩回報 #2：次序是 `beforeStage`（`TOOL_LINE_ORDER`）—— 原版 13 件道具
+  //   都是**先** `player_say`、**再**选格 / 大锤 / 投掷 / 爆炸（VA 逐件见 `speech.ts`）。
+  //   先前取 `afterStage`，機器工人的大锤（`pendingBuildFx`）一起播就把台词押到了片尾。
+  //   `beforeStage` 永不押后，影片 / 建屋动效 / 投掷都会等 `speechQueue` 说完
+  //   （`filmWaitsForSpeech`；投掷见 `tickObjectFlight`）。
+  // ★★ 第十四份 #4：本机真人选定道具时已经先说过（`sayOwnToolLine`）⇒ 这一条不再说第二遍
+  const spokenOwn = ownToolLineSpoken(before, after, ownToolLine);
+  if (spokenOwn) ownToolLine = null;
+  const toolLines = spokenOwn ? [] : toolUseSpeechLines(before, after);
   const spoken = speechEventsFor(before, after, topo);
   // ★ W-51：台词现在带**次序**交出去（`SpeechLine.order`），由 `queueSpeech` 分流。
-  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）⇒ W-50 §2.2
-  //   没有它的行；按**改动最小**取 `afterStage`：W-51 之前它就是「演出占屏时押后」
-  //   那一类（`queueSpeech` 的旧判据 `blockingPresentation()`），且 exe 里几张卡的
-  //   调用点确实是影片在前、台词在后（例：`0x00443afb` 前有 `view_to` + `play_flic`，
-  //   见 `docs/tasks/speech-callsites.md`）。首席若要逐卡裁定，改这一处即可。
-  const cardLines: SpeechLine[] = cardBubbles.map((bubble) => ({ bubble, order: 'afterStage' }));
+  //   卡牌台词**不是探测器**（它走 `lastCardPlay` 这条非状态跃迁的通道）。
+  //   ★ 第十五份：逐卡裁定过了 —— 从手里出的牌，出牌台词是卡片函数里**第一个**演出
+  //   （在飞行 / 影片 / 结果框之前）⇒ `beforeStage`；收費那一段的被动卡与回应台词 `afterStage`
+  //   （`speech.ts` 的 `cardPlaySpeechLines`）。先前一律 `afterStage` 引的 `0x00443afb` 是怪獸卡
+  //   影片**之后**的第二句（效果台词），出牌那句是 `0x0044398f`，在飞行 `0x00443a6a` 之前。
+  const cardLines: SpeechLine[] = [...cardSpeech, ...toolLines];
   if (spoken.length === 0) return cardLines;
   ensureSpeakingArchive();
   // ★ 语音**不在这里放** —— 见 `speechTick()`。
@@ -4201,6 +5595,10 @@ function scheduleAi(): void {
     clearTimeout(aiTimer);
     aiTimer = null;
   }
+  // ★★ 审计 #15：開局跳伞过场期间不下棋（原版过场 `fcn_00415872` 是进棋盘之前的阻塞调用）。
+  //   先前这里没有屏号闸 ⇒ 全电脑对局在过场底下全速开打、第一扇框一开过场就再也收不了场。
+  //   `endIntro()` 与 W-60 的 `shouldResumeDriver('intro', 'game')` 会在过场放完时叫醒它。
+  if (driverParkedByScreen(screen)) return;
   // ★ 出局者的回合由引擎推进，与「是否开着托管」无关——
   //   否则人类玩家一破产，整局就停在他身上不动了。
   // ★ 但**出局者名下排着拍卖**时 `autoAction` 同样返回 null（它不认竞价），
@@ -4227,6 +5625,12 @@ function scheduleAi(): void {
   //   （`server/hub.ts` 的 `#driveComputers`）；提交权此刻属于举牌者而不是回合主人
   //   （core `actingSeat`），本机再发只会被定序器拒掉（issue #9）。
   if (net !== null && state.pending?.kind === 'auction') return;
+  // ★★ 第十八份（「怎么拍卖直接流标了」）：单机的竞价也**只由拍賣屏出**（`auction-screen.ts` 问同一个
+  //   `auctionNextBid`，一口一段挥槌）。原版电脑那一口是拍賣窗口自己的 100 ms 定时器在出
+  //   （窗口过程 `0x43a2dd`，`0x43a365 SetTimer`），窗口不开就不会有人举牌。先前回合主人是电脑时
+  //   这里也照 `decidePending` 答 ⇒ 新聞框还没收、拍賣屏还没开，几口就被回合驱动抢着出完了，
+  //   屏内也记不到是谁加的价 ⇒ 成交被演成「無人出價，宣佈流標。」。
+  if (state.pending?.kind === 'auction') return;
   aiTimer = window.setTimeout(() => {
     aiTimer = null;
     // ★ 节拍闸（T-047）：替身还在滑就重排、绝不派下一步 —— 判据见 holdForActorWalk
@@ -4239,6 +5643,9 @@ function scheduleAi(): void {
     ) {
       return;
     }
+    // ★★ FU-2（2026-09-25 审计）：`decideAction` 自己从 `state.rngState` 播种真随机流
+    //   （原版电脑那一支的每次 `rand()` 都走全局序列）；掷掉的数由 `reduce` 在同一局面上
+    //   复算并写回（`aiDecisionRollAdvance`）。
     const action = decideAction({ state, map });
     if (action === null) {
       // 轮到电脑却拿不出 action —— 这是**卡住**，不是「没事可做」，
@@ -4246,12 +5653,13 @@ function scheduleAi(): void {
       // ★ 例外：拍賣 pending 期间 core 会**故意**返回 null —— 竞价循环由
       //   `auction-screen.ts` 驱动（它每次问 core 的 `auctionNextBid`），
       //   这里不是卡住，别刷屏（Q-AUC-1）。
-      if (isAiTurn(state) && state.pending?.kind !== 'auction') {
+      if (isAiTurn(state) && state.pending?.kind !== 'auction' && cardPassiveHolder(state.pending) < 0) {
         log(`⚠ 电脑在 ${state.phase} 无事可做，已停手`);
       }
       return;
     }
     if (net !== null) {
+      if (net.catchingUp) return; // 同 `dispatch`：本地状态还没追上
       net.submit(action);
       return;
     }
@@ -4268,8 +5676,9 @@ function scheduleAi(): void {
     // ★ 与 `applyAction` 同一个宿主播种漏斗（日推进后重播种）
     state = reduceRecorded(action);
     if (walker !== null && state !== before) startStepTween(walker, before);
-    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）
-    if (action.type === 'startTurn' && state !== before) tweenStepIfMoved(action, before);
+    // ★ 「走回棋盘」那一回合也要演一段位移（与 `tweenStepIfMoved` 同源）；
+    //   ★ 审计 #17：住进旅館那一趟出在落点结算里 ⇒ 除 `step`（上面 `startStepTween`）之外都问一次
+    if (action.type !== 'step' && state !== before) tweenStepIfMoved(action, before);
     // ★ 动效出口**与 `applyAction` 共用同一个函数**（Q-TOOL-5 ⑤14）：
     //   电脑这一步是**绕开 `applyAction` 的直路**（它自己 `reduce`），
     //   先前只在这里补了 `useCard` —— 于是电脑用道具（路障/地雷/炸彈的投掷、
@@ -4337,10 +5746,21 @@ function aiDelay(): number {
 const stage = document.createElement('canvas');
 stage.width = SCREEN_W;
 stage.height = SCREEN_H;
+/**
+ * ★ 第十九份（iPhone 发烫）：三块离屏画布的绘制指令逐帧去重 —— 指令表与上一帧一样
+ *   就整帧不画、不贴屏（tick / 演出计时照旧逐帧跑）。原理与安全性见 `display-list.ts`。
+ *   `?dlverify=1`（仅开发构建）：一律照画，并逐像素核对「本该跳过」的帧。
+ */
+const displayList = new DisplayList({
+  verify: import.meta.env.DEV && new URLSearchParams(window.location.search).get('dlverify') === '1',
+});
+installBitmapCloseGuard(displayList);
+/** 舞台画过、还没贴上屏（异常中断的帧 / 提前 return 的帧留下的账） */
+let stageBlitOwed = true;
 const stageCtx = (() => {
   const c = stage.getContext('2d');
   if (c === null) throw new Error('无法取得舞台绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
 
 /** 棋盘的离屏画布 —— 439×440，正是原版棋盘区的大小 */
@@ -4350,7 +5770,7 @@ boardCanvas.height = LAYOUT.board.h;
 const boardCtx = (() => {
   const c = boardCanvas.getContext('2d');
   if (c === null) throw new Error('无法取得棋盘绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
 
 /** 側欄的离屏画布 —— 200×480 */
@@ -4360,8 +5780,96 @@ hudCanvasOff.height = SCREEN_H;
 const hudOffCtx = (() => {
   const c = hudCanvasOff.getContext('2d');
   if (c === null) throw new Error('无法取得側欄绘图上下文');
-  return c;
+  return displayList.wrap(c);
 })();
+
+/**
+ * 高清（`hd-stage.ts` + 已验证的超分素材，W-80 §8）：开着时舞台 / 棋盘 / 側欄三块离屏画布按窗口的
+ * 放大倍数开像素，文字与超分素材不再被压回 640×480。
+ *
+ * ★ 2026-09-25 起**默认关**（需求方拍板：高清是 AI 重繪、部分角色動畫一致性尚有問題，手机也发烫）；
+ *   在门厅勾一次「高清畫面」即开（`localStorage['rich4.hd'] = '1'`），`?hd=1` 可强制开、`?hd=0` 强制关。
+ *   关着时 `surfaceScale` 恒为 1，三块画布一次都不碰，也不去拉超分清单 —— 与改造前逐像素一致。
+ * ★ 这是**每台设备自己的显示设定**：不进存档、不上网，联机时各端各看各的（不影响同步）。
+ */
+let hdStage = (() => {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(HD_STORAGE_KEY);
+  } catch {
+    // 隐私模式等拿不到 localStorage —— 按默认（关）处理
+  }
+  return hdStageRequested(window.location.search, stored);
+})();
+
+/**
+ * 这台设备的倍率上限（触屏封到 2，见 `TOUCH_SURFACE_SCALE_CAP`）—— 开机时判一次：
+ * 手机 / 平板不会中途变成桌面。
+ */
+const hdDevice = {
+  coarsePointer: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches,
+  maxTouchPoints: navigator.maxTouchPoints || 0,
+};
+const hdScaleCap = surfaceScaleCap(hdDevice);
+/**
+ * ★ 触屏设备（手机 / 平板）不拉超分过场帧 —— 需求方 2026-09-24 的流量预算：移动端整局高清额外下载
+ *   ≤ ~5 MB（高清舞台本身不花流量，钱夫人 136 帧全拉也才 2.2 MB）；桌面 ≤ ~30 MB（过场 WebP 一局约 4 MB）。
+ */
+const hdFlics = hdScaleCap === MAX_SURFACE_SCALE;
+
+/** 三块离屏画布当前的像素倍率（1 = 改造前的 640×480） */
+let surfaceScale = 1;
+
+/**
+ * 按当前窗口的放大倍数调三块离屏画布。每帧绘制之前调（紧跟 `resizeCanvas`，**帧外**）。
+ *
+ * ⚠️ 倍率一直是 1 时**什么都不做** —— 连变换都不重挂，保证关掉高清舞台时与改造前一致。
+ * ★ 改了尺寸 = 画布被清空、真上下文状态被重置 ⇒ 告诉指令表去重（`display-list.ts`）
+ *   把状态对齐回来、下一帧一定真画，并补一次贴屏。
+ */
+function syncSurfaceScale(): void {
+  const s = surfaceScaleFor(currentMetrics().scale, hdStage, hdScaleCap);
+  if (s === 1 && surfaceScale === 1) return;
+  surfaceScale = s;
+  setCurrentSurfaceScale(s);
+  const surfaces = [
+    { canvas: stage, ctx: stageCtx, w: SCREEN_W, h: SCREEN_H },
+    { canvas: boardCanvas, ctx: boardCtx, w: LAYOUT.board.w, h: LAYOUT.board.h },
+    { canvas: hudCanvasOff, ctx: hudOffCtx, w: LAYOUT.panel.w, h: SCREEN_H },
+  ];
+  for (const x of surfaces) {
+    if (sizeSurface(x, x.w, x.h, s)) {
+      displayList.canvasResized(x.canvas);
+      stageBlitOwed = true;
+    }
+  }
+}
+
+/**
+ * 门厅的「高清畫面」勾选框走这里：记到本机、当场换倍率，并把超分素材接上 / 撤掉（原地换位图）。
+ */
+function setHdStage(on: boolean): void {
+  if (on === hdStage) return;
+  hdStage = on;
+  try {
+    localStorage.setItem(HD_STORAGE_KEY, on ? '1' : '0');
+  } catch {
+    // 存不下（隐私模式）就只管这一次
+  }
+  void attachHdSource();
+  syncSurfaceScale();
+  requestRender();
+}
+
+/** 按 `hdStage` 把超分来源接到精灵缓存上（关 = 撤掉、已换上的高清图原地换回原图） */
+async function attachHdSource(): Promise<void> {
+  const cache = sprites;
+  if (cache === null) return;
+  if (hdStage && hdSource === null) hdSource = await loadHdSource(hdBase(), hdManifestVersion);
+  if (sprites !== cache) return;
+  cache.setHd(hdStage ? hdSource : null);
+  log(hdStage && hdSource !== null ? 'HD 素材：已接上（缺图的按图回退原图）' : 'HD 素材：未接（原图）');
+}
 
 /** 当前屏幕 */
 type Screen =
@@ -4441,49 +5949,24 @@ let pick: PickSession | null = null;
 /** 光标底下是第几个候选 */
 let pickHover: number | null = null;
 
-/** 拾取时的自定义指针缓存（用原版指针图集生成 CSS cursor）*/
-const pickCursorCss = new Map<number, string | null>();
-
 /**
- * 把原版的指针图（`Data.mkf` 资源 0）变成 CSS cursor。
+ * 选目标此刻那一支指针（交给 `soft-cursor.ts` 画；不在选 = `null`）。
  *
- * ★ 原版选目标的反馈**就是换指针**（`fcn_004021f8`，VA 0x4465ba / 0x4465f4），
+ * ★ 原版选目标的反馈**就是换指针**（`fcn_004021f8`，VA 0x004465dd / 0x00446606），
  *   棋盘上不画任何东西 —— 所以这里也不在棋盘上画标记。
- * 返回 `null` 说明图还没解码好；到货后 `spriteArrived` 会让下一帧重来。
+ * ★ 贴边时**指针就是那支箭头**，优先于「悬停在候选上」那支
+ *   @source `loc_0044609b`：贴边分支里 `[0x48c564] != 0` 会让悬停判定直接返回
+ *   ⇒ 优先级 箭头 > 道具/卡片自己的指针 > 红叉。箭头是单帧（0x00446180 `push 0` / `push 1` / `push ecx`）。
  */
-function pickCursorSprite(shape: number, hotX: number, hotY: number): string | null {
-  const hit = pickCursorCss.get(shape);
-  if (hit !== undefined) return hit;
-  const s = spriteNow(CURSOR_ARCHIVE, CURSOR_RESOURCE, shape, true);
-  if (s === null) return null; // 还没解码：**别缓存**，下一帧再问
-  const c = document.createElement('canvas');
-  c.width = s.width;
-  c.height = s.height;
-  c.getContext('2d')?.drawImage(s.bitmap, 0, 0);
-  const css = `url(${c.toDataURL()}) ${hotX} ${hotY}, auto`;
-  pickCursorCss.set(shape, css);
-  return css;
+function pickCursorShape(): CursorShape | null {
+  if (pick === null) return null;
+  if (pickEdge !== PICK_EDGE.none) return cursorShape(PICK_EDGE_ARROW.get(pickEdge) ?? PICK_CURSOR_INVALID.image);
+  return pickCursorFor(pick, pickHover !== null);
 }
 
-/** 按当前拾取状态换指针 */
+/** 拾取状态变了（悬停 / 贴边 / 结束）：指针当场换，不等下一帧 */
 function refreshPickCursor(): void {
-  if (pick === null) {
-    canvas.style.cursor = '';
-    return;
-  }
-  // ★ 贴边时**指针就是那支箭头**，优先于「悬停在候选上」那支
-  //   @source `loc_0044609b`：贴边分支里 `[0x48c564] != 0` 会让悬停判定直接返回
-  //   ⇒ 优先级 箭头 > 道具/卡片自己的指针 > 红叉。
-  if (pickEdge !== PICK_EDGE.none) {
-    const arrow = PICK_EDGE_ARROW.get(pickEdge) ?? PICK_CURSOR_INVALID.image;
-    const cssArrow = pickCursorSprite(arrow, 1, 0);
-    canvas.style.cursor = cssArrow ?? '';
-    return;
-  }
-  const shape = pickCursorFor(pick, pickHover !== null);
-  const css = pickCursorSprite(shape.image, shape.hotX, shape.hotY);
-  // 图还没到 → 先别把系统指针藏掉，否则会出现「没有指针」
-  canvas.style.cursor = css ?? '';
+  syncCursor();
 }
 
 /**
@@ -4540,7 +6023,7 @@ function endPick(): void {
   stopPickEdgeScroll();
   pick = null;
   pickHover = null;
-  canvas.style.cursor = '';
+  refreshPickCursor();
   requestRender();
 }
 
@@ -4573,7 +6056,8 @@ function closeInventory(): void {
 // | `pressed` | `[0x48c347]` | 正按住的钮（抬手才动作）|
 // | `bubble` | `[0x4762c4]` | 老板娘那句话 + 到点自收 |
 // | `blink` | `[0x48c32f] / [0x48c314]` | 老板娘脸上那两个小动作 |
-// | `shelf` / `bought` | `[0x48c31c]` / `[0x48c2f8]` | 货架快照 + 已经买掉的行 |
+// | `bought` | `[0x48c31c]` / `[0x48c2f8]` 清 0 | 本机点过、回包还没到的行（货架本身与 `sold` 在 core 的 `pending` 里）|
+// | `keeper` | 后台缓冲上贴着的那两块 | 老板娘脸上此刻留着的脸 / 嘴（每帧都画）|
 
 interface ShopUi {
   page: ShopPage;
@@ -4595,11 +6079,14 @@ interface ShopUi {
    *   `fcn_00451d4e`（复原）并重贴一次格子底图。
    */
   pressedCell: number | null;
-  /** 开店那一刻的货架 —— 买过的行**不从这份快照里去掉** */
-  shelf: { cards: readonly ShopShelfRow[]; tools: readonly ShopShelfRow[] };
-  /** 已经买掉的行下标（原版是把那两个货架数组的对应字节清 0）*/
+  /**
+   * 本机已经点买、回包还没到的行下标 —— 联机时 `pending.cards/tools[行].sold` 要等服务器回包才变，
+   * 这之间也得灰、也不能再点（原版点下去当场清 0）。真相在 core：画与判都是「core 的 sold ∪ 这里」。
+   */
   bought: { cards: Set<number>; tools: Set<number> };
   blink: ShopBlink;
+  /** 老板娘脸上此刻留着的那两块（换页 = 整屏重画时清掉）*/
+  keeper: ShopKeeperPaint;
 }
 
 let shopUi: ShopUi | null = null;
@@ -4611,11 +6098,31 @@ let shopUi: ShopUi | null = null;
  */
 let bailHot: number | null = null;
 
+/** 保釋屏开着吗（待决交互挂着，或 core 已经答完、屏上还在演收尾）*/
+function bailScreenOn(): boolean {
+  return state.pending?.kind === 'bail' || bailFlow !== null;
+}
+
+/** 这一屏是監獄还是醫院 */
+function bailPlace(): 'prison' | 'hospital' | null {
+  if (bailFlow !== null) return bailFlow.place;
+  const p = state.pending;
+  return p !== null && p.kind === 'bail' ? p.place : null;
+}
+
+/**
+ * 这一帧照哪一份状态画：醫院「ＯＫ！」那一拍原版**还没放人**（状态 4 收尾才放，`0x0043dbd6`）⇒ 画答复之前那一份；
+ * 其余照当前。
+ */
+function bailShownState(): GameState {
+  return bailFlow !== null && bailFlow.stage === 'ok' && bailBefore !== null ? bailBefore : state;
+}
+
 /** 当前这一屏的占用表（監獄 / 醫院各一张，见 `rules/visit.ts`）*/
-function bailOccupancy(): readonly number[] {
-  const pending = state.pending;
-  if (pending === null || pending.kind !== 'bail') return [];
-  return pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+function bailOccupancy(src: GameState = bailShownState()): readonly number[] {
+  const place = bailPlace();
+  if (place === null) return [];
+  return place === 'prison' ? src.prisonOccupancy : src.hospitalOccupancy;
 }
 
 /**
@@ -4627,34 +6134,188 @@ function bailOccupancy(): readonly number[] {
  */
 function bailViews(): BailSlotView[] {
   const out: BailSlotView[] = [];
-  const occ = bailOccupancy();
-  const pending = state.pending;
+  const src = bailShownState();
+  const occ = bailOccupancy(src);
+  // 名字由 core 给（`bailCandidates` 已经按玩家/犯人分好了）；答完之后 pending 没了就用答之前那一份
   const named = new Map<number, string>();
-  if (pending !== null && pending.kind === 'bail') {
-    for (const c of pending.candidates) named.set(c.slot, c.name);
-  }
+  const pending = state.pending?.kind === 'bail' ? state.pending : bailBefore?.pending?.kind === 'bail' ? bailBefore.pending : null;
+  if (pending !== null) for (const c of pending.candidates) named.set(c.slot, c.name);
   for (let slot = 0; slot < occ.length; slot++) {
     if ((occ[slot] ?? 0) === 0) continue;
-    const p = state.players[slot];
+    const p = src.players[slot];
     out.push({
       slot,
       character: p?.character ?? 0,
-      // 名字由 core 给（`bailCandidates` 已经按玩家/犯人分好了）；取不到就兜底
       name: named.get(slot) ?? (p === undefined ? `犯人${slot}` : ''),
     });
   }
   return out;
 }
 
+/** 股市那一屏（整屏；原版那扇窗口盖住棋盘）—— 详情卡 / 填数页是另开的窗，盖在上面 */
+function drawStockStage(): void {
+  drawStockScreen(stageCtx, spriteNow, stockView());
+  // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
+  const detail = stockDetailView();
+  if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
+  const ui = stockAmountUi();
+  if (ui !== null && amountPage !== null) {
+    // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
+    stageCtx.save();
+    stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+    drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+    stageCtx.restore();
+  }
+}
+
 /** 監獄／醫院那一屏 —— 与商店一样是**整屏**，画它的时候棋盘不画 */
 function drawBailStage(): void {
-  const pending = state.pending;
-  if (pending === null || pending.kind !== 'bail') return;
-  const me = state.players[state.currentPlayer];
+  const place = bailPlace();
+  if (place === null) return;
+  const src = bailShownState();
+  const me = src.players[src.currentPlayer];
   if (me === undefined) return;
+  const flow = bailFlow;
   stageCtx.fillStyle = '#000';
   stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-  drawBailScreen(stageCtx, pending.place, bailViews(), me.points, bailHot, spriteNow);
+  // 悬停气泡只在「等点」那一拍（原版字框挂着时 `0x200` 那一支直接返回：監獄 `0x0043cbf5` / 醫院 `0x0043e35b`）
+  const hot = flow === null || flow.stage === 'idle' ? bailHot : null;
+  drawBailScreen(stageCtx, place, bailViews(), me.points, hot, spriteNow, {
+    // 醫院道别那一拍護士换图（`0x0043e8b3` 先把那块底图贴回去）
+    hideDecor: flow?.stage === 'farewell',
+  });
+  if (flow !== null) {
+    // 犯人获释：立绘（`Panel#64` 图 槽−4，抠黑按锚点）@source 監獄 `0x0043d1f8` / 醫院 `0x0043ddd9`
+    if (flow.stage === 'thanks' && flow.slot !== null && flow.slot >= 4) {
+      const at = BAIL_INMATE_AT[place];
+      const img = spriteNow('Panel.mkf', BAIL_INMATE_RESOURCE, flow.slot - 4, true);
+      if (img !== null) drawSprite(stageCtx, img, at.x - img.anchorX, at.y - img.anchorY);
+    }
+    if (flow.stage === 'farewell') {
+      const img = spriteNow('Panel.mkf', BAIL_PLACES.hospital.resource, HOSPITAL_BYE_NURSE.image, true);
+      if (img !== null) drawSprite(stageCtx, img, HOSPITAL_BYE_NURSE.x - img.anchorX, HOSPITAL_BYE_NURSE.y - img.anchorY);
+    }
+    // YES/NO（`_rich4_ui_yesno` 居中 (320,240)）：光标在哪一半就亮哪一半
+    if (flow.stage === 'confirm') {
+      const which = flow.yesNo === 'yes' ? YESNO_IMAGE.yes : flow.yesNo === 'no' ? YESNO_IMAGE.no : YESNO_IMAGE.none;
+      const img = spriteNow('Data.mkf', YESNO_RESOURCE, which, true);
+      if (img !== null) {
+        drawSprite(stageCtx, img, BAIL_YESNO_CENTER.x - img.width / 2, BAIL_YESNO_CENTER.y - img.height / 2);
+      }
+    }
+  }
+  // ★ 2026-09-23：柜台人员的字框（`bail-screen.ts` 的 `BAIL_CLERK_FRAMES`）
+  if (bailClerk !== null) drawBailClerk(stageCtx, spriteNow, bailClerk);
+}
+
+/** 訊息框还在弹 / 还排着（`noticeBoxScreenState` 的只读视图）*/
+function noticeBoxScreenActive(): boolean {
+  const n = noticeBoxScreenState();
+  return n.playing || n.queued > 0;
+}
+
+/** 保釋屏的流程（`bail-screen.ts` 的 `bailFlowStep`）；`null` = 没开着 */
+let bailFlow: BailFlow | null = null;
+/** 保釋屏柜台人员这一刻挂着的那一句（`null` = 没挂）*/
+let bailClerk: BailClerkBubble | null = null;
+/** 为哪一次 `pending` 开的屏（同一次只开一次）*/
+let bailOpenedFor: unknown = null;
+/** 答复落地之前最后那一份状态（醫院「ＯＫ！」那一拍照它画；也用来找出保了哪一格）*/
+let bailBefore: GameState | null = null;
+
+/** 这一句说的是什么（`#NNNN` 还在串头）*/
+function bailLine(key: BailClerkKey, slot?: number): string {
+  switch (key) {
+    case 'lowPoints':
+      return BAIL_CLERK_TEXT.lowPoints.text;
+    case 'hospitalHello':
+      return BAIL_CLERK_TEXT.hospitalHello.text;
+    case 'hospitalOk':
+      return BAIL_CLERK_TEXT.hospitalOk.text;
+    case 'hospitalLowPoints':
+      return BAIL_CLERK_TEXT.hospitalLowPoints.text;
+    case 'hospitalBye':
+      return BAIL_CLERK_TEXT.hospitalBye.text;
+    case 'prisonThanks':
+    case 'hospitalThanks':
+      return INMATE_THANKS[(slot ?? 4) - 4]?.text ?? '';
+  }
+}
+
+/** 挂一句：先播 `#NNNN` 语音，再按 `fcn_0044ee18` 的口径定最早收的时刻（2000 ms / 语音更长就撑到完）*/
+function bailSay(key: BailClerkKey, now: number, slot?: number): void {
+  const raw = bailLine(key, slot);
+  const text = playVoiceCode(raw);
+  let until = now + BAIL_CLERK_MS;
+  const voiceMs = voiceDurationOf(raw);
+  if (voiceMs !== null) until = Math.max(until, now + voiceMs);
+  bailClerk = { key, text, until };
+  requestRender();
+}
+
+/** 把流程往前推一步，并把它要的事做掉（说话 / 交答复 / 关屏）*/
+function bailSend(ev: BailEvent, now = performance.now()): void {
+  if (bailFlow === null) return;
+  const r = bailFlowStep(bailFlow, ev);
+  // 答复只由**这一座**交（联机旁观的那几端只演、不答）
+  if (r.effect !== null && r.effect.kind === 'answer' && !localSeatActive()) return;
+  bailFlow = r.flow;
+  // 字框：换阶段就收掉旧的那句（新的一句由 `say` 挂上）
+  if (!bailFlowHasBubble(r.flow.stage)) bailClerk = null;
+  const e = r.effect;
+  if (e !== null) {
+    if (e.kind === 'say') bailSay(e.key, now, e.slot);
+    else if (e.kind === 'answer') {
+      // ★ 真人的答复是一条 action（联机时各端同样落地，再各自从状态差里演收尾）
+      if (e.slot !== null) dispatch({ type: 'bail', slot: e.slot });
+      else dispatch({ type: 'declineDecision' });
+    } else if (e.kind === 'close') {
+      bailFlow = null;
+      bailClerk = null;
+      bailHot = null;
+    }
+  }
+  requestRender();
+}
+
+/**
+ * 保釋屏每一帧：开屏（醫院先招呼）、看答复落地没有、字框到点收。
+ *
+ * ★ 答复落地的判据是**状态差**（`pending` 从 bail 变成别的）：本机点的与联机对端点的走同一条路。
+ *   保了哪一格 = 这一屏那张占用表里由 1 变 0 的那一格；没有 = 不保（关屏 / 醫院道别）。
+ */
+function bailTick(now: number): void {
+  const pending = state.pending;
+  if (pending !== null && pending.kind === 'bail') {
+    bailBefore = state;
+    if (bailOpenedFor !== pending && (bailFlow === null || bailFlow.stage === 'done')) {
+      bailOpenedFor = pending;
+      const r = bailFlowOpen(pending.place);
+      bailFlow = r.flow;
+      bailClerk = null;
+      bailHot = null;
+      if (r.effect !== null && r.effect.kind === 'say') bailSay(r.effect.key, now);
+    }
+  } else if (bailFlow !== null && bailFlow.stage !== 'ok' && bailFlow.stage !== 'thanks' && bailFlow.stage !== 'farewell') {
+    // 答复落地了（或被别的路径收掉）
+    const before = bailBefore;
+    let bailed: number | null = null;
+    if (before !== null) {
+      const was = bailFlow.place === 'prison' ? before.prisonOccupancy : before.hospitalOccupancy;
+      const now2 = bailFlow.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+      const hit = was.findIndex((v, i) => v !== 0 && (now2[i] ?? 0) === 0);
+      if (hit >= 0) bailed = hit;
+    }
+    bailSend({ kind: 'resolved', bailed }, now);
+  }
+  if (bailFlow === null) {
+    if (pending === null || pending.kind !== 'bail') bailOpenedFor = null;
+    return;
+  }
+  if (bailClerk !== null && now >= bailClerk.until && !voiceBusy()) {
+    bailSend({ kind: 'bubbleEnd' }, now);
+  }
+  requestRender();
 }
 
 /** 原版面板上的两句提示都是 2 秒（`fcn_0044ee18` 的 0x7d0）*/
@@ -4681,6 +6342,8 @@ function shopSay(ui: ShopUi, text: string, now: number): void {
  * @source 语音号 → `Speaking.mkf` 资源，与 `event-box-screen.ts` / `speechTick` 同一条路
  */
 function voiceDurationOf(text: string): number | null {
+  // ★★ 第二十六份 panel #2：音效档 = 0 时原版根本不放语音（`0x0045442c` / `0x0044ee63` 同一道闸），字框恰好 2000 ms
+  if (options.sound <= 0) return null;
   const { voice } = parseVoiceCode(text);
   if (voice === null) return null;
   const ms = sound.durationOf('Speaking.mkf', voice);
@@ -4704,6 +6367,26 @@ function shopGotoPage(ui: ShopUi, page: ShopPage, now: number): void {
   }
   ui.slide = entry.slide;
   ui.blink = blinkStart(page);
+  // 换页 = 整屏重画（`fcn_0042d299`）⇒ 先前贴在老板娘脸上的都没了
+  ui.keeper = keeperPaintStart();
+}
+
+/**
+ * 商店窗此刻开得起来吗 —— `shopWindowMayOpen` 的**宿主取值**。
+ *
+ * ★★ `20260925-134801926`：抽成一处是因为它有**两个**消费者 ——
+ *   `syncShopUi`（建窗）与 `currentDialog`（框 / 台词还在台上时不许摆出后备壳，见 `shopShellMayAnswer`）。
+ *   两处各写一套必然漂移：壳比窗早放开一拍，玩家就能在进店演出还没演完时把这一趟
+ *   `declineDecision` 掉（正是那份回报）。
+ */
+function shopOpenGate(): boolean {
+  return shopWindowMayOpen({
+    blocking: blockingPresentation(),
+    noticeShowing: noticeShowing(),
+    noticeQueued: noticePendingRanks().length,
+    speechOnStage: speechQueue.length,
+    speechHeld: heldSpeech.length,
+  });
 }
 
 /** 开店 / 换玩家换局时把界面状态按当前 `pending` 重铺 */
@@ -4718,9 +6401,15 @@ function syncShopUi(): void {
   //   1500 ms）在 `0x0042ea28` 开窗**之前** —— 原版是模态的，框收掉才轮到商店。
   //   本引擎的訊息框在 `BLOCKING_PRESENTATIONS` 里、回合驱动会等它，
   //   但 `syncShopUi` 是每次 action 后无条件跑的 ⇒ 这里补一道闸。
-  if (blockingPresentation()) return;
-  // ★ 只在**第一次**看见这个商店时建快照：那之后的 `pending.cards/tools` 会因为
-  //   买到手而变短，而原版货架上的字是烤进图里的，不会消失。
+  // ★ 第十五份：董事長贈禮那一句（`0x0042ea23 call 0x44f230`）也在开窗（`0x0042ea28`）之前 ——
+  //   台上还有气泡 / 押着的台词就先别开（开了气泡就叠在商店窗上）
+  // ★★ 第二十一份（`20260924-144217689`）：闸收成纯函数 `shopWindowMayOpen`，并把**排着没起播**的訊息框也算上 ——
+  //   先前 `notifyApplied` 在訊息框 `event()` 登记之前就调了本函数，那一拍框与台词都还没上账 ⇒ 商店窗当场建起、
+  //   框反而弹在商店窗上（`shop.chairmanGift` → `♪ midi07.mid` → `結束`）。现在 `notifyApplied` 也挪到登记之后才调。
+  // ★★ 20260925-134801926：闸的取值抽到 `shopOpenGate()` —— 商店那份后备壳要读**同一份**
+  //   （见 `currentDialog` 里的 `shopShellMayAnswer`）。
+  if (shopUi === null && !shopOpenGate()) return;
+  // ★ 只在**第一次**看见这个商店时铺界面状态（货架不再快照：core 的行留在原位、买过的记 `sold`）
   if (shopUi === null) {
     const ui: ShopUi = {
       page: SHOP_PAGE.cards,
@@ -4744,12 +6433,9 @@ function syncShopUi(): void {
       bubble: null,
       closing: false,
       pressedCell: null,
-      shelf: {
-        cards: shopRows(SHOP_PAGE.cards, pending),
-        tools: shopRows(SHOP_PAGE.tools, pending),
-      },
       bought: { cards: new Set<number>(), tools: new Set<number>() },
       blink: blinkStart(SHOP_PAGE.cards),
+      keeper: keeperPaintStart(),
     };
     shopUi = ui;
     // ★ 進商店的配乐 @source `shop.asm:2196` `push 6 / call fcn_004549cf`
@@ -4821,11 +6507,11 @@ function shopSell(page: ShopPage, slot: number): boolean {
 function shopBuy(page: ShopPage, row: number, now: number): void {
   const ui = shopUi;
   if (ui === null || state.pending?.kind !== 'shop') return;
-  const rows = page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools;
   const sold = page === SHOP_PAGE.cards ? ui.bought.cards : ui.bought.tools;
-  const item = rows[row];
+  const item = shopRows(page, state.pending, sold)[row];
   const me = state.players[state.currentPlayer];
-  if (item === undefined || sold.has(row) || me === undefined) return;
+  // ★ 买过的那一行（core 记了 `sold`，或本机刚点、回包未到）点了没反应 @source 0x0042e197 / 0x0042e3ec `je 返回`
+  if (item === undefined || item.sold || me === undefined) return;
 
   if (me.points < item.price) {
     shopSay(ui, shopMessage(page, 'notEnough'), now);
@@ -4847,8 +6533,8 @@ function shopBuy(page: ShopPage, row: number, now: number): void {
   sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
   dispatch(
     page === SHOP_PAGE.cards
-      ? { type: 'shop', op: 'buyCard', id: item.id }
-      : { type: 'shop', op: 'buyTool', id: item.id },
+      ? { type: 'shop', op: 'buyCard', id: item.id, row }
+      : { type: 'shop', op: 'buyTool', id: item.id, row },
   );
 }
 
@@ -4878,7 +6564,7 @@ function applyInventoryPick(): void {
   }
   // ★ 遙控骰子（8）：原版真人那一支直接开点数盘（**VA 0x004470f8** 起），不进拾取模式
   if (id === REMOTE_DICE_TOOL) {
-    openDicePick();
+    sayOwnToolLine(id, () => openDicePick());
     return;
   }
   // 需要目标的那几件：进拾取模式（T-026）。参数表见 `picking.ts` 的 TOOL_SELECT_PARAM。
@@ -4887,7 +6573,74 @@ function applyInventoryPick(): void {
     log(`「${TOOLS[id - 1]?.name ?? `道具${id}`}」的目标选择原版走的是另一套（还没接）`);
     return;
   }
-  startToolPick(id, param);
+  sayOwnToolLine(id, () => startToolPick(id, param));
+}
+
+/** ★ 第十四份 #4：本机真人先说过的那一句道具台词（见 `speech.ts` 的 `OwnToolLine`） */
+let ownToolLine: OwnToolLine | null = null;
+/** 那一句说完才开的选择界面（原版 `player_say` 同步，说完才进 `0x446ae8` / 点数盘） */
+let pendingToolPicker: { open: () => void; at: GameState } | null = null;
+
+/**
+ * 需要选目标的道具：**先说**用道具那一句，说完再开选择界面（`OwnToolLine` 的 @source）。
+ * 选择界面里取消 ⇒ 道具不消耗，那一句原版也已经说过了（不收回）。
+ */
+function sayOwnToolLine(toolId: number, openPicker: () => void): void {
+  const player = state.currentPlayer;
+  ownToolLine = { player, toolId, turnCount: state.turnCount };
+  // ★ v8（gap-audit #7）：联机时同桌各端同一刻听到这一句（不必等 `useTool` 落地）
+  presentToTable({ kind: 'toolLine', toolId });
+  const bubble = toolLineOf(state, player, toolId);
+  if (bubble !== null) {
+    ensureSpeakingArchive();
+    queueSpeech([{ bubble, order: TOOL_LINE_ORDER }]);
+  }
+  pendingToolPicker = { open: openPicker, at: state };
+  requestRender();
+}
+
+function tickPendingToolPicker(): void {
+  const p = pendingToolPicker;
+  if (p === null) return;
+  // 说话期间局面变了（换人 / 重连重建 / 换局）⇒ 这一次作废，不再开选择界面
+  if (state !== p.at) {
+    pendingToolPicker = null;
+    return;
+  }
+  if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
+    requestRender();
+    return;
+  }
+  pendingToolPicker = null;
+  p.open();
+}
+
+/**
+ * 建設公司选地 —— 原版是**点地图**的拾取窗（`0x446ae8`，参数 `COMPANY_BUILD_PARAM` = `0x2090086`），不是列表。
+ *
+ * @source 自家 `0x0041aa46 push 0x463a4a` → `0x0041aa62 call 0x440cac`（「%s\n\n請選擇欲加蓋地點」1500 ms，模态）
+ *   → `0x0041aa6a push 0x2090086 / call 0x446ae8`；别人家 `0x0041acdb` → `0x0041acf7` → `0x0041acff` 同构。
+ *   ⇒ 框收掉才进拾取；只有该答的那一端（本机座位、真人回合）进，与 `currentDialog` 同一组判据。
+ */
+function tickBuildPick(): void {
+  const pend = state.pending;
+  if (pend?.kind !== 'chooseBuildTarget') {
+    // 局面变了（联机重建 / 换局）⇒ 残留的选地会话作废
+    if (pick?.source.kind === 'build') endPick();
+    return;
+  }
+  if (pick !== null) return;
+  if (!localSeatActive() || isAiTurn(state)) return;
+  // 框 / 台词还在台上（或排着）就先别进 —— 与商店窗开窗同一道闸
+  if (!shopOpenGate()) {
+    requestRender();
+    return;
+  }
+  stopPickEdgeScroll();
+  pick = startPick(state, topo, { kind: 'build', choices: pend.choices }, 'none', COMPANY_BUILD_PARAM);
+  pickHover = null;
+  refreshPickCursor();
+  requestRender();
 }
 
 /**
@@ -4921,27 +6674,136 @@ function dicePickChoose(face: number): void {
 function cancelDicePick(): void {
   // @source `loc_00446a68` 的 `play_sound_effect(0x482332)` —— 音效 4
   sound.play('Effect.mkf', DICE_SOUND_CANCEL);
+  presentToTable({ kind: 'toolCancel', toolId: REMOTE_DICE_TOOL });
   dicePick = null;
   requestRender();
 }
 
 /**
- * 卡片欄选了一张卡之后。
+ * 卡片欄选了一张卡之后 —— **先亮牌**，亮完才走卡片函数那一段（`routeCardUse`）。
  *
- * @source `_rich4_ui_use_card_entry` VA 0x441c22 起：弹窗拿到卡号后
- *   `sprintf("使用%s", 卡名)` → 报台词 → `call card_functions[卡号]`；
- *   **返回 0（没用成）就播失败音并重新弹一次卡片欄**（`jmp loc_00441c22`）。
+ * @source `_rich4_ui_use_card_entry` VA 0x441c22 起（真人那一支）：
+ *   `0x00441c7e` 卡片欄拿到卡号（0 = 右键取消 → `0x441c9a je 0x441ce1` 直接收场）→
+ *   `sprintf("使用%s", 卡名)` → **`0x00441cbc call 0x441f73` 亮牌（阻塞 1500 ms、可跳过）** →
+ *   `0x00441cc6 call card_functions[卡号]`（**选目标在卡片函数里**，如 `0x004421cd call 0x446ae8`）；
+ *   **返回 0（没用成 / 目标取消）就播失败音并重新弹一次卡片欄**（`0x441cd9` → `jmp loc_00441c22`）。
+ *   亮牌只有「卡片欄右键取消」绕得过 ⇒ 被动卡、用不成的卡也照样先亮牌再失败。
+ */
+function applyCardPick(cardId: number): void {
+  log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
+  startOwnCardUsePopup(cardId, state.currentPlayer, state.turnCount, uiEnv());
+  // ★ v8（gap-audit #7）：联机时同桌各端**同一刻**亮同一扇牌（原版全桌看的是同一块屏）
+  ownPickedCard = cardId;
+  presentToTable({ kind: 'cardReveal', cardId });
+  pendingCardRoute = { cardId, player: state.currentPlayer, turnCount: state.turnCount };
+  requestRender();
+}
+
+/**
+ * 亮牌之后等着走的那一张（`applyCardPick` 记下、亮牌收屏后 `tickPendingCardRoute` 取走）。
+ * 原版亮牌是阻塞的 —— 卡片函数（选目标 / 生效）在它返回之后才跑。
+ */
+let pendingCardRoute: { cardId: number; player: number; turnCount: number } | null = null;
+
+function tickPendingCardRoute(): void {
+  const p = pendingCardRoute;
+  if (p === null) return;
+  if (cardUsePopupActive()) {
+    requestRender();
+    return;
+  }
+  pendingCardRoute = null;
+  // 亮牌期间局面换了人（重连重建 / 换局）⇒ 这一张作废
+  if (state.currentPlayer !== p.player || state.turnCount !== p.turnCount) {
+    dropOwnCardUse();
+    return;
+  }
+  routeCardUse(p.cardId);
+}
+
+/**
+ * 「卡片函数返回 0」—— 这张卡**没用成**（目标取消 / 用不了）。
+ *
+ * @source `_rich4_ui_use_card_entry`：`0x00441cd9 call 0x4542ce(0x48233a)`（失败音 3）→
+ *   `0x00441ce3 je loc_00441c22`（卡片欄重开；卡不消耗）。
+ *   再选一张会**再亮一次牌**（`0x00441cbc` 在循环体里）。
+ */
+function cardUseFailed(): void {
+  dropOwnCardUse();
+  sound.play('Effect.mkf', SOUND_CARD_FAILED);
+  presentCardFailed();
+  openInventory('cards');
+}
+
+/** ★ v8：本机真人最近一次在卡片欄选定的那一张（`cardFailed` 提示要带卡号）*/
+let ownPickedCard: number | null = null;
+
+/** ★ v8：告诉同桌「刚亮的那张没用成」（失败音 3；再用一张会再亮一次）*/
+function presentCardFailed(): void {
+  const cardId = ownPickedCard;
+  ownPickedCard = null;
+  if (cardId !== null) presentToTable({ kind: 'cardFailed', cardId });
+}
+
+/**
+ * ★ v8（gap-audit #7）：本机真人刚在自己的 UI 里做了一件「原版全桌都看得见」的事 —— 联机时转告同桌
+ *   （纯演出，服务器校验后转发，不进日志；见 core `protocol.ts` 的 `PresentCue`）。单机什么都不做。
+ */
+function presentToTable(cue: PresentCue): void {
+  const client = net;
+  if (client === null || client.seat === null || actingSeat(state) !== client.seat) return;
+  client.present(cue);
+}
+
+/**
+ * ★ v8（gap-audit #7）：旁观端演出别人转来的那一件（收件箱排到它时才演 —— 与行动方同一个位置）。
+ *
+ * | kind | 演什么 | 原版 |
+ * |---|---|---|
+ * | `cardReveal` | 亮牌（卡面 +「使用X卡」+ 音效），记下「已亮过」| `0x00441cbc call 0x441f73` |
+ * | `cardFailed` | 失败音 3，忘掉「已亮过」| `0x00441cd9` |
+ * | `toolLine` | 那一句道具台词，记下「已说过」| 道具函数第一个 `player_say`（`speech.ts` 的 `OwnToolLine`）|
+ * | `toolCancel` | 音效 4 | `0x4466b8` / `loc_00446a68` |
+ */
+function applyNetCue(seat: number, cue: PresentCue): void {
+  if (seat === net?.seat) return;
+  switch (cue.kind) {
+    case 'cardReveal':
+      startRemoteCardUsePopup(cue.cardId, seat, state.turnCount, uiEnv());
+      break;
+    case 'cardFailed':
+      dropOwnCardUse();
+      sound.play('Effect.mkf', SOUND_CARD_FAILED);
+      log(`P${seat + 1} 的${CARD_IMPLS[cue.cardId - 1]?.name ?? `卡${cue.cardId}`}没用成（联机提示）`);
+      break;
+    case 'toolLine': {
+      ownToolLine = { player: seat, toolId: cue.toolId, turnCount: state.turnCount };
+      const bubble = toolLineOf(state, seat, cue.toolId);
+      if (bubble !== null) {
+        ensureSpeakingArchive();
+        queueSpeech([{ bubble, order: TOOL_LINE_ORDER }]);
+      }
+      break;
+    }
+    case 'toolCancel':
+      sound.play('Effect.mkf', CANCEL_SOUND);
+      break;
+  }
+  requestRender();
+}
+
+/**
+ * 亮牌之后：相当于原版的 `call card_functions[卡号]`（`0x00441cc6`）。
  *
  * 这里照同一条路走：先用 core 预演「这张牌现在出不出得了」——
  *   - 出得了且**不需要目标** → 直接发 `useCard{target: none}`；
  *   - 需要目标 → 进 T-026 拾取模式（选择参数取自卡片表）；
- *   - 出不了（被动卡、或时机不对）→ 播失败音（音效 4）并**把弹窗再开回来**。
+ *   - 出不了（被动卡、或时机不对）→ 播失败音（音效 3）并**把弹窗再开回来**。
  *
  * ★ 原版**不灰显**被动卡（`fcn_00441b0a` 只画卡名，一个颜色一张字体），
  *   所以这里也不灰显 —— 上一轮卡里写的「被动卡灰显不可点」是自己想的。
  */
-function applyCardPick(cardId: number): void {
-  log(`使用${CARD_IMPLS[cardId - 1]?.name ?? `卡${cardId}`}`);
+function routeCardUse(cardId: number): void {
   const route = routeCardPick(state, topo, cardId);
   if (route.kind === 'use') {
     dispatch({ type: 'useCard', cardId, target: { kind: 'none' } });
@@ -4958,12 +6820,20 @@ function applyCardPick(cardId: number): void {
   }
   // ★ Q-PICK-2：請神符**没有选择 UI** —— 原版 `0x444d1a` 自动请最近的那尊；
   //   一个都请不到时返回 0（卡不消耗）→ 走下面「用不成」那条路。
+  //   ★★ 2026-09-25（C23-1 结案）：候选集是**这一刻画在棋盘区里的**那些 ——
+  //   原版扫的是屏幕空间那张 440×440 的 id 图（`0x40a45c(-1)` → `0x409de7`），
+  //   画不进去的物件根本不在清单里。这里把**当前镜头**（含玩家拖过 / 贴边推过）
+  //   投到棋盘区，判据与 `0x409e99`/`0x409ea5` 那两道 `jl`/`jge` 同一条。
   if (route.kind === 'objectAuto') {
-    const handle = nearestSummonableObject(state, topo);
+    const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
+    const handle = nearestSummonableObject(state, topo, {
+      project: (x, y) => worldToScreen(x, y, camera, vp),
+      width: vp.w,
+      height: vp.h,
+    });
     const act = summonCardAction(handle);
     if (act === null) {
-      sound.play('Effect.mkf', SOUND_CARD_FAILED);
-      openInventory('cards');
+      cardUseFailed();
       return;
     }
     dispatch(act);
@@ -4976,8 +6846,7 @@ function applyCardPick(cardId: number): void {
   if (route.kind === 'facilityPick') {
     openFacilityPicker((type) => {
       if (type === null) {
-        sound.play('Effect.mkf', SOUND_CARD_FAILED);
-        openInventory('cards');
+        cardUseFailed();
         return;
       }
       dispatch({ type: 'useCard', cardId, target: { kind: 'none', facilityType: type } });
@@ -4985,9 +6854,12 @@ function applyCardPick(cardId: number): void {
     return;
   }
   // 用不成：失败音 + 把弹窗开回来（原版的循环）
-  sound.play('Effect.mkf', SOUND_CARD_FAILED);
-  if (route.needsOwnList) log('（这张卡要选目标 —— 那类选择界面还没做）');
-  else openInventory('cards');
+  if (route.needsOwnList) {
+    dropOwnCardUse();
+    sound.play('Effect.mkf', SOUND_CARD_FAILED);
+    presentCardFailed();
+    log('（这张卡要选目标 —— 那类选择界面还没做）');
+  } else cardUseFailed();
 }
 
 /**
@@ -5050,10 +6922,21 @@ let introSkipped = false;
  */
 let introSoundPlayed = false;
 
+/** 过场里出场的角色（`players[].character`）—— 每位两段 FLIC，时长也按它算（`introMs`）*/
+function introCast(): number[] {
+  return state.players.map((p) => p.character);
+}
+
 /** 过场结束 → 进棋盘 */
 function endIntro(): void {
   if (screen !== 'intro') return;
   screen = 'game';
+  releaseIntroFlics();
+  // ★★ 进棋盘的第一次重画就摆第 1 位（core 的 `newGame` 已摆好），随后 `0x418c55` 开头
+  //   播他那一段降落伞（`landing-fx.ts`）—— 回合驱动被影片挡着，播完才掷骰 / 电脑决策。
+  //   其余几位要等轮到自己才落地（换人那条 action 里补播，见 `startActionFx`）。
+  const opener = openingLandingPlayer(state);
+  if (opener !== null) startLandingFx(opener);
   requestRender();
   // ★★ **必须补这一拍**（2026-09-16 修「进游戏后 GO 鈕点不动」）：
   //   `startGame()` 起的那两个回合驱动都带 `if (screen !== 'game') return`
@@ -5066,9 +6949,16 @@ function endIntro(): void {
   scheduleHumanTurn();
 }
 
-/** 託管AI 屏的编辑草稿（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null */
-let aiDraft: AiSettingRow[] | null = null;
-let aiHot: AiSettingsHit | null = null;
+/**
+ * 託管AI 屏：编辑草稿 + 选中行 + 按下的控件（原版也是先编一份暂存表、按確定才拷回）——不在这一屏时为 null。
+ * 见 `ai-settings.ts` 的 `AiSettingsModel`。
+ */
+let aiModel: AiSettingsModel | null = null;
+/**
+ * 选中行（原版 `[0x48be4c]`）**跨开屏保留** —— 原版入口的 memset 恰好不含它，
+ * 轮到的不是真人时沿用上一次的值（`aiInitialSelection`）。
+ */
+let aiLastSel = 0;
 let aiReturn: Screen = 'game';
 
 /** 联机大厅的房间快照（服务器给的；本机不改它）——不在大厅时为 null */
@@ -5109,15 +6999,26 @@ function enterTitleScreen(): void {
   requestRender();
 }
 
-/** 离开大厅：断开连接、回標題 */
+/**
+ * 离开大厅：断开连接 —— 网页版回**房间列表**（需求方 2026-09-23），桌面壳回標題。
+ */
 function leaveLobby(): void {
+  // ★ 房主交接（v6）：先告訴服務器「我是主動走的」—— 當場讓座 / 交接房主，不用等 30 秒斷線判定
+  net?.leave();
   netClose?.();
   netClose = null;
   net = null;
   lobbyRoom = null;
   lobbyHot = null;
   log('已離開聯機大廳');
-  enterTitleScreen();
+  if (isDesktop()) {
+    enterTitleScreen();
+    return;
+  }
+  // 门厅覆盖层整个盖住画布；底下停在標題（不点曲 —— 从列表选「單人模式」时才进標題点 MIDI01）
+  screen = 'title';
+  requestRender();
+  void openFoyer({ view: 'rooms' });
 }
 /** 標題畫面上鼠标悬着的按钮 */
 let titleHot: number | null = null;
@@ -5147,6 +7048,30 @@ let lastFrameScreen: Screen = 'title';
 const uiFlics = new Map<string, LoadedFlic | null>();
 const uiFlicPending = new Set<string>();
 
+/** 放掉时还在解码的那几段（解好当场关掉，不进 `uiFlics`） */
+const uiFlicDropped = new Set<string>();
+
+/** 放掉一段（关位图、下次再要就重解） */
+function releaseUiFlic(archive: string, resource: number): void {
+  const key = `${archive}#${resource}`;
+  uiFlics.get(key)?.close();
+  uiFlics.delete(key);
+  if (uiFlicPending.has(key)) uiFlicDropped.add(key);
+}
+
+/**
+ * ★ 片头那几段影片（开门 + 每人一段跳出去 + 一段降落伞）一局只播一次，播完 / 跳过就放掉。
+ *   先前一直攥着：4 人局 8 段 × 40–50 帧 × 640×480 ≈ 440 MB 位图常驻到关页面（W-80 §8 顺手修；
+ *   高清过场的超分帧也挂在这几段上，一并放掉）。
+ */
+function releaseIntroFlics(): void {
+  releaseUiFlic(INTRO_ARCHIVE, INTRO_DOOR_RESOURCE);
+  for (const c of introCast()) {
+    releaseUiFlic(INTRO_ARCHIVE, introJumpResource(c));
+    releaseUiFlic(INTRO_ARCHIVE, introFallResource(c));
+  }
+}
+
 function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
   const key = `${archive}#${resource}`;
   const hit = uiFlics.get(key);
@@ -5155,8 +7080,13 @@ function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
   if (cache !== null && !uiFlicPending.has(key)) {
     uiFlicPending.add(key);
     void cache.getFlic(archive as ArchiveName, resource).then((f) => {
-      uiFlics.set(key, f);
       uiFlicPending.delete(key);
+      // 解码途中这一段已经被放掉（片头提前跳过）⇒ 不留
+      if (uiFlicDropped.delete(key)) {
+        f?.close();
+        return;
+      }
+      uiFlics.set(key, f);
       requestRender();
     });
   }
@@ -5169,6 +7099,12 @@ function uiFlicNow(archive: string, resource: number): LoadedFlic | null {
  * ⚠️ 每调一次算一次 `performance.now()` —— 屏幕若要「本帧同一个时刻」，
  *   自己取一次 `env.now` 存着用。
  */
+/**
+ * ★ gap-audit #4 活体验收：整屏发出的每一声音效（时刻 + 号）—— **只在 DEV 构建里记**，`__rich4.sfxLog()` 读。
+ *   `?mute=1` 时音频不出声，但「该不该放、放了几次」照样看得到（`tools/net-e2e-auction.mjs` 数 0x3f 用）。
+ */
+const devSfxLog: { t: number; id: number }[] = [];
+
 function uiEnv(): UiScreenEnv {
   return {
     screen,
@@ -5195,7 +7131,13 @@ function uiEnv(): UiScreenEnv {
     //   循环的那一路原版是 `_rich4_play_sound_effect(flags=1, …)`（= `DSBPLAY_LOOPING`），
     //   第一处用途是轉盤的 52 号（0.089 s，不循环就只是一声「嗒」）——
     //   见 `wheel-screen.ts` 与 `audio.ts` 的 `play(archive, resource, loop)`。
-    playEffect: (id: number, loop = false) => sound.play('Effect.mkf', id, loop),
+    playEffect: (id: number, loop = false) => {
+      if (import.meta.env.DEV) {
+        devSfxLog.push({ t: performance.now(), id });
+        if (devSfxLog.length > 500) devSfxLog.shift();
+      }
+      sound.play('Effect.mkf', id, loop);
+    },
     stopEffect: (id: number) => sound.stop('Effect.mkf', id),
     // ★ 按屏取曲（原版 `fcn_004549cf(id)`）：屏只报**磁盘文件名**，
     //   载入/替换由这里统一做（与 `playTrack` 同一条载入路径）。
@@ -5207,11 +7149,9 @@ function uiEnv(): UiScreenEnv {
 
 /** 此刻接管整屏的那一屏（登记表里 `active()` 为真的第一项）；没有则 null */
 function activeUiScreen(): UiScreen | null {
-  const env = uiEnv();
-  for (const s of SCREENS) {
-    if (s.active(env)) return s;
-  }
-  return null;
+  // ★★ 第十六份（线上卡死）：**开着**的屏优先 —— 排着等起播的屏（`pendingOnly`）不抢接管位置，
+  //   否则开着的那扇收不到 `tick`、永远收不掉（见 `overlay.ts` 文件头那三方互等）。
+  return presentationHost.overlay();
 }
 
 /**
@@ -5235,7 +7175,7 @@ let objectFlight: ObjectFlight | null = null;
  * 提示本身来自 `state.lastTollLands`（core 的瞬态字段，只有算进去的 > 1 块才写），
  * 与 `lastCardPlay` / `lastNpcWalks` 同一套「比引用」的判据。
  */
-let tollFlash: { lands: ReadonlySet<number>; at: number } | null = null;
+let tollFlash: { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; at: number } | null = null;
 /** 已经认过的 `state.lastTollLands`（比引用，见上面） */
 let tollLandsSeen: readonly number[] | null = null;
 
@@ -5257,11 +7197,111 @@ function noticeTollLands(now: number): void {
 }
 
 /** 这一拍该给渲染器的那份（没在播 / 亮度 0 ⇒ null） */
-function tollFlashInput(now: number): { lands: ReadonlySet<number>; level: number } | null {
+function tollFlashInput(
+  now: number,
+): { lands: ReadonlySet<number>; facilities?: ReadonlySet<number>; level: number } | null {
   if (tollFlash === null) return null;
   const level = tollFlashLevel(now - tollFlash.at);
   if (level === null || level === 0) return null;
-  return { lands: tollFlash.lands, level };
+  return tollFlash.facilities === undefined
+    ? { lands: tollFlash.lands, level }
+    : { lands: tollFlash.lands, facilities: tollFlash.facilities, level };
+}
+
+// ============================================================
+//  新聞 18「強烈地震」/ 19「山洪」：受灾地块白闪 → 重画 → 静置（gap-audit #6）
+//  ★ A-2：命運 0「強制拆除房屋」/ 1「強制徵收土地」共用**同一条**尾巴，闪的是同一支
+//    `0x451985`（`0x0044c0e3 jmp 0x44bf46` → `0x0044bf46 call 0x451985`）⇒ 同一个槽
+// ============================================================
+
+/**
+ * 正在演（或排着等事件框收屏）的那一段；`null` = 没有。纯表现，不进 state。
+ *
+ * 时间轴（逐条 VA 见 `news-flash-fx.ts`）：事件框收屏（pass 0 → pass 1）→ **闪**（借 `tollFlash`
+ * 那一套：同一支 `fcn_00451985`，16 × 30 ms + 400 ms，期间棋盘按 before 画）→ 重画成 after
+ * （`view_to(0, 0, 1)`）→ **静置** 500 / 300 ms（`fcn_004528b9`）→ 收场。
+ * 整段算「台上还忙」（`stageBusyFlags` 的 `tollFlash` 位）⇒ 回合驱动 / 联机收件箱 / 19 的房主台词都等它。
+ *
+ * ★ 名字沿用 ticket 里的 `newsFlash`：新聞 18/19 与命運 0/1 共用这一个槽（`cue.kind` 区分，
+ *   只影响日志）—— 两族的静置时长也相同（19 与命運都是 `push 0x12c`）。
+ */
+let newsFlash: { cue: NewsFlashCue; before: GameState; at: number | null; holdSkipped: boolean } | null = null;
+
+/**
+ * 这一条 action 刚抽到新聞 18 / 19（`lastEvent.flashLots`）或命運 0 / 1（那两块地表里的差）
+ * ⇒ 排上（等事件框收屏才闪）。
+ *
+ * ★ A-2：命運那一支补的是「徵收 / 拆屋之后看不出是哪一块」—— 原版在共用尾巴里把那一块
+ *   标白再闪（`0x0044c092 call 0x456c0a` 标白 → `0x0044bf46 call 0x451985` 闪），
+ *   先前复刻只改了归属色块，一声不响。
+ */
+function startNewsFlash(before: GameState, after: GameState): void {
+  const cue = newsFlashTrigger(before, after) ?? fortuneFlashTrigger(before, after);
+  if (cue === null) return;
+  newsFlash = { cue, before, at: null, holdSkipped: false };
+  // 事件框期间（pass 0）原版还一格没拆：棋盘按 before 画，闪完重画那一拍才放开
+  deferredBoardBefore = before;
+  log(
+    `演出：${cue.kind === 'news' ? '新聞' : '命運'} ${cue.eventId} 标白 ${cue.lands.length} 块地 / ${cue.facilities.length} 处設施，静置 ${cue.holdMs} ms`,
+  );
+  requestRender();
+}
+
+/** 每帧推一次（与 `tickTollFlash` 同一处调）*/
+function tickNewsFlash(now: number): void {
+  const f = newsFlash;
+  if (f === null) return;
+  if (f.at === null) {
+    // ★ pass 1 在訊息框停满之后（`fcn_0044b6df` 0x0044b862 → 0x0044b873）；只等事件框那一屏
+    //   （与 `afterEventBox` 同一条理由：等「任何一屏」会与排在后面的訊息框互等）。走子补间也要先播完。
+    if (eventBoxScreen.active(uiEnv()) || !renderer.walkDone(now)) {
+      requestRender();
+      return;
+    }
+    f.at = now;
+    tollFlash = { lands: new Set(f.cue.lands), facilities: new Set(f.cue.facilities), at: now };
+    requestRender();
+    return;
+  }
+  let phase = f.holdSkipped ? 'done' : newsFlashPhase(now - f.at, f.cue.holdMs);
+  // 闪那一截被滑鼠鍵点掉了（`skipTollFlash`）⇒ `fcn_00451985` 提前返回，照常重画、从现在起静置
+  if (phase === 'flash' && tollFlash === null) {
+    f.at = now - TOLL_FLASH_TOTAL_MS;
+    phase = newsFlashPhase(now - f.at, f.cue.holdMs);
+  }
+  if (phase === 'flash') {
+    requestRender();
+    return;
+  }
+  // 闪完 ⇒ `view_to(0, 0, 1)`：只重画棋盘（bit0 ⇒ 不动标记，镜头仍停在那一处）—— 这时才露出拆过的样子
+  if (deferredBoardBefore === f.before) deferredBoardBefore = null;
+  if (phase === 'hold') {
+    requestRender();
+    return;
+  }
+  newsFlash = null;
+  resumeTurnDriver();
+  requestRender();
+}
+
+/**
+ * 静置那一截被滑鼠鍵点掉（`fcn_004528b9` 收到滑鼠鍵就返回）：新聞 18 / 19 闪完之后那一段，
+ * 以及 15 / 20 / 21 片后那一段（`BoardFilmSpec.holdMs`）。点掉了返回 `true`（这一下被它吃掉）。
+ */
+function skipPresentationHold(now: number): boolean {
+  const f = newsFlash;
+  if (f !== null && f.at !== null && tollFlash === null && !f.holdSkipped && newsFlashPhase(now - f.at, f.cue.holdMs) === 'hold') {
+    f.holdSkipped = true;
+    requestRender();
+    return true;
+  }
+  const film = boardFilm;
+  if (film !== null && boardFilmHolding(film, now)) {
+    boardFilm = { ...film, holdSkipped: true };
+    requestRender();
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -5290,17 +7330,30 @@ let godLine: { text: string; at: number } | null = null;
 /** 已经该说、但附身影片还在播 —— 影片收屏那一拍才上（原版是影片 `0x45144f` 之后紧接着 `0x40e2a2`）*/
 let pendingGodLine: string | null = null;
 
-/** 这一拍有神明刚附身 ⇒ 排一句开场白（有影片就等影片，没有就当场说）*/
+/** 这一拍有神明刚附身 ⇒ 排一句开场白（等附身影片播完）*/
 function startGodLine(before: GameState, after: GameState): void {
+  // ★ 第十八份：「動畫過程」关掉时没有开场白 —— 十二支的 `je` 连 `0x40e2a2` 一起跳过（`god-line.ts` 文件头）
+  if (!godLineShown(options.animation)) return;
   const text = godLineTrigger(before, after);
   if (text === null) return;
   pendingGodLine = text;
-  tickGodLine(performance.now());
+  // ★ 第十五份：**不**当场起 —— 同一条 action 的壞神台词（`beforeStage`，`0x0040ef44` 在影片与
+  //   `0x40e2a2` 之前）要等 `notifyApplied` 才交出来；交给下一帧的 `tickGodLine` 看闸
+  requestRender();
 }
 
 /** 每帧：排队的等影片收屏就上台；到 2400 ms 收场 */
 function tickGodLine(now: number): void {
-  if (pendingGodLine !== null && boardFilm === null && pendingBoardFilm === null) {
+  if (
+    pendingGodLine !== null &&
+    boardFilm === null &&
+    pendingBoardFilm === null &&
+    // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（原版台词 `0x0040ef44` → 影片 → `0x40e2a2`；
+    //   没有影片时（「動畫過程」关掉）先前会与那句台词同屏）；亮牌 / 事件框还开着也等（它们在更前面）
+    // ★ 第十六份：屏上已经开着一扇框（訊息框 / 老虎机…）⇒ 等它收（原版同一时刻只有一扇）
+    !presentationHost.boxBlocked(SCREEN_BOX_TIER.godSay) &&
+    !eventBoxScreen.active(uiEnv())
+  ) {
     godLine = { text: pendingGodLine, at: now };
     pendingGodLine = null;
     requestRender();
@@ -5309,6 +7362,8 @@ function tickGodLine(now: number): void {
     godLine = null;
     requestRender();
   }
+  // ★ 第十八份：开场白收了（到点 / 点掉 / 自愈清掉）⇒ 钉着的那一帧一起收
+  if (heldGodFilm !== null && godLine === null && pendingGodLine === null) releaseHeldGodFilm();
   // 演着的时候每帧都要再来一拍（到点才收得掉；`stageBusy()` 读的是这里的变量）
   if (godLine !== null || pendingGodLine !== null) requestRender();
 }
@@ -5356,8 +7411,57 @@ function skipTollFlash(): void {
 //   把「闪还在播」这件事从这一道闸递给 `notice-box-screen`（见那里的 `setNoticeStartGate`）。
 // ★ 第八份试玩回报 #5：訊息框还要等**棋盘影片与神明开场白**收场 —— 原版这两样都是阻塞调用，排在
 //   `0x440cac` 之前（小福神：影片 `0x45144f` → 开场白 `0x40e2a2` → 发卡 → 框 `0x4632fd` → 台词）。
+// ★★ 第十一份試玩回報 #6（小窮神順序）：神明老虎機要**等附身影片与开场白收场**才起播 ——
+//   原版次序是「抱怨台词 → 影片 0x220 → 白字文案 → 老虎機 → 付款」（`rich4_gods.asm:835-883`）。
+setGodSlotStartGate(
+  () =>
+    boardFilm !== null ||
+    pendingBoardFilm !== null ||
+    godLine !== null ||
+    pendingGodLine !== null ||
+    // ★ 第十五份：台上有气泡 / 押着排在它前面的台词 ⇒ 等（`presentation-order.ts`）
+    // ★ 第十六份：台词那一侧没放行、或屏上已经开着一扇框 ⇒ 等
+    presentationHost.boxBlocked(SCREEN_BOX_TIER.godSlot),
+);
+
 setNoticeStartGate(
-  () => tollFlash !== null || godLine !== null || pendingGodLine !== null || boardFilm !== null || pendingBoardFilm !== null,
+  () =>
+    tollFlash !== null ||
+    godLine !== null ||
+    pendingGodLine !== null ||
+    boardFilm !== null ||
+    pendingBoardFilm !== null ||
+    // ★★ 2026-09-22（第十一份試玩回報 #15）：转盘 / 神明老虎机在播时，訊息框**押后** ——
+    //   原版是「转盘（阻塞、玩家点停）→ 費用/保費訊息框 → 台词」。
+    //   光是调整 `SCREENS` 顺序还不够：押后期间訊息框的 `active()` 仍为真，
+    //   照样会压住转盘、吃掉玩家的点击（见 `screens.ts` 里那一段注释）。
+    wheelScreenState().playing ||
+    // ★ 第十五份：转盘 / 老虎机排着等台词时也算（它们在訊息框之前）
+    wheelScreenState().pending ||
+    godSlotState().playing ||
+    godSlotState().pending,
+);
+
+// ★★ 第十五份：**每一扇**訊息框起播前都问台词那一侧（`presentation-order.ts` 的 `boxMayStart`）——
+//   台上有气泡 ⇒ 等（互斥：原版 `player_say` 阻塞）；有档更小的台词押着 ⇒ 等（先后）。
+//   先前只有回合開始被挡（第十三份 #2）、保險理賠、小衰神丢卡这几扇等，其余一律与台词同屏。
+// ★★ 第十六份（线上卡死）：屏上已经开着别的框（老虎机 / 事件框 / 神明台词窗…）⇒ 也不起 ——
+//   原版全是阻塞调用，同一时刻只有一扇；先前「使用地雷」框在排着的老虎机之外照起，才有那三方互等。
+setNoticeSpeechGate((tier) => presentationHost.boxBlocked(tier));
+// ★ 第十五份：事件框 / 亮牌 / 抽卡卡面（`lead` 档）与轉盤（`stage` 档）同一道闸
+setEventBoxStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.eventBox));
+setWheelStartGate(() => presentationHost.boxBlocked(SCREEN_BOX_TIER.wheel));
+// ★ 第十四份：命運 / 新聞的施加阶段（加持框、理賠框…）排在事件提示框收掉之后
+setNoticeOverlayGate(() => eventBoxScreen.active(uiEnv()));
+// ★ 第十四份（D-008 收口）：嫁禍卡的选人窗 —— 与对话框同一道闸（`currentDialog`）：
+//   联机只让当前座位答、电脑 / 託管不开（它们由 `decidePending` / reducer 答）
+setScapegoatPickerGate(() => screen === 'game' && (cardPassiveDialogOpen() ?? (localSeatActive() && !isAiTurn(state))));
+// ★ pt22：「請選擇設施類別」的待决交互那一支同一道闸（旁观端 / 电脑不开，见 `setFacilityPickerGate`）
+setFacilityPickerGate(() => screen === 'game' && localSeatActive() && !isAiTurn(state));
+// ★ 第十四份：訊息框队列里的亮牌那一扇（收費那一段的被动卡）交给事件提示框播
+setNoticeCardPopup(
+  (cardId, text) => startCardRevealPopup(cardId, text, uiEnv()),
+  () => cardUsePopupActive(),
 );
 
 /**
@@ -5371,19 +7475,104 @@ setNoticeStartGate(
 const speechQueue = new SpeechQueue();
 
 /**
- * 被演出**押后**的台词（那一刻起屏上有一段纯演出在演）。
+ * 还没上台的台词（按档排好：`lineRank`，同档保持来时的先后）。
  *
  * ★★ 原版「轉盤停 → 訊息框 → 付款人的台詞」是**同步**顺序（見 `queueSpeech` 的
  *   `@source`）。本引擎一条 action 就把演出与台词一起派生出来，所以台词先押在这里，
- *   由 `speechTick()` 在演出收屏之后放上台。
- *
- * ★ 单槽 + 整体覆写：押着的**至多只有一条 action 的几句**（演出占屏时
- *   `holdForActorWalk` 不派下一条），见 `queueSpeech`。
+ *   由 `releaseHeldSpeech()` 按「框 / 影片收了没有」一句一句放上台（第十五份起连
+ *   `beforeStage` 的句子也会押 —— 押在 `lead` 档的框与屏上正开着的框后面）。
  */
-let deferredSpeech: SpeechBubble[] | null = null;
+let heldSpeech: { bubble: SpeechBubble; order: SpeechOrder; rank: number; cue?: SpeechCue }[] = [];
+
+// ============================================================
+//  神明离身升天（`god_detach` VA 0x0040e32c）—— 规格在 `god-ascend-fx.ts`（第十二份试玩回报 #1）
+// ============================================================
+
+/**
+ * 正在演（或排着等前面演出收摊）的那一次升天；`null` = 没有。
+ * `start === null` = 还在排队；`before` = 离身**之前**那一份（起点与棋盘都按它画）。
+ */
+let godAscend: { cue: GodAscendCue; before: GameState; start: number | null } | null = null;
+
+/**
+ * 月结 / 開獎 / 分紅这几屏排在回合边界里**更早**的位置（`0x41902e call 0x41cf67` 推日期
+ * 在 `0x419039 call 0x41c84f` 之前）⇒ 任期届满的升天要等它们收屏。
+ * ⚠️ 只等这几屏，**不**等訊息框：换神时新神的訊息框在押后等影片、影片又在等升天 ——
+ *   把訊息框也算进来就是三方互等。
+ */
+const DAY_ROLL_PRESENTATIONS: ReadonlySet<string> = new Set(['monthly', 'lottery-draw', 'shares']);
+
+/** 这一拍有神明经 `god_detach` 离身 ⇒ 排一次升天（一拍至多一位：任期只减当前那位）*/
+function startGodAscend(before: GameState, after: GameState): void {
+  const cue = godAscendTrigger(before, after)[0];
+  if (cue === undefined) return;
+  godAscend = { cue, before, start: null };
+  requestRender();
+}
+
+/** 每帧：前面的演出收摊就起播（放音），演完收摊 */
+function tickGodAscend(now: number): void {
+  const a = godAscend;
+  if (a === null) return;
+  requestRender();
+  if (a.start === null) {
+    // 走子补间 / 道具·卡片飞行 / 月结那几屏还在 ⇒ 先等（原版它们都在 `god_detach` 之前、且都阻塞）
+    if (!renderer.walkDone(now) || objectFlight !== null) return;
+    // ★ 第十五份：送神 / 換神那一次用卡 —— 亮牌 `0x441f73` → 出牌台词 → 飞行 都在 `god_detach` 之前（请神符
+    //   `0x00444e8a` → `0x00444efa` → 附身里的 `0x0040eb3f`）；先前升天与亮牌同时起播
+    if (
+      cardUsePopupActive() ||
+      eventBoxPending() ||
+      pendingCardFlight !== null ||
+      filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))
+    ) {
+      return;
+    }
+    const overlay = activeUiScreen();
+    if (overlay !== null && DAY_ROLL_PRESENTATIONS.has(overlay.id)) return;
+    a.start = now;
+    // @source `0x0040e46f push 0 / push 0x4823e2 / call 0x4542ce` —— 升天之前响一声
+    sound.play('Effect.mkf', GOD_ASCEND_SOUND);
+    log(`神明升天：P${a.cue.player} 物件 #${a.cue.objectIndex + 1}（種類 ${a.cue.type}）`);
+    return;
+  }
+  // 渲染器上一帧已经判出「演完了」（帧数到顶 / 整张图高过棋盘顶边），或兜底的时长到了
+  if (renderer.godAscendEnded() || now - a.start >= GOD_ASCEND_MAX_MS) {
+    godAscend = null;
+  }
+}
 
 /** 这一件飞完该放哪个音效号（0 = 不放音） */
 let objectFlightSound = 0;
+
+/** ★ 第十四份 #5：機器娃娃那一趟押着等台词（见 `playSoundFor` 那一支） */
+let dollWalkHeld = false;
+
+/**
+ * 台词队列空了（用道具那一句说完）就放娃娃上路，并起那一声循环音效 38。
+ *
+ * @source 循环：`0x40ded1 push 1` → `0x4542ce` → `IDirectSoundBuffer::Play(…, DSBPLAY_LOOPING)`；
+ *   走完 `0x0040d8dc call 0x4542e9`（Stop）。`+80 ms` 是留一拍余量。
+ */
+function tickDollRelease(): void {
+  if (!dollWalkHeld) return;
+  // ★ 第十五份：电脑用娃娃时「使用機器娃娃」框（`0x00448070`）在道具函数之前 ⇒ 也等它
+  if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot())) || noticeHoldsFilms()) {
+    requestRender();
+    return;
+  }
+  dollWalkHeld = false;
+  renderer.releaseActorWalks(performance.now());
+  sound.play('Effect.mkf', SOUND_IDS.DOLL, true);
+  const walkMs = renderer.actorWalkRemainingMs();
+  window.setTimeout(() => sound.stop('Effect.mkf', SOUND_IDS.DOLL), Math.max(0, walkMs) + 80);
+  requestRender();
+}
+
+/** 投掷在等台词说完才起播（见 `beginObjectFlight` 的 `awaitSpeech`） */
+let objectFlightAwaitsSpeech = false;
+/** 「还没起播」的 `start`：`flightPosAt` 为 null（不画）、`flightDone` 为假（不收） */
+const FLIGHT_NOT_STARTED = Number.POSITIVE_INFINITY;
 
 /**
  * 播完一条投掷：放落地音 + 让静态那件露出来。
@@ -5395,6 +7584,7 @@ function finishObjectFlight(): void {
   if (objectFlight === null) return;
   const id = objectFlightSound;
   objectFlight = null;
+  objectFlightAwaitsSpeech = false;
   objectFlightSound = 0;
   if (id > 0) sound.play('Effect.mkf', id);
   requestRender();
@@ -5407,8 +7597,19 @@ function finishObjectFlight(): void {
  * 免得变成死循环。
  */
 function tickObjectFlight(now: number): void {
-  const f = objectFlight;
+  let f = objectFlight;
   if (f === null) return;
+  // ★★ 第十四份試玩回報 #2：道具台词先说完（`filmWaitsForSpeech`，与影片 / 建屋动效同一道闸）
+  if (objectFlightAwaitsSpeech) {
+    // ★ 第十五份：电脑用道具那一扇「使用%s」（`0x00448070`，`lead` 档）也在投掷之前
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot())) || noticeHoldsFilms()) {
+      requestRender();
+      return;
+    }
+    objectFlightAwaitsSpeech = false;
+    f = { ...f, start: now };
+    objectFlight = f;
+  }
   if (flightDone(f, now)) {
     finishObjectFlight();
     return;
@@ -5463,6 +7664,8 @@ function startObjectFlight(
     from: a,
     to: b,
     settleMs: THROW_SETTLE_MS,
+    // ★★ 第十四份試玩回報 #2：道具台词（`TOOL_LINE_ORDER = beforeStage`）先说完才投掷
+    awaitSpeech: true,
   });
   if (!started) {
     // @source VA 0x0040e6f2：`fcn_00409a23` 换算后两轴都为 0（起点就是落点，
@@ -5491,12 +7694,21 @@ function beginObjectFlight(args: {
   from: { x: number; y: number } | null;
   to: { x: number; y: number } | null;
   settleMs?: number;
+  /**
+   * ★★ 第十四份試玩回報 #2：起播前先等台上那几句（`speechQueue`）说完。
+   *   原版放置類道具是 `player_say`（同步）→ 选格 → `place_object` → `animate_object`
+   *   （路障 `0x00446bcc` → `0x00446be6`/`0x00446bef` …，见 `speech.ts` 的 `TOOL_LINE_ORDER`）。
+   *   等的期间那一件**哪儿都不画**（`start` 取 +∞ ⇒ `flightPosAt` 为 null、静态槽照样藏着）
+   *   —— 与原版一致：说话那会儿东西还没放下去。
+   */
+  awaitSpeech?: boolean;
 }): boolean {
   const { from, to } = args;
   if (from === null || to === null) return false;
   if (from.x === to.x && from.y === to.y) return false;
   // 上一条还没播完就被顶掉（连着的两次使用）：先把它的音放掉，别吞掉
   if (objectFlight !== null) finishObjectFlight();
+  const awaitSpeech = args.awaitSpeech === true;
   objectFlight = makeObjectFlight({
     objectIndex: args.objectIndex,
     type: args.type,
@@ -5504,9 +7716,10 @@ function beginObjectFlight(args: {
     ...(args.image === undefined ? {} : { image: args.image }),
     from,
     to,
-    start: performance.now(),
+    start: awaitSpeech ? FLIGHT_NOT_STARTED : performance.now(),
     ...(args.settleMs === undefined ? {} : { settleMs: args.settleMs }),
   });
+  objectFlightAwaitsSpeech = awaitSpeech;
   objectFlightSound = 0;
   requestRender();
   return true;
@@ -5532,14 +7745,58 @@ function beginObjectFlight(args: {
  *    —— 这是 exe 的实际行为（同一条函数开头那个字段的另一个用法把 1 钉成人类），
  *    照抄。故本动效在**电脑出牌**（或被托管）时才看得见。
  */
+/**
+ * 挂起的卡片飞行：`startActionFx` 记下、亮牌（`fcn_00441f73`）收屏之后才起播。
+ *
+ * @source 原版两条用卡路径都是 `call 0x441f73`（亮牌，阻塞）在前、
+ *   `call [card_functions + 卡号*4]` 在后（真人 `0x00441cbc` → `0x00441cc6`、
+ *   电脑 `0x00441def` → `0x00441e00`），而飞行（`animate_object`）在卡片函数体内。
+ */
+let pendingCardFlight: {
+  before: GameState;
+  action: { type: 'useCard'; cardId: number; target?: CardTarget };
+  /** 卡片函数里飞完之后放的那一声（轉向卡 = 56，见 `throw-fx.ts` 的 `cardLandSfx`）；`null` = 没有 */
+  landSfx: number | null;
+} | null = null;
+
+function tickPendingCardFlight(): void {
+  const p = pendingCardFlight;
+  if (p === null) return;
+  // ★ 第十五份：出牌台词（`beforeStage`）在卡片函数里排在 `animate_object` 之前
+  //   （均貧 `0x00442225` → `0x004422d6`、怪獸 `0x0044398f` → `0x00443a6a` …）⇒ 说完才飞
+  if (cardUsePopupActive() || eventBoxPending() || filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
+    requestRender();
+    return;
+  }
+  pendingCardFlight = null;
+  startCardFlight(p.before, p.action, p.landSfx);
+  requestRender();
+}
+
+/**
+ * 起卡片那一段飞行；`landSfx` 是卡片函数里**飞完之后**那一声（轉向卡 = 56）。
+ * ★ 轉向卡：飞完（含 100 ms 停顿）才 `0x40c78c`（0x00443025）；真人出牌不飞（0x00442fe4）⇒ 当场响。
+ */
 function startCardFlight(
   before: GameState,
   action: { type: 'useCard'; cardId: number; target?: CardTarget },
+  landSfx: number | null,
 ): void {
+  const flying = beginCardFlight(before, action);
+  if (landSfx === null) return;
+  if (flying) objectFlightSound = landSfx;
+  else sound.play('Effect.mkf', landSfx);
+}
+
+/** @returns 真的起播了一段飞行（飞完那一刻 `finishObjectFlight` 放 `objectFlightSound`）*/
+function beginCardFlight(
+  before: GameState,
+  action: { type: 'useCard'; cardId: number; target?: CardTarget },
+): boolean {
   const me = before.players[before.currentPlayer];
-  if (me === undefined) return;
+  if (me === undefined) return false;
   const here = map.nodes[me.nodeId - 1];
-  if (here === undefined) return;
+  if (here === undefined) return false;
 
   const plan: CardFlightPlan | null = cardFlightPlan({
     cardId: action.cardId,
@@ -5578,13 +7835,13 @@ function startCardFlight(
       },
     },
   });
-  if (plan === null) return;
+  if (plan === null) return false;
 
   const vp = { w: LAYOUT.board.w, h: LAYOUT.board.h };
   const a = worldToScreen(plan.from.x, plan.from.y, camera, vp);
   const b = worldToScreen(plan.to.x, plan.to.y, camera, vp);
   if (plan.sprite.kind === 'card') {
-    beginObjectFlight({
+    return beginObjectFlight({
       objectIndex: CARD_FLIGHT_NO_OBJECT,
       type: CARD_FLIGHT_TYPE,
       facing: 0,
@@ -5593,9 +7850,8 @@ function startCardFlight(
       to: b,
       settleMs: plan.settleMs,
     });
-    return;
   }
-  beginObjectFlight({
+  const started = beginObjectFlight({
     objectIndex: plan.sprite.objectIndex - 1,
     type: plan.sprite.type,
     facing: plan.sprite.facing,
@@ -5603,8 +7859,10 @@ function startCardFlight(
     to: b,
     settleMs: plan.settleMs,
   });
-  // ★ 卡片飞行**没有**收尾音效：23 个调用点后面都没有 `play_sound_effect`
+  // ★ 卡片飞行本身**没有**收尾音效：23 个调用点后面都没有直接的 `play_sound_effect`
   //   （`xref 0x4542ce` 在这 23 个点之后一条都没有）—— 与放置類道具不同。
+  //   唯一的例外是轉向卡：飞完调 `0x40c78c`，**那个函数**开头放 56（见 `cardLandSfx`）。
+  return started;
 }
 
 // ============================================================
@@ -5620,6 +7878,8 @@ function startCardFlight(
  *   （66 帧 × 42 ms）→ 最后 `refresh_screen`。规格与逐条 VA 见 `build-fx.ts`。
  */
 let buildFx: BuildFx | null = null;
+/** ★ 第十五份：大锤敲完、正停着等台词（见 `tickBuildFx` 的接缝）*/
+let buildFxSeamHeld = false;
 
 /**
  * 「影片起播那一拍**之前**」的 state 快照（`null` = 现在没有影片在播）——
@@ -5630,6 +7890,71 @@ let buildFx: BuildFx | null = null;
  *   所以两条影片的快照必然是同一次 `applyAction` 的 `before`。
  */
 let deferredBoardBefore: GameState | null = null;
+
+/**
+ * 关押 / 消失那几段影片各自的镜头（按影片 id）—— 起播时照 ① 移、播完照 ② 移。
+ * 目标全部来自 core 的 `confineViewTargets`（exe 序列见该文件头），表现层只决定「影片什么时候起播」。
+ * `null` = 受害者就是行动者（原版 `view_to` 清标记 ⇒ 看行动者，冻镜头 / `confined` 支本来就是）。
+ */
+const filmViews = new Map<string | BoardFilmSpec, ConfineView | null>();
+
+/** 下一帧要照做的那一次 `view_to`（排在 `lastViewTarget` 之后，见 `syncViewTarget`） */
+let queuedFilmView: { x: number; y: number } | null = null;
+
+/** 这一段影片起播（`from`）/ 收屏（`to`）时该不该移镜头 */
+function applyFilmView(spec: BoardFilmSpec, at: 'from' | 'to'): void {
+  // ★ 第十五份：同一条 action 里好几段同名影片（新聞 4 每人一辆救护车）各有各的镜头 ⇒ 先按规格对象找
+  const t = (filmViews.get(spec) ?? filmViews.get(spec.id))?.[at] ?? null;
+  if (t === null) return;
+  queuedFilmView = t;
+  requestRender();
+}
+
+/**
+ * 片中重画之后「等级 / 物件放开、**人仍按住**」的那一份快照（换了快照 ⇒ 自动失效）。
+ * 只有「这一段之后还要 `send_to_hospital`」时才用得上（狗咬 / 爆炸 → 救护车），见 `applyBoardFilmRedraw`。
+ */
+let boardFilmRedrawKeepsPlayersFor: GameState | null = null;
+
+/**
+ * 顯靈加蓋那一扇框还没收时，棋盘上被加蓋的那几格少画的级数（`manifest-hold.ts`）；`null` = 没在按。
+ * 由 `startBuildFx` 立、`tickManifestHold` 在框收掉那一拍放。
+ */
+let manifestHold: ManifestHold | null = null;
+
+/**
+ * ★★ 第二十六份：电脑换车那一扇「使用%s」框还没收时，那一位按换车**之前**的交通方式画
+ * （`vehicle-hold.ts`；原版 `0x00448070` 框在前、`0x40b93b` 换图组在道具函数里）；`null` = 没在按。
+ */
+let vehicleHold: VehicleHold | null = null;
+
+/** 「使用%s」框收掉了（没在弹、也没排着）⇒ 放开，棋子这一拍换成车（= 原版 `0x40b93b`）*/
+function tickVehicleHold(): void {
+  if (vehicleHold === null || noticeKeyShowing(AI_TOOL_NOTICE_KEY)) return;
+  vehicleHold = null;
+  requestRender();
+}
+
+/**
+ * 顯靈框收掉了 ⇒ 放开按住的等级，并补那第二声音效 50
+ * （天使 `0x0040f4f8` / 福神 `0x0040f9e1`，都在框之后、重画 `0x41d476(0,0,1)` 之前）。
+ */
+function tickManifestHold(): void {
+  const hold = manifestHold;
+  if (hold === null || noticeKeyShowing(MANIFEST_NOTICE_KEY)) return;
+  manifestHold = null;
+  sound.play('Effect.mkf', MANIFEST_BUILD_SOUND);
+  // 盖到 5 级的那一支：原版先重画出 5 级（`0x0040f506`）再播 0x20b（`0x0040f517`）⇒
+  //   等 0x20b 起播的那段窗口里棋盘按**新等级**画，而不是退回整条 action 之前的 before
+  if (hold.reachedMaxLevel && deferredBoardBefore !== null && (pendingBuildFx !== null || buildFx !== null)) {
+    deferredBoardBefore = {
+      ...deferredBoardBefore,
+      landLevel: state.landLevel,
+      facilityLevel: state.facilityLevel,
+    };
+  }
+  requestRender();
+}
 
 /**
  * 「该播、但影片还没解好」的待播请求（`null` = 没有）——
@@ -5707,6 +8032,59 @@ let pendingBoardFilm: BoardFilmSpec | null = null;
  * （@source VA 0x0041b837 那一支，见 `dog-fx.ts` 的文件头）。
  */
 let pendingBoardFilmAfter: BoardFilmSpec | null = null;
+/**
+ * ★ 第十五份：排在 `pendingBoardFilmAfter` **后面**的那几段（先进先出）。
+ *   原版同一次结算里可以串好几次阻塞的 `fcn_0045144f`：新聞 4 `fcn_0044913d` 里每位受害者一次
+ *   `send_to_hospital`（各播 0x20c）、最后才是飛碟 0x213（VA 0x00449245 / 0x0044925b）。
+ *   不变量：它非空 ⇒ `pendingBoardFilmAfter` 非空（所有「还有片子排着」的闸只看后者）。
+ */
+let boardFilmQueueRest: BoardFilmSpec[] = [];
+
+/**
+ * ★★ 第十八份（「神明动画和白字文案应该同步出现」）：附身影片播完**钉在屏上**的最后一帧。
+ *   原版片尾不重画（`flags` = 1 ⇒ `fcn_0045144f` 不走 `0x409b18`），开场白 `0x40e2a2` 直接写在这一幅上
+ *   ⇒ 神明立像与白字同屏 2400 ms（出处见 `god-line.ts` 文件头）。开场白收场那一拍一起收（`tickGodLine`）。
+ */
+let heldGodFilm: { film: BoardFilm; flic: LoadedFlic | null } | null = null;
+
+/** 放掉钉着的那一帧；棋盘此时才按 after 画（没有别的影片窗口还开着的话）*/
+function releaseHeldGodFilm(): void {
+  const held = heldGodFilm;
+  if (held === null) return;
+  heldGodFilm = null;
+  held.flic?.close();
+  if (!boardFilmWindowOpen(boardFilmWindowFlags())) {
+    deferredBoardBefore = null;
+    boardFilmRedrawKeepsPlayersFor = null;
+  }
+  requestRender();
+}
+
+/** 接下一段排队的片子（`pendingBoardFilmAfter` 被取走 / 放弃之后）*/
+function shiftBoardFilmQueue(): void {
+  pendingBoardFilmAfter = boardFilmQueueRest.shift() ?? null;
+}
+
+/**
+ * ★ 第十五份：把一段影片**排到队尾**（原版串行的那几次 `fcn_0045144f` 照 exe 次序播，谁也不顶掉谁）。
+ *   台上空着 ⇒ 当场起播（与 `startBoardFilm` 一样）。
+ */
+function queueBoardFilm(spec: BoardFilmSpec): void {
+  if (boardFilm === null && pendingBoardFilm === null && pendingBoardFilmAfter === null) {
+    startBoardFilm(spec);
+    return;
+  }
+  if (pendingBoardFilm === null && boardFilm === null) {
+    // 只剩排队的：接在队尾
+    boardFilmQueueRest.push(spec);
+  } else if (pendingBoardFilmAfter === null) {
+    pendingBoardFilmAfter = spec;
+  } else {
+    boardFilmQueueRest.push(spec);
+  }
+  boardFilmFlicNow(spec); // 先解码，轮到它时不必再等
+  requestRender();
+}
 
 /** 影片缓存（按「档案:资源号」）—— 440×440 × 几十帧不小，播完就 `close()` */
 const boardFilmFlics = new Map<string, LoadedFlic | null>();
@@ -5762,26 +8140,32 @@ function startBoardFilm(spec: BoardFilmSpec, after?: BoardFilmSpec): void {
  *   判据（占用表 0→1 / 计数变大）见 `confine-fx.ts` 的 `confineFxTrigger`。
  */
 function startConfineFx(before: GameState, after: GameState): void {
-  if (!options.animation) return;
-  const kind = confineFxTrigger(before, after);
-  if (kind === null) return;
-  // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
-  deferredBoardBefore = before;
-  // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
-  //   不许 `startBoardFilm` 把它顶掉（第五份回报第 3 条；判据见 `enqueueBoardFilm`）
-  const clip = confineClip(kind);
-  const slots = enqueueBoardFilm(
-    { pending: pendingBoardFilm, after: pendingBoardFilmAfter },
-    clip,
-    boardFilm !== null,
-  );
-  if (slots.pending !== clip) {
-    pendingBoardFilmAfter = slots.after;
-    boardFilmFlicNow(clip); // 先解码，轮到它时不必再等
-    requestRender();
+  // ★ 镜头（`view_to` ① / ②，core 的 `confineViewTargets`）—— 两次都不在「動畫過程」闸
+  //   （`cmp [0x497159], 0`）里，也不在加刑那道跳转（`0x0043d5da` / `0x0043ec86 test dh,dh / jne`）里：
+  //   没有影片夹在中间（動畫過程关着 / 加刑）⇒ ① 与 ② 背靠背，镜头停在 ②。
+  const views = confineViewTargets(before, after).filter((v) => v.kind !== 'disappear');
+  // ★ 第十五份：**每一位**首次被送进去的人各一段（新聞 4 / 飛彈那个逐人 `send_to_hospital` 循环，每人一次）
+  const hits = confineFxTriggers(before, after);
+  if (hits.length === 0 || !options.animation) {
+    const to = views.find((v) => v.to !== null)?.to ?? null;
+    if (to !== null) {
+      queuedFilmView = to;
+      requestRender();
+    }
     return;
   }
-  startBoardFilm(clip);
+  // 影片窗口里棋盘按 before 画（见 `deferred-board.ts`）—— 起播前先记下快照
+  deferredBoardBefore = before;
+  // ★★ 第十五份試玩回報：新聞 29 / 命運 33 引出的入獄（住院同理）是事件处理函数 pass 1 才调
+  //   `send_to_*` 的 ⇒ 事件提示框停满（或被点掉）之后才播（`afterEventBox`，见 `board-film.ts`）
+  const afterBox = confineAfterEventBox(before, after);
+  for (const hit of hits) {
+    const clip: BoardFilmSpec = afterBox ? { ...confineClip(hit.kind), afterEventBox: true } : { ...confineClip(hit.kind) };
+    filmViews.set(clip, views.find((v) => v.player === hit.player && v.kind === hit.kind && !v.extended) ?? null);
+    // ★★ 同一条 action 里已经排了一段（踩到惡犬：0x214 在前）⇒ **接在它后面**，
+    //   谁也不顶掉谁（第五份回报第 3 条；第十五份起是多段队列 `queueBoardFilm`）
+    queueBoardFilm(clip);
+  }
 }
 
 /**
@@ -5903,10 +8287,51 @@ function startDevilFx(before: GameState, after: GameState): void {
 function startDisappearFx(before: GameState, after: GameState): void {
   const spec = disappearFxTrigger(before, after);
   if (spec === null) return;
+  // ★ 镜头 ①（`0x0040d3e6 view_to(受害者)`，在播片之前；这一支没有 ②）—— core 的 `confineViewTargets`
+  filmViews.set(spec.id, confineViewTargets(before, after).find((v) => v.kind === 'disappear') ?? null);
   // 影片窗口里棋盘按 before 画：人还站在那儿，被飛碟吸走 / 上飛機（`deferred-board.ts`）
   deferredBoardBefore = before;
+  // ★★ 第十四份：`fcn_0040d375` 里是 台词（`0x0040d3f8`）→ 理賠框（`0x0040d425`）→ 影片（`0x0040d498`）
+  //   ⇒ 影片押到同一拍的台词说完、框收完再起（`tickPendingDisappearFx`）。
+  pendingDisappearFx = { spec, before };
+  requestRender();
+}
+
+/** ★ 第十四份：押着等台词 / 訊息框的那一段飛機 / 飛碟 */
+let pendingDisappearFx: { spec: BoardFilmSpec; before: GameState } | null = null;
+
+function tickPendingDisappearFx(): void {
+  const p = pendingDisappearFx;
+  if (p === null) return;
+  if (speechQueue.length > 0 || heldSpeech.length > 0 || blockingPresentation() || !renderer.walkDone()) {
+    requestRender();
+    return;
+  }
+  pendingDisappearFx = null;
+  deferredBoardBefore = p.before;
+  startBoardFilm(p.spec);
+  log(`影片：${p.spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+}
+
+/**
+ * 这一拍是不是剛抽到新聞 5 / 15 / 20 / 21（「随机挑一处建筑」那一族）—— 是就播那一段影片。
+ *
+ * 规格与判据全在 `news-place-fx.ts`（四个调用点逐条读过：资源 / 音效 / flags）。
+ * 镜头不在这里：core 已把挑中那一处写进 `lastViewTarget`（`syncViewTarget()` 居中，
+ * 演出收完复位）；这一段落在屏幕 (0,0x28) 整块棋盘上，正好盖住那一处。
+ *
+ * ★ 影片窗口里棋盘按 **before** 画（房子还在）：原版是 `mutate_land` 在前、影片在后，
+ *   起播时房子还在，玩家这才看得出**是哪一栋**受了影响（第十二份回报的原话）。
+ *   第十四份試玩回報起：到 `flags` 第三字节那一帧（0x80001 = 第 8 个计数，龍捲風正压在房子上；
+ *   0x50001 / 0x200001 同理）原版片中重画一次棋盘 ⇒ 房子在片中当场少一级（`applyBoardFilmRedraw`）。
+ * ★ 不加 `options.animation` 闸：这四个函数里都没有 `cmp byte [0x497159], 0`。
+ */
+function startNewsPlaceFx(before: GameState, after: GameState): void {
+  const spec = newsPlaceFxTrigger(before, after);
+  if (spec === null) return;
+  deferredBoardBefore = before;
   startBoardFilm(spec);
-  log(`影片：${spec.id === 'abduct' ? '被外星人綁架（飛碟）' : '強迫出國觀光（飛機）'}`);
+  log(`影片：新聞 ${after.lastEvent?.id ?? '?'} ${spec.id}（${spec.frames} 帧 × ${spec.frameMs} ms）`);
 }
 
 function startAlienNewsFx(before: GameState, after: GameState): void {
@@ -5914,7 +8339,9 @@ function startAlienNewsFx(before: GameState, after: GameState): void {
   if (spec === null) return;
   // 影片窗口里棋盘按 before 画：房子还没被掀掉（`deferred-board.ts`）
   deferredBoardBefore = before;
-  startBoardFilm(spec);
+  // ★ 第十五份：走队列（`fcn_0044913d`：`0x0044925b` 飛碟 0x213 → 之后逐人 `send_to_hospital` 各播 0x20c），
+  //   谁也不顶掉谁。先前 `startBoardFilm` 把排好的救护车顶掉了。
+  queueBoardFilm(spec);
   log(`影片：新聞 ${NEWS_ALIEN_ID} 外星人攻打地球`);
 }
 
@@ -5945,11 +8372,19 @@ function tickBoardFilm(now: number): void {
   //   都置空，而这一段**只在两者都空时**接管，于是它既不会插到正在播的那一段
   //   前面，也不需要跟 `startBoardFilm` 抢 `pendingBoardFilm`。
   const after = pendingBoardFilmAfter;
-  if (after !== null && boardFilm === null && pendingBoardFilm === null) {
+  if (
+    after !== null &&
+    boardFilm === null &&
+    pendingBoardFilm === null &&
+    !noticeHoldsFilms() &&
+    // ★ 第十五份：事件（新聞 / 命運）引出的那一段等事件提示框收掉（`afterEventBox`）
+    !boardFilmWaitsForEventBox(after, eventBoxScreen.active(uiEnv()))
+  ) {
     const key = `${after.archive}:${after.resource}`;
     if (boardFilmFlics.has(key)) {
-      pendingBoardFilmAfter = null;
+      shiftBoardFilmQueue();
       boardFilm = beginBoardFilm(after, now);
+      applyFilmView(after, 'from');
       log(`影片：開始 ${after.id}（${after.frames} 帧 × ${after.frameMs} ms）`);
       if (after.sound >= 0) sound.play('Effect.mkf', after.sound);
       requestRender();
@@ -5964,21 +8399,40 @@ function tickBoardFilm(now: number): void {
     requestRender();
     if (boardFilmPending.has(key)) return;
     // 真取不到（没有素材）就整段放弃，免得把回合驱动永远卡在这里
-    pendingBoardFilmAfter = null;
+    shiftBoardFilmQueue();
   }
   const pending = pendingBoardFilm;
   if (pending !== null) {
     // ★★ W-51：**原版说完才播**。`beforeStage`（壞神附身 / 回合开始那三句）的句子
     //   已经进了 `speechQueue`，这一段影片等它说完 —— 原版那一句 `player_say` 是
     //   同步返回的，调用它的流程才走到 `read_mkf + fcn_0045144f`。
-    //   ⚠️ 只等 `speechQueue`（= 已经上台的那几句）；押在 `deferredSpeech` 里的
+    //   ⚠️ 只等 `speechQueue` + 押着的 `beforeStage`（`speechAheadOfFilms`）；押在 `heldSpeech` 里的
     //      `afterStage` 本来就该排在影片**之后**，反过来挡影片就是死锁
     //      （见 `stage-gate.ts` 的 `filmWaitsForSpeech` 与它的单测）。
-    if (filmWaitsForSpeech(speechQueue.length)) return;
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) return;
+    // ★ 换神：旧神先升天（`0x40eb3f` 在影片之前），演完 `tickGodAscend` 会再叫醒我们
+    if (godAscend !== null) return;
+    // ★ 第十五份：卡片 / 物件还在飞 ⇒ 影片等它（卡片函数里 `animate_object` 在影片之前：怪獸 `0x00443a6a` →
+    //   `0x00443aaf`、陷害 `0x00444591` → 送監獄 `0x0044461c`、請神符 `0x00444efa` → 附身影片）
+    if (objectFlight !== null || pendingCardFlight !== null) {
+      requestRender();
+      return;
+    }
+    // ★ 魔法屋：原版每一支先 `0x440cac` 弹框（阻塞 1500 ms）、再播影片（拆除 0x211 / 入獄・住院）
+    //   ⇒ 那几扇（`NoticeHint.beforeFilms`）还没弹完就先押着；訊息框自己续帧叫醒我们
+    if (noticeHoldsFilms()) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
     // 訊息框那一段盖着整块棋盘 ⇒ 原版次序是框先、片后，等它收屏
-    if (pending.afterOverlay === true && activeUiScreen() !== null) {
+    // ★ 第十二份試玩回報：用卡那一次亮牌（`fcn_00441f73`）在卡片函数**之前**、阻塞 1500 ms
+    //   ⇒ 卡片引出的影片（入獄 / 神明附身…）一律等它收屏
+    if ((pending.afterOverlay === true && activeUiScreen() !== null) || cardUsePopupActive()) {
+      requestRender();
+      return;
+    }
+    // ★★ 第十五份試玩回報（「前一个事件的弹窗还没看清楚就触发」）：新聞 / 命運引出的入獄・住院
+    //   等**事件提示框**那一屏收掉（只看那一屏 —— 保險理賠框排在影片后面，等它就是死锁）
+    if (boardFilmWaitsForEventBox(pending, eventBoxScreen.active(uiEnv()))) {
       requestRender();
       return;
     }
@@ -5991,6 +8445,9 @@ function tickBoardFilm(now: number): void {
     }
     pendingBoardFilm = null;
     boardFilm = beginBoardFilm(pending, now);
+    applyFilmView(pending, 'from');
+    // 魔法屋拆房：原版 `0x40ab4a`（重画地图）在 `fcn_0045144f` 之前 ⇒ 影片期间棋盘已是拆过的样子
+    if (pending.releaseBoardOnStart === true) deferredBoardBefore = null;
     log(`影片：開始 ${pending.id}（${pending.frames} 帧 × ${pending.frameMs} ms）`);
     if (pending.sound >= 0) sound.play('Effect.mkf', pending.sound);
     requestRender();
@@ -5998,17 +8455,76 @@ function tickBoardFilm(now: number): void {
   }
   const film = boardFilm;
   if (film === null) return;
+  // ★ 第十四份試玩回報：片中那一次重画（`flags` 第三字节）—— 必须在「播完没」之前看，
+  //   掉帧时两件事可能落在同一拍
+  applyBoardFilmRedraw(film, now);
   if (!boardFilmDone(film, now)) {
     requestRender();
     return;
   }
+  // ★ 第十八份：附身影片后面紧跟着开场白 ⇒ 最后一帧钉住（位图从缓存里摘出来，不随下面一起 close）
+  const holdFrame = pendingBoardFilmAfter === null && godFilmFrameHeld(film.spec.id, pendingGodLine !== null || godLine !== null);
+  if (holdFrame) {
+    releaseHeldGodFilm();
+    const key = `${film.spec.archive}:${film.spec.resource}`;
+    heldGodFilm = { film, flic: boardFilmFlics.get(key) ?? null };
+    boardFilmFlics.delete(key);
+  }
   boardFilm = null;
   releaseBoardFilmFlics();
+  applyFilmView(film.spec, 'to');
+  filmViews.delete(film.spec.id);
+  filmViews.delete(film.spec);
   // ★ 阻塞那一段播完了 —— 若后面还排着一段（狗咬 → 救护车），就交给上面 ⓪ 那一步；
   //   只有**两段都播完**才把回合驱动接回去（`scheduleHumanTurn` / `scheduleAi`
   //   都以它为闸，不补这一下人就永远停在原地）。
-  if (pendingBoardFilmAfter === null) resumeTurnDriver();
+  if (pendingBoardFilmAfter === null) {
+    // ★★ 2026-09-22（第十一份試玩回報 #11 順帶查出的**真隱患**）：
+    //   影片收摊时把 `deferredBoardBefore` 清掉 —— 先前它**从不在收摊时清**
+    //   （只在换局/读档/失步自愈时清），下一条影片起播时才被覆写。
+    //   而 `holdBackPlayers` 的判据是 `before.inHospital===0 && after.inHospital!==0`
+    //   ⇒ 一份**过期快照**会把「期间才被关押的人」在画面上**复活**，
+    //   并因 `wreckedThisAction(staleBefore, after, i)` 为真而画成乞丐、站在很久以前的旧坐标上。
+    // ★ 第十八份：钉着最后一帧时屏幕还没重画 ⇒ 快照留到开场白收场（`releaseHeldGodFilm` 清）
+    if (!holdFrame) {
+      deferredBoardBefore = null;
+      boardFilmRedrawKeepsPlayersFor = null;
+    }
+    resumeTurnDriver();
+  }
   requestRender();
+}
+
+/**
+ * 原版 `fcn_0045144f` 的**片中重画**（`flags` 第三字节，逐条见 `board-film.ts` 的
+ * `boardFilmRedrawFrame`）：到那一帧就按**当时的游戏状态**重画影片底下的棋盘。
+ *
+ * ★ 第十四份試玩回報两条都是它：
+ *   · 「警车开过角色后角色就该消失」—— 入獄 0x21a `flags` 0x120001 ⇒ 第 18 个计数
+ *     （第 17 帧，警车正盖住人）重画；此前 `0x0043d627..0x0043d652` 已把人搬进監獄 ⇒ 人没了。
+ *     住院 0x20c（0x1e0001）同理，第 30 个计数（救护车停在人身上、开着门那一帧）。
+ *   · 「狗咬完狗就该消失」—— 0x214 `flags` 0x30001 ⇒ 第 3 个计数重画；`remove_object`
+ *     在片子之前 ⇒ 烟尘散开时狗已经没了。
+ *
+ * 那一刻原版的状态 = 调用 `fcn_0045144f` 之前写下的一切：
+ *   · 一般情况就是整条 action 的 after ⇒ 放掉快照（`deferredBoardBefore = null`）；
+ *   · 这一段之后**还要** `send_to_hospital`（狗咬 / 爆炸，或后面排着一段）⇒ 位置、住院天数、
+ *     乞丐造型那几项还没发生 ⇒ 只放开等级与物件，人仍按住，等下一段自己的重画。
+ * 镜头不动：`view_to(新位置)` 在片子**之后**（入獄 `0x0043d6f1`），镜头的冻结判据只看窗口开没开。
+ */
+function applyBoardFilmRedraw(film: BoardFilm, now: number): void {
+  if (deferredBoardBefore === null || !boardFilmRedrawn(film, now)) return;
+  if (pendingBoardFilmAfter !== null || filmPrecedesSendToHospital(film.spec)) {
+    boardFilmRedrawKeepsPlayersFor = deferredBoardBefore;
+    return;
+  }
+  deferredBoardBefore = null;
+  requestRender();
+}
+
+/** 片中重画之后是不是「只按住人」那一档 */
+function boardRedrawKeepsPlayersOnly(): boolean {
+  return boardFilmRedrawKeepsPlayersFor !== null && boardFilmRedrawKeepsPlayersFor === deferredBoardBefore;
 }
 
 /** 这一刻该贴哪一帧（屏幕落点由规格给）—— 没在播或影片没到货就是 null */
@@ -6019,10 +8535,12 @@ function currentBoardFilmFrame(now: number): {
   w: number;
   h: number;
 } | null {
-  const film = boardFilm;
+  // ★ 第十八份：附身影片播完钉住的最后一帧（开场白写在它上面）
+  const film = boardFilm ?? heldGodFilm?.film ?? null;
   if (film === null) return null;
   const spec = film.spec;
-  const bitmap = boardFilmBitmap(film, now, boardFilmFlics.get(`${spec.archive}:${spec.resource}`) ?? null);
+  const flic = boardFilm !== null ? (boardFilmFlics.get(`${spec.archive}:${spec.resource}`) ?? null) : (heldGodFilm?.flic ?? null);
+  const bitmap = boardFilmBitmap(film, now, flic);
   if (bitmap === null) return null;
   // ★ 交给渲染器的必须是**棋盘局部**坐标：规格里的 (x,y) 是原版的**屏幕**坐标
   //   （住院 (0,210)、入獄/神明 (0,40)），而棋盘的离屏画布 439×440 最后被贴到
@@ -6064,16 +8582,37 @@ function startBuildFx(before: GameState): void {
   //     · 自己的地升級 VA 0x004199de（`inc byte [地块+0x1a]` 之后、`cmp …,5` 之前）
   //   ⇒ **在 `plan` 那道闸之前**响：原版这一声在 `0x40b110` 成功之后立刻播，
   //     与「有没有剛好升到 5 級、要不要接 0x20b」无关（那两段影片才是 `plan` 的事）。
-  const manifestSound = manifestSoundFor(hints);
+  // ★★ 第十三份試玩回報 #1：弹了顯靈框的那几条顯靈加蓋（天使 `0x0040f4f8` / 福神 `0x0040f9e1`）
+  //   这一声在**框收掉之后**才响，棋盘也等那时才画成新等级（`tickManifestHold`）；
+  //   同一条 action 里先发生的付费首建 / 自己的地升級那一声照旧当场响。
+  const hold = manifestHoldOf(before, state);
+  if (hold !== null) manifestHold = hold;
+  const manifestSound = manifestSoundFor(immediateManifestHints(hints, hold));
   if (manifestSound !== null) sound.play('Effect.mkf', manifestSound);
   if (!plan.hammer && !plan.maxLevel) return;
-  // ★★ 第八份试玩回报 #6（2026-09-22）：**不再**把加蓋那一级按到影片之后。
-  //   需求方对着原版看：大锤片里工人一离开那块地，盖好的房子就已经在了 —— 即影片是盖在
-  //   **已经加了一级**的棋盘上播的（`0x00447345 call 0x40b110` 在 `0x00447350` 起播之前，
-  //   与本文件头「状态先变、影片后播」一致）。issue #19 第 9 条当时按住它，是因为解 68 帧要几百毫秒、
-  //   房子会在影片起播**之前**先出现；现在影片起播由 `pendingBuildFx` 等解码，那几百毫秒里棋盘上
-  //   多一层与原版 `0x40b110` 之后到 `0x45144f` 之间那一小段是同一个画面，不再按住。
-  //   ⚠️ 只放开等级；神明附身那几段仍走 `deferredBoardBefore`（`startGodFx`）。
+  // ★★ 第九份试玩回报（2026-09-22，需求方）：「机器工人修房子的动画还是有点问题，应该是
+  //   机器工人出场时房子还没修好，他们叮叮咚咚敲完的时候同时切换成修好的模型，然后机器工人退场。」
+  //
+  //   ⇒ 这是**中间档**，前两版各偏一边：
+  //     · issue #19 第 9 条：整段按住（房子要等两段影片全播完才出现）；
+  //     · 第八份 #6：整段不按（点下去那一拍房子就修好了，工人还没出场）。
+  //
+  //   现在：**大锤段**把等级按回 `before`，走到第 48 帧（= 2736 ms，烟尘散尽、工人立定成排）
+  //   再放开 —— 与需求方描述的次序完全一致（入场/敲打期间旧房子 → 敲完那一拍换新模型 → 退场）。
+  //   放开那一拍的判定在 `boardDrawState()`，帧号与实测节拍见 `build-fx.ts` 的
+  //   `BUILD_HAMMER_DONE_FRAME`。
+  //
+  //   ⚠️ 只在大锤族按住：天使卡 / 自己的地升級那两条**没有**大锤段（见 `HAMMER_SOURCES`），
+  //      等级照旧当场放出来。
+  //   ⚠️ 这一行同时修掉一个既有泄漏：`deferredBoardBefore` 先前只在换局与失步自愈时清空，
+  //      影片收摊时从不清 —— 上一条影片（神明/入獄/恶犬…）留下的**过期快照**会被下一条
+  //      「只用機器工人」的 action 拿去按住 `landLevel`，画出更旧的等级。7 处起播点里
+  //      只有 `startBuildFx` 不写快照，现在补上。
+  // ★ 2026-09-22（同 #11）：**无条件**写快照 —— 先前只在 `plan.hammer` 时写，
+  //   于是「天使卡 / 魔法屋加蓋 / 自己的地升級」那几条（没有大锤段）不写，
+  //   配上「收摊不清」就正好让**上一条影片的过期快照**继续生效。
+  //   现在收摊会清、起播必写，这条 stale 路径就没有了。
+  deferredBoardBefore = before;
   // 上一条还没播完就被顶掉：直接换掉并放掉旧位图（原版是阻塞的，两段不会重叠）
   if (buildFx !== null) {
     buildFx = null;
@@ -6102,13 +8641,24 @@ function tickBuildFx(now: number): void {
   // ── ① 待播：等第一段影片解好 ──
   const pending = pendingBuildFx;
   if (pending !== null) {
+    // ★ 第十三份試玩回報 #1：顯靈加蓋盖到 5 级那一段 0x20b 排在顯靈框**之后**
+    //   （`0x0040f4d9 call 0x440cac` → `0x0040f517 call 0x40b0cd`）⇒ 框收掉（`tickManifestHold` 放开）才起播
+    if (manifestHold !== null) return;
     // ★★ W-51：与 `tickBoardFilm` 同一条规矩 —— **原版说完才播**：`beforeStage`
     //   的句子（壞神附身 / 回合开始那三句）在 `speechQueue` 里就等它说完。
-    //   ⚠️ 只等 `speechQueue`，不等 `deferredSpeech`（`afterStage` 排在演出之后，
+    //   ⚠️ 只等 `speechAheadOfFilms`（台上的 + 押着的 `beforeStage`），不等押着的 `afterStage`（排在演出之后，
     //      反过来挡影片就是死锁）。见 `stage-gate.ts` 的 `filmWaitsForSpeech`。
-    if (filmWaitsForSpeech(speechQueue.length)) return;
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) return;
     // 补间没播完就先不起播；`requestRender` 那条「补间没完就再排一帧」会一直叫醒我们
     if (!renderer.walkDone(now)) return;
+    // ★ 魔法屋「就地加蓋」：原版先 `0x440cac` 弹「名字\n\n就地加蓋房屋」1500 ms（0x00432003），
+    //   再 `read_mkf(0x229)` + `fcn_0045144f`（0x00432074）⇒ 等那一扇框收掉（訊息框自己续帧叫醒我们）
+    if (noticeHoldsFilms()) return;
+    // ★ 天使卡（9）的建屋片同理：等「使用天使卡」那一次亮牌收屏（见 `tickBoardFilm`）
+    if (cardUsePopupActive()) {
+      requestRender();
+      return;
+    }
     const res = buildClip(pending.first).resource;
     if (!buildFlics.has(res)) {
       // 还在解（`buildFlicNow` 的 `.then` 会再 `requestRender`）；真取不到就整段放弃，
@@ -6129,6 +8679,25 @@ function tickBuildFx(now: number): void {
   // ── ② 正在播 ──
   const fx = buildFx;
   if (fx === null) return;
+  // ★★ 第十五份：大锤敲完、接 0x20b 之前先等台词 —— 自家建設公司盖到 5 级是
+  //   大锤 `0x0041ab10` → 事件 15 `0x0041ab5b` → 0x20b `0x0041ab63`（那一句带 `cue: buildHammer`，
+  //   敲完才算数）。停在这一拍的期间画面留在大锤最后一帧；放行时 0x20b 从**此刻**起算。
+  if (fx.clip === 'hammer' && fx.thenMaxLevel && clipDone(fx, now)) {
+    if (filmWaitsForSpeech(speechAheadOfFilms(speechSnapshot()))) {
+      buildFxSeamHeld = true;
+      requestRender();
+      return;
+    }
+    if (buildFxSeamHeld) {
+      buildFxSeamHeld = false;
+      releaseBuildFlic(buildClip(fx.clip).resource);
+      buildFx = { clip: 'maxLevel', startedAt: now, thenMaxLevel: false };
+      playBuildFxSound('maxLevel');
+      buildFlicNow('maxLevel');
+      requestRender();
+      return;
+    }
+  }
   const next = stepBuildFx(fx, now);
   if (next === null) {
     buildFx = null;
@@ -6165,8 +8734,86 @@ function currentBuildFxBitmap(now: number): CanvasImageSource | null {
  * ★ 窗口的判据是四条影片状态位（正在播 **或** 还没解码）—— 解码那几百毫秒
  *   棋盘是露着的，正是需求方看到「效果先于动画」的那一段。见 `deferred-board.ts`。
  */
+/**
+ * 正在落地的那一位与他那一段影片（`null` = 没有）。影片待播 / 在播期间棋盘与小地图**不画他**
+ * （原版 `0x00418cde` 播完才写坐标），播完 / 放弃就撤。
+ */
+let landingFx: { player: number; spec: BoardFilmSpec } | null = null;
+
+/**
+ * 起一段落地影片（原版 `fcn_00418c55` 开头那一段，见 `landing-fx.ts`）：
+ * 镜头先对准落点（摆人那一次重画 `0x0040829d` 就居中到那一格了 —— 不落小地图标记），
+ * 影片排进棋盘影片队列（点不掉、无音效、不看「動畫過程」开关）。
+ */
+function startLandingFx(player: number): void {
+  const me = state.players[player];
+  if (me === undefined) return;
+  const spec = landingFilmSpec(me.character);
+  landingFx = { player, spec };
+  camera = pixelCamera(me.xpos, me.ypos, camera.view);
+  queueBoardFilm(spec);
+  log(`影片：${CHARACTERS[me.character]?.name ?? `P${player + 1}`} 降落（0x${spec.resource.toString(16)}，${spec.frames} 帧 × ${spec.frameMs} ms）`);
+}
+
+/** 落地那一段还挂在影片队列里吗（待解码 / 在播 / 排队）—— 不在了就撤掉「先别画他」 */
+function landingHeld(): number | null {
+  const l = landingFx;
+  if (l === null) return null;
+  const queued =
+    boardFilm?.spec === l.spec ||
+    pendingBoardFilm === l.spec ||
+    pendingBoardFilmAfter === l.spec ||
+    boardFilmQueueRest.includes(l.spec);
+  if (!queued) {
+    landingFx = null;
+    return null;
+  }
+  return l.player;
+}
+
+/** 影片期间先别画正在落地的那一位（棋盘 / 小地图共用）*/
+function withLandingHidden(s: GameState): GameState {
+  const who = landingHeld();
+  return who === null ? s : hideLandingPlayer(s, who);
+}
+
 function boardDrawState(): GameState {
-  return boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags());
+  return withLandingHidden(boardDrawStateBase());
+}
+
+/** 棋盘那一份（影片窗口 / 顯靈框按住之后），再叠上第二十六份的换车按住（`vehicle-hold.ts`）*/
+function boardDrawStateBase(): GameState {
+  return applyVehicleHold(boardDrawStateHeld(), vehicleHold);
+}
+
+function boardDrawStateHeld(): GameState {
+  // ★★ 機器工人那一段的**中途放出**（第九份试玩回报，见 `startBuildFx` 的注释）：
+  //   大锤片走到第 48 帧（2736 ms，烟尘散尽、工人立定成排）就放开等级 ⇒ 房子在这一拍
+  //   换成修好的模型，工人接着演退场段。
+  //   `buildFx === null`（= 还在 `pendingBuildFx` 等解码）时 released = false ⇒ 继续按住，
+  //   这正是「机器工人出场时房子还没修好」。
+  //   其余影片（神明/救护车/入獄/飛碟）的 `buildFx` 恒为 null ⇒ 恒 false ⇒ 等级照旧一直按住。
+  const now = performance.now();
+  const released = buildFx !== null && buildHammerDone(buildFx, now);
+  // ★ 第十四份試玩回報：狗咬 / 爆炸片中重画之后，狗（地雷）已撤、人还按住（`applyBoardFilmRedraw`）
+  const playersOnly = boardRedrawKeepsPlayersOnly();
+  // ★★ 神明升天期间（第十二份试玩回报 #1）：原版 `god_detach` 在演完之后才 `0x40e604 call 0x40e14d`
+  //   真正拆下来（清 `god_info`、搭档此时才在地图上登场）⇒ 棋盘按离身**之前**那一份画，
+  //   升天那一尊由渲染器藏掉、改画在动效层。
+  if (godAscend !== null) {
+    return applyManifestHold(visibleBoardState(state, deferredBoardBefore ?? godAscend.before, !released), state, manifestHold);
+  }
+  // ★ D-MAGIC-16：魔法屋逐人那几段里棋盘按「演到哪一段」画（后面几位的改动还没发生）
+  if (magicSeq !== null) {
+    const base = magicShownState();
+    return boardStateForFilm(base, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly);
+  }
+  // ★ 第十三份試玩回報 #1：顯靈框底下还是顯靈之前的等级（`manifest-hold.ts`）
+  return applyManifestHold(
+    boardStateForFilm(state, deferredBoardBefore, boardFilmWindowFlags(), !released && !playersOnly, !playersOnly),
+    state,
+    manifestHold,
+  );
 }
 
 /**
@@ -6184,6 +8831,10 @@ function boardFilmWindowFlags(): BoardFilmWindow {
     filmPending: pendingBoardFilm !== null,
     // ★ 第八份 #8：狗咬 → 救护车之间那一拍也算窗口开着（见 `BoardFilmWindow.filmQueued`）
     filmQueued: pendingBoardFilmAfter !== null,
+    // ★ 第十八份：附身影片的最后一帧钉着等开场白（见 `BoardFilmWindow.filmHeld`）
+    filmHeld: heldGodFilm !== null,
+    // ★ 第二十二份：新聞 18 / 19 白闪、重画之前（见 `BoardFilmWindow.newsFlash`）
+    newsFlash: newsFlash !== null && deferredBoardBefore === newsFlash.before,
   };
 }
 
@@ -6192,7 +8843,12 @@ function requestRender(): void {
   renderQueued = true;
   requestAnimationFrame(() => {
     renderQueued = false;
+    // ★ 第十九份：本帧的绘制指令从这里开始记（见 `display-list.ts`）；上一帧若异常中断没收尾，先收掉
+    if (displayList.inFrame && displayList.endFrame()) stageBlitOwed = true;
+    // ★ 先调尺寸、再开始记本帧：高清舞台换倍率会改离屏画布的尺寸（清空 + 重置上下文），
+    //   得在**帧外**做，指令表才能把状态对齐回来（`DisplayList.canvasResized`）
     resizeCanvas();
+    displayList.beginFrame();
     // ★★ W-60：**刚回到棋盘**的那一帧把回合驱动重新叫起来（阻断级 bug 的唯一闸门）。
     //
     //   两条驱动的排程入口都有 `if (screen !== 'game') return;`（别在標題屏/過場里
@@ -6204,13 +8860,21 @@ function requestRender(): void {
     //
     //   ⚠️ 位置必须在 `resizeCanvas()` 之后、**这一帧的绘制之前**：驱动起来要排在
     //      这一帧的 rAF 尾巴上（`schedule*` 用 `setTimeout`），绘制不该等它。
+    // ★★ 审计 #15：过场的收场判据放在渲染链**之前** —— 先前它只写在下面 `screen === 'intro'`
+    //   那一支里，整屏接管（訊息框 / 老虎机…）一开那一支就不跑，过场便永远收不了场。
+    if (screen === 'intro' && introDone(introStartedAt, performance.now(), introSkipped, introCast())) endIntro();
     if (shouldResumeDriver(lastFrameScreen, screen)) resumeTurnDriver();
     lastFrameScreen = screen;
     // ★★ W-67-a：**訊息框收掉之后商店窗才开得起来** —— `syncShopUi()` 见到
     //   `blockingPresentation()`（董事長赠礼框还在台上）会先让开，而框自己收掉那一刻
     //   不会再派 action ⇒ 在这里每帧补一次机会。幂等：`shopUi` 已建就什么都不做。
-    if (screen === 'game') syncShopUi();
-    syncInviteButton();
+    // ★★ 2026-09-22（第十一份試玩回報 #16「NPC走到百货公司时就不用触发语音了」）：
+    //   这里先前**没有**人机闸（`notifyApplied` 那一处有），于是 NPC 的 `pending.shop`
+    //   会被每帧这条补呼铺起来 ⇒ `syncShopUi` 内放 `midi07.mid` +
+    //   `shopSay` 播招呼语音 `#0000 有什麼我能為你服務的嗎？`。
+    //   原版 `_rich4_ui_shop_entry` 的 `0x0042ea32 cmp [who_plays],1 / jne 0x42ed8d`
+    //   ⇒ 只有真人才开窗（訊息框与「董事長贈禮」台词在分流**之前**，NPC 说那句是对的，别动）。
+    if (screen === 'game' && !aiVenuePending(state)) syncShopUi();
     syncClockOverlay();
     syncBailBgm();
     // 场所都收了、放的还是场所曲 ⇒ 把背景曲从被打断的位置接回来（`sub_00454bcc`）
@@ -6223,7 +8887,11 @@ function requestRender(): void {
     //   `tick` 只负责推进**自己正在播的那一段** —— 所以给没上屏的屏也 tick
     //   会让它们的动画在别人背后偷跑（分红屏占屏那 3 秒里開獎屏照样在走）。
     //   **屏幕自己要续帧就调 `env.requestRender()`**，别指望这里无条件重排（会死循环）。
+    flushDeferredScreenEvents();
     let overlay = activeUiScreen();
+    // ★★ 第十六份：排着等起播的几屏每帧也问一次闸（它们的 `tick` 只做「闸开了就起播」），
+    //   不必等轮到自己当第一屏 —— 否则两屏都排着时，靠后的那一屏永远起不来（`overlay.ts`）。
+    for (const s of pendingScreens(SCREENS, overlay, uiEnv())) s.tick?.(uiEnv());
     if (overlay !== null) {
       overlay.tick?.(uiEnv());
       // ★★ 2026-09-16 修「收屏那一帧整屏全黑」（外部审查 B-10）：`tick()` 可能
@@ -6243,32 +8911,90 @@ function requestRender(): void {
     if (screen === 'game') syncMoveSound();
     // ★ 投掷动效（放置類道具）同理：没播完就再排一帧；播完那一下才放落地音
     //   （原版顺序：动画 → 收尾停 100 ms → 音效，见 `startObjectFlight`）
+    if (screen === 'game') tickPendingCardFlight();
+    // ★ 本机选定的卡：亮牌收屏之后才走卡片函数那一段（选目标 / 发 `useCard`）
+    if (screen === 'game') tickPendingCardRoute();
+    // ★ 第十四份 #4：道具台词说完才开选择界面
+    if (screen === 'game') tickPendingToolPicker();
+    // ★ 20260925-153539948：建設公司「請選擇欲加蓋地點」框收掉才进点地图选地
+    if (screen === 'game') tickBuildPick();
+    // ★ 第十四份：飛機 / 飛碟那一段等台词与理賠框（`0x40d375` 里台词 → 理賠 → 影片）
+    if (screen === 'game') tickPendingDisappearFx();
+    // ★ 审计 #17：住进旅館 —— 落点例程的框 / 台词都收了才走进去
+    if (screen === 'game') tickPendingRelocateWalk();
     if (screen === 'game') tickObjectFlight(performance.now());
+    // ★ 第十四份 #5：機器娃娃等台词说完才上路
+    if (screen === 'game') tickDollRelease();
+    // ★ 神明升天（第十二份试玩回报 #1）：等前面的演出收摊才起，演完才放行回合驱动
+    if (screen === 'game') tickGodAscend(performance.now());
+    // ★ 第十三份試玩回報 #1：顯靈框收掉那一拍放开按住的等级 + 第二声音效（须在 `tickBuildFx` 之前）
+    tickManifestHold();
+    // ★ 第二十六份：电脑换车那一扇「使用%s」框收掉那一拍换图组
+    tickVehicleHold();
     // ★ 建屋动效（機器工人）同理：两段时间轴没走完就再排一帧，走完就放掉位图
     if (screen === 'game') tickBuildFx(performance.now());
     // ★ 送進監獄／醫院那段影片同理（Q-ANIM-1）：按帧时序推进，播完补一次回合驱动
     if (screen === 'game') tickBoardFilm(performance.now());
+    // ★ 第十五份：命運让出框之后，pass 1 那几段（影片 / 理賠框 / 台词）收了才开始数 800 ms
+    if (screen === 'game' && eventBoxTailPending()) {
+      eventBoxTailTick(
+        boardFilm !== null ||
+          pendingBoardFilm !== null ||
+          pendingBoardFilmAfter !== null ||
+          pendingDisappearFx !== null ||
+          noticeBoxScreenActive() ||
+          speechQueue.length > 0 ||
+          heldSpeech.length > 0 ||
+          !renderer.walkDone(),
+        performance.now(),
+      );
+      requestRender();
+    }
     // ★ W-69：過路費閃爍（纯表现）—— 认下 `state.lastTollLands`、到点收摊、没完就续帧
     if (screen === 'game') tickTollFlash(performance.now());
+    // ★ 第二十二份：新聞 18 / 19 的白闪（排着等事件框 → 闪 → 重画 → 静置）
+    if (screen === 'game') tickNewsFlash(performance.now());
     // ★ 原版会替玩家把系统指针挪到按钮上（试玩3 #2）：时机刚从关变开就挪一次
     cursorWarper.update();
     if (screen === 'game') shopTick(performance.now());
+    // ★ 2026-09-23：保釋屏柜台人员的字框（醫院开屏招呼 / 監獄付不起）
+    if (screen === 'game') bailTick(performance.now());
     // ★ 銀行两屏的动态部分（Q-BANK-1）：貸款屏的滑入/气泡 + ATM 键盘按下码的清除
     if (screen === 'game') bankTick(performance.now());
     // ★ 角色台词（T-052）：**不限定 `game` 屏** —— 语音在任何一屏都可能派出来
     //   （开局宣言、破產、勝利宣言…），队列的收尾不能因为屏幕上盖着别的东西就停住。
     speechTick(performance.now());
+    // ★ D-MAGIC-16：魔法屋逐人分段 —— 上一段的框 / 影片 / 台词都收了才起下一段
+    if (screen === 'game') tickMagicSequence();
+    // ★ 软件指针（`soft-cursor.ts`）：此刻谁在接管、要不要本机作答 ⇒ 要哪一支 / 藏起
+    //   （女巫窗口、七彩氣球 / 企鵝挖寶的准星、选目标、各屏专用那几支都从这一处出去）
+    syncCursor();
 
     stageCtx.imageSmoothingEnabled = false;
     stageCtx.fillStyle = '#000';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
 
+    // ★ 2026-09-23：浮窗（訊息框等）要画在**它底下那一屏的最上面** —— 貸款屏（下面那段「銀行落点那两屏」）
+    //   与股市屏也算。先前浮窗先画、貸款屏后画 ⇒ 貸款屏进门那扇「銀行暫停放款」（0x004351f8）被整屏盖掉；
+    //   股市屏开着时浮窗底下画的是棋盘 ⇒「漲停無法買進！」（0x0042af23）落在棋盘上。
+    let deferredOverlay: typeof overlay = null;
     if (overlay !== null) {
       // ★ 登记的整屏接管：棋盘、侧栏、工具栏一概不画（原版这些屏也是整屏窗口）
       // ★ 例外是**浮窗**（`windowed: true`，如大地圖彈窗）：原版只把被盖住的
       //   那一块盖上去，周围的棋盘/工具栏/侧栏照旧露着 —— 故先照常画一整帧。
-      if (overlay.windowed === true && screen === 'game') drawGameStage();
-      overlay.draw(uiEnv());
+      if (overlay.windowed === true && (screen === 'game' || screen === 'stock')) {
+        if (screen === 'stock') {
+          drawStockStage();
+        } else {
+          drawGameStage();
+          // ★ 模态 ATM 窗在浮窗**底下**：銀行暫停放款时 ATM 窗 `0x401` 铺完面板才 `PostMessage(0x408)`
+          //   弹「銀行暫停放款」訊息框（`0x00437123`）⇒ 框盖在 ATM 上。下面链尾那一句只在没有整屏接管时画 ATM。
+          if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+        }
+        deferredOverlay = overlay;
+      } else {
+        overlay.draw(uiEnv());
+      }
     } else if (screen === 'title') {
       drawTitle(stageCtx, titleHot, spriteNow);
     } else if (screen === 'intro') {
@@ -6284,7 +9010,6 @@ function requestRender(): void {
       //   资源号由**该玩家的 `character`** 索引（`0x2f+角色` / `0x3b+角色`），
       //   所以这里必须把**全桌**的角色号交给它，不能只给 `players[0]`。
       //   @source `fcn_00415872` VA 0x004158e0（预载）与 0x00415b58 / 0x00415c76（播放）。
-      const introCast = state.players.map((p) => p.character);
       drawIntro(stageCtx, performance.now() - introStartedAt, {
         sprite: spriteNow,
         flic: uiFlicNow,
@@ -6295,11 +9020,11 @@ function requestRender(): void {
           introSoundPlayed = true;
           sound.play('Effect.mkf', id);
         },
-        characters: introCast,
+        characters: introCast(),
         soundPlayed: introSoundPlayed,
       });
-      if (introDone(introStartedAt, performance.now(), introSkipped, introCast)) endIntro();
-      else requestRender();
+      // 收场判据在帧首（见 rAF 回调开头的 ★★ 审计 #15），这里只管续帧
+      requestRender();
     } else if (screen === 'assets') {
       // ★ **不要在这里 `return`** —— `blitStage()` 在这条链的末尾，
       //   提前返回等于画了不上屏（上一轮就是这样：`screen` 都切过去了，
@@ -6330,6 +9055,7 @@ function requestRender(): void {
       // ★ 拉幕播完（最后一名小人走出画面）→ 这才真的开局。
       //   原版是自己给自己 PostMessage 一个 WM_KEYDOWN，见 setup.ts 的注释。
       if (drawSetup(stageCtx, setup, spriteNow, now, setupScene, outro)) {
+        if (displayList.endFrame()) stageBlitOwed = true;
         finishSetupOutro();
         return;
       }
@@ -6346,22 +9072,30 @@ function requestRender(): void {
       if (aiReturn === 'game') drawGameStage();
       stageCtx.fillStyle = 'rgba(0,0,0,0.45)';
       stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
-      const draft = aiDraft ?? [];
-      drawAiSettings(stageCtx, state, draft, aiHot, (archive, resource, index) =>
-        spriteNow(archive, resource, index, true),
+      const m = aiModel;
+      drawAiSettings(
+        stageCtx, state, m?.rows ?? [],
+        (archive, resource, index) => spriteNow(archive, resource, index, true),
+        m?.sel ?? 0,
       );
     } else if (screen === 'lobby') {
       drawLobby(
         stageCtx,
-        lobbySlots(lobbyRoom, net?.seat ?? null),
+        // ★ 第十一份試玩回報 #1：座位数 = 房间设的**总人数**（不足由电脑补位，
+        //   服务器 `#start` 负责）。画几格就按几格，别永远画四个。
+        lobbySlots(lobbyRoom, net?.seat ?? null, roomOptions(lobbyRoom).seatCount),
         net?.seat ?? null,
-        isHostSeat(net?.seat ?? null),
+        lobbyIsHost(lobbyRoom, net?.seat ?? null),
         lobbyRoom?.started ?? false,
         lobbyHot,
         (archive, resource, index) => spriteNow(archive, resource, index),
         (t) => stageCtx.measureText(t).width,
         // ★ Q-NET-2：房间地图也来自服务器快照（缺省 0 兼容旧快照）
         roomMapId(lobbyRoom),
+        // ★★ 第十一份試玩回報 #1：開局設定六行也来自服务器快照（缺省补全，兼容旧快照）
+        roomOptions(lobbyRoom),
+        // ★ 聯機存檔（v6）：存檔房的鎖定與「這是我 / 離座」
+        lobbyRoom,
       );
     } else if (screen === 'options') {
       // 設定是**盖在**原来那一屏上的对话框（原版就是这样）
@@ -6380,19 +9114,7 @@ function requestRender(): void {
       // ── 副屏盖在主面板上（原版是另开一扇窗口）──
       if (optionsSub !== null) drawOptionsSub();
     } else if (screen === 'stock') {
-      // 股市是**整屏**的（原版那扇窗口盖住棋盘），画法与銀行那两屏同一条路
-      drawStockScreen(stageCtx, spriteNow, stockView());
-      // 详情卡是**模态**的（原版另开一扇窗口），盖在最上面
-      const detail = stockDetailView();
-      if (detail !== null) drawStockDetail(stageCtx, spriteNow, detail);
-      const ui = stockAmountUi();
-      if (ui !== null && amountPage !== null) {
-        // 填数页照棋盘坐标排版，整体平移过去（`fcn_00453544` 也是另开一窗）
-        stageCtx.save();
-        stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
-        drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
-        stageCtx.restore();
-      }
+      drawStockStage();
     } else {
       drawGameStage();
     }
@@ -6400,7 +9122,11 @@ function requestRender(): void {
     // 銀行落点那两屏（T-029）：貸款屏先铺（整屏 640×480），ATM 是模態的盖它上面；
     // 若填数页开着，再把棋盘那块（对话框在上面）贴回来 —— 原版的填数页也是
     // 盖在银行屏上的（`fcn_00453544` 那一声调用就在贷款屏的状态机里）。
-    const bank = bankPending();
+    // ★★ 2026-09-22（第十一份試玩回報 #18「NPC踩到银行上时就不用一闪而过银行内部的页面了」）：
+    //   原版 `_rich4_ui_bank_entry` 的 `0x004366a3 cmp byte [player+0x15],1 / jne 0x4367ab`
+    //   ⇒ 电脑那一支**直接借款、全程不画屏**。先前这里只看 `pending.kind === 'bank'`，
+    //   于是 NPC 的银行 pending 期间整张银行内页被画出来（玩家看到的就是「一闪而过」）。
+    const bank = isAiTurn(state) ? null : bankPending();
     if (bank !== null && atm === null) {
       // 三条数额 = 額度 / 已用 / 額度−已用 @source `fcn_00433c20`：
       // 依次是 `arg`、`player+0x28`、`arg − player+0x28`。
@@ -6421,20 +9147,30 @@ function requestRender(): void {
         // @source `0x4347a2` 的 `cmp [0x48c3cc], 4 / je`
         blink: financeOpen && amountPage === null ? loanBlinkImage(loanBlink) : null,
       });
-      // Q-BANK-1：两块**滑入面板**压在底图上 —— 玩家面板 200×280 @(0,y)、
-      // 日期面板 200×200 @(280,y)，y = `[0x48c3d5]` @source fcn_00435062。
+      // Q-BANK-1：两块**滑入面板**从右边横着滑进来 —— 玩家面板 200×280 @(x,0)、
+      // 日期面板 200×200 @(x,280)，x = `[0x48c3d5]`（640 → 440）@source fcn_00435062 0x435552 / 0x43557c。
       if (loanUi !== null) {
+        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
+        // ★ 与面板谁在上 = 原版谁后画（`LoanUi.bubbleOnTop`：换句 → 气泡在上；滑动那几拍 → 面板在上）
+        const bubbleText = loanUi.bubble?.text ?? null;
+        if (bubbleText !== null && !loanUi.bubbleOnTop) drawLoanBubble(stageCtx, spriteNow, bubbleText);
         drawLoanPanels(stageCtx, spriteNow, loanPanelView(loanUi));
         // EXIT 的按下图（图 19）—— 四颗钮里只有它有 @source loc_00435cca
         drawLoanPressed(stageCtx, spriteNow, loanUi.pressed, {
           x0: LOAN_BUTTONS[LOAN_EXIT]!.x0,
           y0: LOAN_BUTTONS[LOAN_EXIT]!.y0,
         });
-        // 店員那句话（气泡底图 = 资源 23 图 21，锚点落 (240,80)）@source fcn_00434186
-        if (loanUi.bubble !== null) drawLoanBubble(stageCtx, spriteNow, loanUi.bubble.text);
+        if (bubbleText !== null && loanUi.bubbleOnTop) drawLoanBubble(stageCtx, spriteNow, bubbleText);
       }
     }
-    if (atm !== null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
+    // ── 还款提醒窗（`0x436034`）：`0x434186(0)` 的店員室（非董事長那一支，冻结时盖章）+ 两块面板
+    //   **直接贴在到位处**（`0x004360f6` (0x1b8, 0) / `0x00436115` (0x1b8, 0x118)，即 x = 440，不滑入）+ 店員的气泡 ──
+    if (reminderUi !== null) {
+      drawBankLoan(stageCtx, spriteNow, { chairman: false, frozen: bankFrozen(), subDialog: false, finance: null, blink: null });
+      drawLoanPanels(stageCtx, spriteNow, loanPanelView({ slide: { x: LOAN_SLIDE.shown, dx: 0 } }));
+      if (reminderUi.text !== null) drawLoanBubble(stageCtx, spriteNow, reminderUi.text);
+    }
+    if (atm !== null && overlay === null) drawBankAtm(stageCtx, spriteNow, atm, bankFrozen(), atmCode);
     if (bank !== null && atm === null && amountPage !== null) {
       // 填数页（`fcn_00453544`）是**另开一个窗口**盖在银行屏上的，所以这里
       // 单独把它画到舞台 —— 不能整块贴回棋盘画布（那样四周会透出地图）。
@@ -6447,6 +9183,8 @@ function requestRender(): void {
         stageCtx.restore();
       }
     }
+    // 浮窗压在最上面（见上面 `deferredOverlay` 那条注释）
+    if (deferredOverlay !== null) deferredOverlay.draw(uiEnv());
 
     // ── 遙控骰子的点数盘（Q-PICK-2）──
     // ★ 原版是**另开一扇模态窗口**盖在棋盘上（`_rich4_use_tool_yaokongtouzi` 把
@@ -6473,6 +9211,7 @@ function requestRender(): void {
         });
         stageCtx.restore();
       }
+      watchSpeechBoxOverlap(bubble !== null);
     }
 
     // ── 屏幕提示条（`toast.ts`）──
@@ -6480,12 +9219,16 @@ function requestRender(): void {
     //   明确要求的非叙事提示（F9 回报的落盘确认），所以不必与哪一屏对齐。
     drawToast(stageCtx, toast, performance.now(), SCREEN_W, SCREEN_H);
 
-    // 拾取模式的指针图要**解码完才能用**。首帧拿不到就返回 null，
-    // 而光标只在 hover 变化时才刷新 —— 于是「一次都没悬停到」时指针会空着。
-    // 图到货（spriteArrived）时补一次，这一条不能省。
-    if (pick !== null && spriteArrived) refreshPickCursor();
+    // 指针图要**解码完才能画**（`Data.mkf` #0）；到货那一帧补一次（上面那次可能还没图）
+    if (spriteArrived) syncCursor();
 
-    blitStage();
+    // ★ 第十九份：指令表与上一帧相同 ⇒ 舞台一个像素都没变，不贴屏（手机上省掉一整屏的合成提交）
+    if (displayList.endFrame() || stageBlitOwed) {
+      stageBlitOwed = false;
+      blitStage();
+    }
+    // 触屏「取消」钮：放在这一帧**画完之后**判 —— 本帧的 `tick` 可能刚把某一屏收掉
+    syncTouchCancel();
 
     // 有精灵在本帧解码完成 → 再画一次，把它们补上；
     // 骰子在滚也要继续要帧，否则动画只有一格；
@@ -6500,11 +9243,15 @@ function requestRender(): void {
       diceFx.active ||
       shopUi !== null ||
       loanUi !== null ||
+      reminderUi !== null ||
       atmCode !== null ||
       speechQueue.length > 0 ||
-      // ★ 押在 `deferredSpeech` 里的那几句也要续帧 —— 演出收屏那一拍就靠它
+      // ★ 押在 `heldSpeech` 里的那几句也要续帧 —— 框 / 演出收屏那一拍就靠它
       //   把台词放上台（否则要等下一次 action，台词就永远不上台了）
-      deferredSpeech !== null ||
+      heldSpeech.length > 0 ||
+      // ★ 機器娃娃**打飞**的物件还在飞 ⇒ 接着要帧（它与替身补间不同寿：
+      //   娃娃走完那几拍若没有别的演出，就没人再要帧了，最后几拍会冻在屏上）
+      renderer.sweptFlightActive() ||
       toastVisible(toast, performance.now())
     ) {
       renderer.clearDirty();
@@ -6528,8 +9275,47 @@ function requestRender(): void {
  *   （先前那次 `for (…) sound.play(…)` 登记为 Q-SPEECH-6，已订正）。
  */
 let spokenBubble: SpeechBubble | null = null;
+/** 台上换过几句（演出看门狗认「有没有进展」用）*/
+let speechSerial = 0;
 /** 填数页：鼠标键此刻是不是**按在金额栏上**没松（= 原版 `[0x48cac2] == 0x10`）*/
 let amountBarHeld = false;
+
+/**
+ * 此刻开着的填数窗的上限（金额栏按比例算值要用）；`null` = 没开。
+ * 棋盘上的填数页挂在 `currentDialog()` 那一项上；股市屏那一扇挂在 `stockAmountUi()` 上
+ * （`currentDialog()` 只在 `screen === 'game'` 时有）。
+ */
+function amountBarMax(): number | null {
+  if (amountPage === null) return null;
+  const ui = screen === 'stock' ? stockAmountUi() : currentDialog();
+  return ui?.choices[amountPage.choice]?.amount?.max ?? null;
+}
+
+/**
+ * 按住金额栏拖动（`WM_MOUSEMOVE`）→ 改值。坐标是**舞台坐标**（`AMOUNT_WINDOW` 就是舞台坐标，
+ * 画的时候才经 `boardRect` 换成棋盘坐标）。
+ *
+ * ★ 2026-09-24 订正：先前这里（与 `mousedown` 那一拍）传的是 `p − LAYOUT.board`（棋盘坐标）⇒
+ *   命中区比画出来的栏**低 40px**（落在 MAX/↵ 与 C/0/← 两行之间的缝上），按在栏上拖**不改值**；
+ *   股市屏那一扇则因为 `currentDialog()` 为 `null`、且股市分支提前 return，**完全拖不动**。
+ */
+function dragAmountBar(p: { x: number; y: number }): void {
+  if (amountPage === null) amountBarHeld = false;
+  // ★ 按在拖窗把手（id 1）上：窗跟着光标走（`0x0045320b` 的 `cmp dh,1` 那一支，先于金额栏那一支）
+  if (amountPage !== null && amountPress.drag(p)) {
+    requestRender();
+    return;
+  }
+  if (amountPage === null || !amountBarHeld) return;
+  const max = amountBarMax();
+  if (max === null) return;
+  const next = amountBarDragValue(p.x, p.y, max);
+  if (next !== null) {
+    amountPage = { ...amountPage, value: next };
+    sound.play('Effect.mkf', AMOUNT_BAR_DRAG_SOUND);
+    requestRender();
+  }
+}
 
 /**
  * ★★ 第七份试玩回报 #3：角色开口说话时，镜头切到**他**身上。
@@ -6558,6 +9344,158 @@ function viewToSpeaker(bubble: SpeechBubble): void {
   camera = pixelCamera(at.x, at.y, camera.view);
 }
 
+/**
+ * ★★ 第十六份（线上卡死 `20260923-234517253`）：**演出死锁看门狗**。
+ *
+ * 判据：台上有东西在排 / 押（押着的台词、排着的框 / 屏、排着的影片 / 建屋片 / 飞行…），
+ * 而整条演出链的**签名**（谁开着、各段起播时刻、台上换过几句、局面进度）`PRESENTATION_STALL_MS`
+ * 都没变过 —— 能自己走完的东西（訊息框 ≤ 2 s、一句台词 ≤ 语音 + 1 s、影片几秒）早该变了。
+ * 等人点的屏（月结 / 開獎 / 分紅 / 魔法屋 / 轉盤 / 老虎机…开着时）不算。
+ *
+ * 发现就**按 exe 的先后强行放行**并记 `⚠ 演出死锁自解`、自动落一份 stall 回报（一局一次）：
+ *   第一级：各演出屏落到终态（`fastForward`，与联机「跟着行动者收场」同一条路），押着的台词按档放上台；
+ *   第二级（再停滞一轮）：排着的影片 / 建屋片 / 飞行 / 升天 / 神明台词窗一并作废。
+ */
+const PRESENTATION_STALL_MS = 15_000;
+/** 开着时是在等人点一下的屏 —— 停多久都不算死锁 */
+const HUMAN_PACED_SCREENS: ReadonlySet<string> = new Set([
+  'shares', 'lottery-draw', 'monthly', 'magic', 'wheel', 'god-slot', 'auction', 'lottery', 'research', 'minigame',
+]);
+let presentationStallKey = '';
+let presentationStallSince = 0;
+let presentationUnwindLevel = 0;
+let presentationStallReported = false;
+
+/** 有没有东西在排 / 押着等（没有就不计时）*/
+function presentationWaiting(): boolean {
+  const env = uiEnv();
+  return (
+    heldSpeech.length > 0 ||
+    deferredScreenEvents.length > 0 ||
+    SCREENS.some((s) => s.active(env) && s.pendingOnly?.(env) === true) ||
+    pendingBoardFilm !== null ||
+    pendingBoardFilmAfter !== null ||
+    pendingBuildFx !== null ||
+    buildFxSeamHeld ||
+    pendingGodLine !== null ||
+    pendingCardFlight !== null ||
+    objectFlightAwaitsSpeech ||
+    dollWalkHeld ||
+    pendingDisappearFx !== null ||
+    pendingRelocateWalk !== null ||
+    (godAscend !== null && godAscend.start === null)
+  );
+}
+
+/** 演出链此刻的签名：任何一段在走，它都会变 */
+function presentationSignature(): string {
+  const env = uiEnv();
+  const screens = SCREENS.filter((s) => s.active(env)).map((s) => `${s.id}${s.pendingOnly?.(env) === true ? '?' : ''}`);
+  const n = noticeBoxScreenState();
+  return [
+    screens.join(','),
+    `h${heldSpeech.length}`,
+    `q${speechQueue.length}:${speechSerial}`,
+    `n${n.queued}:${n.playback?.at ?? '-'}`,
+    `f${boardFilm?.startedAt ?? '-'}:${pendingBoardFilm !== null ? 1 : 0}${pendingBoardFilmAfter !== null ? 1 : 0}`,
+    `b${buildFx?.clip ?? '-'}:${buildFx?.startedAt ?? '-'}:${pendingBuildFx !== null ? 1 : 0}${buildFxSeamHeld ? 1 : 0}`,
+    `a${godAscend?.start ?? (godAscend === null ? '-' : 'q')}`,
+    `g${godLine?.at ?? '-'}:${pendingGodLine !== null ? 1 : 0}`,
+    `o${objectFlight?.start ?? '-'}:${pendingCardFlight !== null ? 1 : 0}`,
+    `d${deferredScreenEvents.length}`,
+    `w${renderer.walkDone() ? 1 : 0}`,
+    `${state.turnCount}:${state.phase}:${state.currentPlayer}:${history.length}`,
+  ].join('|');
+}
+
+/** 每秒一次（`setInterval`，不靠渲染循环 —— 卡死时没人再要帧）*/
+function watchPresentationDeadlock(now: number): void {
+  // ★ 第十九份：后台时演出冻住是浏览器停了 rAF，不是死锁 —— 不计时（回前台从零数起）
+  if (pageHidden || screen !== 'game' || !presentationWaiting()) {
+    presentationStallKey = '';
+    presentationUnwindLevel = 0;
+    return;
+  }
+  const overlay = activeUiScreen();
+  if (overlay !== null && overlay.pendingOnly?.(uiEnv()) !== true && HUMAN_PACED_SCREENS.has(overlay.id)) {
+    presentationStallKey = '';
+    return;
+  }
+  const key = presentationSignature();
+  if (key !== presentationStallKey) {
+    presentationStallKey = key;
+    presentationStallSince = now;
+    return;
+  }
+  if (now - presentationStallSince < PRESENTATION_STALL_MS) return;
+  presentationUnwindLevel++;
+  presentationStats.unwinds++;
+  const message = `⚠ 演出死锁自解（第 ${presentationUnwindLevel} 级，${PRESENTATION_STALL_MS / 1000} 秒无进展）：${key}`;
+  log(message);
+  hostLog(`[stall] ${message}`);
+  unwindPresentations(presentationUnwindLevel);
+  presentationStallKey = '';
+  if (!presentationStallReported) {
+    presentationStallReported = true;
+    recorder.error({ t: Date.now(), kind: 'stall', message, stack: null });
+    fileReport('stall', message);
+  }
+  requestRender();
+  resumeTurnDriver();
+}
+
+/** 按 exe 的先后强行放行（见 `watchPresentationDeadlock`）*/
+function unwindPresentations(level: number): void {
+  // 第一级：演出屏落到终态（含排着没起播的），推日期那几屏的派发作废，押着的台词按档上台
+  followPresenter();
+  deferredScreenEvents.length = 0;
+  pendingGodLine = null;
+  godLine = null;
+  if (heldSpeech.length > 0) {
+    const lines = heldSpeech.map((h) => h.bubble);
+    heldSpeech = [];
+    speechQueue.push(lines, performance.now());
+  }
+  if (level < 2) return;
+  // 第二级：影片 / 建屋片 / 飞行 / 升天一并作废
+  pendingBoardFilm = null;
+  pendingBoardFilmAfter = null;
+  boardFilm = null;
+  releaseHeldGodFilm();
+  pendingBuildFx = null;
+  buildFx = null;
+  buildFxSeamHeld = false;
+  godAscend = null;
+  pendingCardFlight = null;
+  pendingDisappearFx = null;
+  // 住进旅館那一段：直接起步（它不等任何人，只是排在框 / 台词后面）
+  if (pendingRelocateWalk !== null) {
+    const t = pendingRelocateWalk;
+    pendingRelocateWalk = null;
+    beginTween(t);
+  }
+  if (objectFlight !== null) finishObjectFlight();
+  objectFlightAwaitsSpeech = false;
+  if (dollWalkHeld) {
+    dollWalkHeld = false;
+    renderer.releaseActorWalks(performance.now());
+  }
+}
+
+/**
+ * ★ 第十五份：**运行时自检** —— 气泡与框同屏（原版不可能：两边都是阻塞调用）就记一行日志。
+ *   每一段只记一次（进入同屏那一拍）。日志会进试玩回报的 `env.log`，下次漏网能直接定位。
+ */
+let speechBoxOverlap = false;
+function watchSpeechBoxOverlap(bubbleUp: boolean): void {
+  const both = bubbleUp && presentationHost.boxShowing();
+  if (both && !speechBoxOverlap) {
+    const overlay = activeUiScreen();
+    log(`⚠ 台詞氣泡與框同屏（${overlay?.id ?? (godLine !== null ? 'godLine' : '?')}）`);
+  }
+  speechBoxOverlap = both;
+}
+
 function speechTick(now: number): void {
   // ★★ 演出还在演 → **`afterStage`** 的台词不上台；演出收摊那一刻才把押着的那几句放上来。
   //
@@ -6573,9 +9511,10 @@ function speechTick(now: number): void {
   //   ```
   //   ⇒ 原版**必定**是「轉盤停 → 訊息框 → 付款人的台詞」。
   //   本引擎把 consequences 一次写完、演出是事后补的，所以那几句台词先被
-  //   `queueSpeech()` 押在 `deferredSpeech` 里（判据见那里）——这里等演出收摊
-  //   再放上台，等于把「同步演出」的语义补回来
-  //   （试玩回报：「盘子还没停下来 NPC 的台词都触发了」）。
+  //   `queueSpeech()` 押在 `heldSpeech` 里（判据见那里）——这里每帧问一次
+  //   「框 / 演出收了没有」（`releaseHeldSpeech` → `lineMayEnter`），收了才放上台，
+  //   等于把「同步演出」的语义补回来（试玩回报：「盘子还没停下来 NPC 的台词都触发了」；
+  //   第十五份：「台词和棕色对话框又重叠了」）。
   //
   //   ★★ W-51 **死锁自查**：这里只挡**押后的那几句**的放行，**不挡队列本身**。
   //      队列里可能正躺着 `beforeStage`（壞神附身 / 回合开始那三句）的句子，而
@@ -6587,21 +9526,17 @@ function speechTick(now: number): void {
   //   ⚠️ 押在**入队之前**而不是「冻结队列再解冻」：`SpeechQueue` 的时间基准是
   //      绝对时刻（`shownAt`），冻结再解冻会把整段演出时长算进那 1000 ms 里，
   //      那一段台词就一闪而过。
-  if (!stageBusy(stageBusyFlags())) {
-    const held = deferredSpeech;
-    if (held !== null) {
-      deferredSpeech = null;
-      if (speechQueue.push(held, now) > 0) requestRender();
-    }
-  }
+  releaseHeldSpeech(now);
   if (speechQueue.tick(now)) requestRender();
   const cur = speechQueue.current();
   if (cur === spokenBubble) return;
   // 换段了（含「从无到有」与「清空」）
   spokenBubble = cur;
+  speechSerial++;
   if (cur !== null) viewToSpeaker(cur);
   if (cur === null || cur.voice === null) return;
-  sound.play('Speaking.mkf', cur.voice);
+  // ★★ 第二十六份 panel：同一路语音 —— 起这一句就停掉正在响的上一句（`0x45441a` → `0x454493`）
+  voiceChannel.play(cur.voice);
   // ★ 语音比字幕长就把字幕撑到语音播完 —— 原版是「播完再数 1000 ms」
   const voiceMs = sound.durationOf('Speaking.mkf', cur.voice);
   if (voiceMs !== null) speechQueue.extend(voiceMs);
@@ -6624,7 +9559,7 @@ function shopTick(now: number): void {
     // 滑入到位才说「請挑選…」—— 原版是动画走完那一刻才发 0x40d（`loc_0042d75e` 尾）
     if (slideDone(ui.slide)) shopSay(ui, shopMessage(ui.page, 'hint'), now);
   }
-  if (!shopBubbleExpired(ui.bubble, ui.closing, now)) return;
+  if (!shopBubbleExpired(ui.bubble, ui.closing, now, voiceBusy())) return;
   ui.bubble = null;
   // ★ 道别那句话说完才真的关门 @source `loc_0042e686` → 状态 2→3→4
   if (ui.closing) dispatch({ type: 'declineDecision' });
@@ -6641,7 +9576,7 @@ function drawDiceFx(ctx: CanvasRenderingContext2D, now: number): void {
   if (!diceFx.active) return;
   const flic = diceFx.flicBitmap(now);
   if (flic !== null) {
-    drawDiceFlic(ctx, flic, currentScreenDir());
+    drawDiceFlic(ctx, flic, currentScreenDir(), diceFx.flicSize());
     return;
   }
   // 定格段：点数图盖上去。滚骰段走到这儿只可能是影片还没解好 —— 也先把点数摆出来，
@@ -6686,8 +9621,9 @@ function drawStepsCounter(now: number): void {
     const img = spriteNow(STEPS_COUNTER_ARCHIVE, STEPS_COUNTER_RESOURCE, d.image, true);
     if (img === null) continue;
     // 屏幕坐标 → 棋盘画布（减棋盘原点），再减图自带的锚点（数字的锚点在中心）
-    boardCtx.drawImage(
-      img.bitmap,
+    drawSprite(
+      boardCtx,
+      img,
       d.x - img.anchorX - LAYOUT.board.x,
       d.y - img.anchorY - LAYOUT.board.y,
     );
@@ -6700,8 +9636,8 @@ function drawGameStage(): void {
     drawShopStage();
     return;
   }
-  // ★ 監獄／醫院保釋屏同样是整屏（T-038）—— 棋盘、侧栏全不画
-  if (screen === 'game' && state.pending?.kind === 'bail') {
+  // ★ 監獄／醫院保釋屏同样是整屏（T-038）—— 棋盘、侧栏全不画（答完之后的收尾也照画这一屏）
+  if (screen === 'game' && bailScreenOn()) {
     drawBailStage();
     return;
   }
@@ -6726,6 +9662,8 @@ function drawGameStage(): void {
     ground: showGround ? ground : null,
     groundOffset,
     characterPose: characterPoseOf(),
+    // ★ 掷骰姿画第几帧：预动作 0 → N−1，滚骰 + 定格定在 N−1（空手）—— 第十四份试玩回报 #3
+    characterPoseFrame: diceFx.poseFrame(performance.now()),
     viewport: { w: LAYOUT.board.w, h: LAYOUT.board.h },
     // ★ 替身（四大惡人／機器娃娃）那一趟的整趟路径由 core 交出来（T-047）：
     //   `runNpc` / `runDoll` 的中间格是岔路上 rand() 选的，渲染器事后推不出来，
@@ -6743,6 +9681,15 @@ function drawGameStage(): void {
     // 放置類道具的投掷动效（纯表现，不进 state）—— 飞着的那一件由渲染器画在
     // 清单之上，同时把它从静态槽里藏掉（原版动画期间棋盘不重绘）
     objectFlight,
+    // ★ 神明升天（`god_detach` 0x40e32c）—— 起播之后才交给渲染器（之前那尊还画在主人身上）
+    godAscend:
+      godAscend !== null && godAscend.start !== null
+        ? {
+            state: godAscend.before,
+            objectIndex: godAscend.cue.objectIndex,
+            elapsed: performance.now() - godAscend.start,
+          }
+        : null,
     // 機器工人（9）的原地建屋影片（Q-TOOL-6）—— 两段 FLIC 合起来 440×440
     // 盖在棋盘左上角，**不进绘制槽**、也没有自己的落点（落点是常数）。
     buildFx: currentBuildFxBitmap(performance.now()),
@@ -6761,7 +9708,9 @@ function drawGameStage(): void {
   const dlg = currentDialog();
   const me = state.players[state.currentPlayer];
   if (dlg !== null) {
-    drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
+    // 填数窗（`fcn_00453544`）是另开的一扇窗、**可拖到棋盘外**（工具列 / 側欄上）⇒ 不画进棋盘画布，
+    //   等工具列与側欄都画完再盖到舞台上（见本函数末尾）
+    if (amountPage === null) drawDialog(boardCtx, uiSprite, dlg, amountPage, dialogHot);
   } else if (diceFx.active) {
     // ★ 掷骰那一段（Q-TURN-1 §3/§4）：滚骰是 `Panel.mkf` 4/5/6 的 **FLIC**，
     //   滚完再把 `Panel.mkf` 3 的点数图盖上去定格 500 ms。
@@ -6779,32 +9728,63 @@ function drawGameStage(): void {
       me.trafficMethod & 3,
       me.blocking.stopping !== 0,
     );
-  } else if (state.phase === 'moving' && state.dice.length > 0) {
-    drawDice(boardCtx, uiSprite, state.dice, currentScreenDir());
   }
+  // ★★ 2026-09-22（第十一份回报 #2「人物扔完骰子开始行动时骰子应该就消失了」）：
+  //   这里先前还有一条 `else if (state.phase === 'moving' && state.dice.length > 0)
+  //   drawDice(...)` —— **走子的每一帧都把点数图重画一遍**（`state.dice` 要到回合结束
+  //   才清，见 `core/reduce.ts` 换人那两处），于是骰子在角色开始行动之后仍然留在屏上。
+  //   原版全 exe 只有**一个**把点数图（`Panel.mkf` #3，指针 `[0x48be14]`）画出去的地方：
+  //   `rich4.asm:12363`，就在 `fcn_00419572` 内部；走到走子状态（state 1）的那一 tick
+  //   同一张后台面就被 `fcn_0040829d` 全量重画覆盖 ⇒ **骰子当場消失**，从不再画。
+  //   ⇒ 删掉这条分支即可（`dice-roll.ts` 那三段与 500 ms 定格由 `drawDiceFx` 照旧负责）。
   // ── 名牌浮标（Q-HOVER-1）：原版画在棋盘面上、訊息框那类**独立窗口**之下 ──
   if (nodeTip !== null && dlg === null) {
     drawTip(boardCtx, spriteNow(TIP_ARCHIVE, TIP_RESOURCE, nodeTip.image, true), nodeTip);
   }
-  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+  drawSurface(stageCtx, boardCanvas, LAYOUT.board.x, LAYOUT.board.y, LAYOUT.board.w, LAYOUT.board.h, surfaceScale);
 
   // 工具栏画在棋盘上方（直接画到舞台上）
   renderer.drawToolbarTo(stageCtx, LAYOUT.toolbar.x, LAYOUT.toolbar.y, hotTool);
 
+  // ★ D-MAGIC-16：`0x41906a(1)` 重画主窗口时侧栏跟着「当前玩家」= 那位中签者
+  const hudState = magicShownState();
+  // ★ 替身那一趟：小地图白框框它（补间在走的那几格，VA 0x00416f3d）
+  const npcWalk = renderer.npcWalkWorld(performance.now());
+  // ★★ 第二十六份 panel：侧栏画「上一次整窗重画时的行动者」—— 换人那次重画（`0x436a5a`）之前 / 距还款日 > 3 天时仍是上一位
+  const panelPlayer = panelPlayerOf(hudState);
   hud.draw({
-    state,
+    // ★ 降落伞那一段期间小地图上也先没有他（`0x00416fc9 cmp [player+0x08], 0`，坐标播完才写）
+    state: withLandingHidden(hudState),
     map,
     camera,
     minimapBg,
-    sidebarView,
+    windowView: options.windowView,
+    calendarPage: calendarPageOf(options),
     minimapMarker,
+    // ★ 替身那一趟小地图白框框替身（`hud.ts` 的 `minimapFrameCenter`，VA 0x00416f3d）
+    npcFrame: npcWalk,
+    // ★★ 第二十六份 panel #1：侧栏换成惡人那一版 = 行动者 `[0x49910c]` 是他的整个回合（VA 0x00415fc1 / 0x00416767；
+    //   回合开头 0x00418d69 那次整窗重画起、到下一位行动者那次重画止）——
+    //   含走完之后的訊息框 / 台词、停留不走的那一回合；取 core 的 `lastNpcTurn`（见 `hud.ts` 的 `panelActorSlot`）
+    npcSlot: panelActorSlot(hudState),
+    panelPlayer,
     pressedMinimapArrow,
     hotMinimapArrow,
     holidayArt,
-    panelPage: panelPages[state.currentPlayer] ?? 0,
-    panelRows: panelRows(state, topo, state.currentPlayer, panelPages[state.currentPlayer] ?? 0),
+    panelPage: panelPages[panelPlayer] ?? 0,
+    panelRows: panelRows(hudState, topo, panelPlayer, panelPages[panelPlayer] ?? 0),
   });
-  stageCtx.drawImage(hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y);
+  drawSurface(stageCtx, hudCanvasOff, LAYOUT.panel.x, LAYOUT.panel.y, LAYOUT.panel.w, SCREEN_H, surfaceScale);
+  // 填数窗盖在最上面（它是另开的窗，拖到哪画到哪）
+  if (dlg !== null && amountPage !== null) drawAmountDialogOnStage(dlg);
+}
+
+/** 把填数页画到**舞台**上（照棋盘坐标排版，整体平移过去 —— 与股市 / 銀行那两处同一个做法）*/
+function drawAmountDialogOnStage(ui: InteractionUi): void {
+  stageCtx.save();
+  stageCtx.translate(LAYOUT.board.x, LAYOUT.board.y);
+  drawDialog(stageCtx, uiSprite, ui, amountPage, dialogHot);
+  stageCtx.restore();
 }
 
 /**
@@ -6819,14 +9799,15 @@ function drawGameStage(): void {
  */
 function drawSceneStage(resource: number, ui: InteractionUi): void {
   const bg = spriteNow(SCENE_ARCHIVE, resource, 0);
-  if (bg !== null) stageCtx.drawImage(bg.bitmap, 0, 0, SCREEN_W, SCREEN_H);
+  if (bg !== null) drawSprite(stageCtx, bg, 0, 0, SCREEN_W, SCREEN_H);
   else {
     stageCtx.fillStyle = '#1a1d24';
     stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   }
   boardCtx.clearRect(0, 0, LAYOUT.board.w, LAYOUT.board.h);
-  drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
-  stageCtx.drawImage(boardCanvas, LAYOUT.board.x, LAYOUT.board.y);
+  if (amountPage === null) drawDialog(boardCtx, uiSprite, ui, amountPage, dialogHot);
+  drawSurface(stageCtx, boardCanvas, LAYOUT.board.x, LAYOUT.board.y, LAYOUT.board.w, LAYOUT.board.h, surfaceScale);
+  if (amountPage !== null) drawAmountDialogOnStage(ui);
 }
 
 /**
@@ -6844,6 +9825,10 @@ function drawShopStage(): void {
   const me = state.players[state.currentPlayer];
   if (me === undefined) return;
 
+  // 老板娘的动画机每 100 ms 走一拍；这一拍贴的叠进「此刻留着的」—— 画的是后者（每帧都画，不再只闪一帧）。
+  // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`。
+  // 嘴只在说话（气泡挂着）时动 @source 0x0042dc36 `call 0x44ef3b`
+  ui.keeper = keeperPaintAfter(ui.keeper, blinkStep(ui.blink, ui.page, performance.now(), Math.random, ui.bubble !== null));
   stageCtx.fillStyle = '#000';
   stageCtx.fillRect(0, 0, SCREEN_W, SCREEN_H);
   drawShopScreen(stageCtx, spriteNow, {
@@ -6851,7 +9836,7 @@ function drawShopStage(): void {
     panelX: ui.slide.panelX,
     gridX: ui.slide.gridX,
     points: me.points,
-    shelf: ui.page === SHOP_PAGE.cards ? ui.shelf.cards : ui.shelf.tools,
+    shelf: shopRows(ui.page, pending, ui.page === SHOP_PAGE.cards ? ui.bought.cards : ui.bought.tools),
     cells:
       ui.page === SHOP_PAGE.cards
         ? cardEntries(state, state.currentPlayer)
@@ -6859,18 +9844,33 @@ function drawShopStage(): void {
     bubble: ui.bubble === null ? null : ui.bubble.text,
     pressed: ui.pressed,
     pressedCell: ui.pressedCell,
-    // 原版用 `_libc_rand`；这一处纯装饰，不进确定性状态，所以用 `Math.random`
-    blink: blinkStep(ui.blink, ui.page, performance.now(), Math.random),
+    keeper: ui.keeper,
   });
 }
 
 /** 舞台 → 窗口：整数倍放大、居中、不插值 */
+/**
+ * 画布四周的黑边铺过了（画布尺寸不变就一直在）。
+ *
+ * ★ 第十九份：先前每帧 `fillRect` 整块画布（手机横屏 2250×1026 ≈ 230 万像素）再贴舞台，
+ *   而黑边一辈子不变 —— 改成尺寸变了才整块铺一次，平时只铺舞台那一块（向外多取一像素，
+ *   小数倍放大时边缘那一列的混色与先前完全一样：都是「先黑、再贴」）。
+ */
+let letterboxFilled = false;
+
 function blitStage(): void {
   const m = currentMetrics();
-  ctx.imageSmoothingEnabled = false;
+  // ★ 高清舞台下舞台已是 `surfaceScale`（= 窗口倍数）倍像素：这一下是 1:1 拷贝，不插值。
+  //   只有触屏封了顶（`hdScaleCap`，舞台比窗口小）时是放大 —— 那一下要平滑，否则字边一格宽一格窄。
+  //   关着高清（倍率 1）仍是原来的最近邻整窗放大。
+  ctx.imageSmoothingEnabled = surfaceScale !== 1 && Math.abs(surfaceScale - m.scale) > 1e-6;
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(stage, m.offsetX, m.offsetY, SCREEN_W * m.scale, SCREEN_H * m.scale);
+  const w = SCREEN_W * m.scale;
+  const h = SCREEN_H * m.scale;
+  if (letterboxFilled) ctx.fillRect(m.offsetX, m.offsetY, Math.ceil(w) + 1, Math.ceil(h) + 1);
+  else ctx.fillRect(0, 0, canvas.width, canvas.height);
+  letterboxFilled = true;
+  ctx.drawImage(stage, m.offsetX, m.offsetY, w, h);
 }
 
 /** 当前的放大倍数与居中偏移（按**设备像素**算） */
@@ -6914,6 +9914,65 @@ function cursorWarpFrame(): CursorWarpFrame {
 
 const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
 
+// ============================================================
+//  软件指针（gap-audit WP-1：#5 #8 #9 #10）—— 判据与出处全在 `soft-cursor.ts`
+// ============================================================
+//
+//  原版的指针是自己画的（`Data.mkf` #0、20 ms 一拍、热点 = 贴图锚点），开局就把系统指针藏了。
+//  这里只把「此刻谁在接管、哪几扇作答窗开着」现取出来交给 `resolveCursor`，画由那一层自己画。
+
+/** 盖在 `#board` 上的那一层（仅本机；触屏不画，小游戏准星例外）*/
+const softCursor = createSoftCursorLayer({
+  board: canvas,
+  sprite: (image) => spriteNow(CURSOR_ARCHIVE, CURSOR_RESOURCE, image, true),
+  toStage: (clientX, clientY) => {
+    const r = canvas.getBoundingClientRect();
+    const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+    return toStage((clientX - r.left) * dpr, (clientY - r.top) * dpr, currentMetrics());
+  },
+  metrics: currentMetrics,
+  now: () => performance.now(),
+});
+
+/** `resolveCursor` 要看的那几项（现取）*/
+function cursorFrame(): CursorFrame {
+  const onBoard = screen === 'game' || screen === 'stock';
+  const overlay = onBoard ? activeUiScreen() : null;
+  const dlg = currentDialog();
+  // 棋盘上几扇整屏 / 浮窗的作答窗（商店、銀行貸款、还款提醒、監獄/醫院）：只给本机真人的回合放
+  //   @source 商店 0x0042dc08、銀行 0x0043479a / 0x004356db / 0x00435e98、監獄/醫院 0x0043cb5a / 0x0043daf0
+  const localHuman = screen === 'game' && localSeatActive() && !isAiTurn(state);
+  return {
+    screen,
+    overlay: overlay === null ? undefined : (overlay.cursor?.(uiEnv()) ?? null),
+    pick: screen === 'game' ? pickCursorShape() : null,
+    dicePick: screen === 'game' && dicePick !== null,
+    stockPick: stockPick !== null,
+    // 通用填数窗（`fcn_00453544`）：棋盘 / 銀行里挂在 `currentDialog()` 上，股市屏里挂在 `stockAmount` 上
+    amountWindow: amountPage !== null && (screen === 'stock' ? stockAmount !== null : dlg !== null),
+    atm: screen === 'game' && atm !== null,
+    localInput:
+      dlg !== null ||
+      (localHuman && (shopUi !== null || loanUi !== null || reminderUi !== null || bailScreenOn())) ||
+      // 终局：勝利畫面放出箭头（@source 0x0041de1d `fcn_00402460(1)`）
+      (screen === 'game' && state.phase === 'gameOver'),
+    // 轮到本机真人、GO 鈕在场（按下去骰子一滚就收起：0x004182de）
+    goPhase: awaitingHumanRoll() && !diceFx.active,
+    // 联机里别的座位的回合 ⇒ 放出箭头（D-CURSOR-ONLINE-1，需求方要求的有意偏离；单机恒 false）
+    spectator: !localSeatActive(),
+  };
+}
+
+/** 此刻要哪一支指针（`null` = 藏起）*/
+function cursorWant(): CursorWant {
+  return resolveCursor(cursorFrame());
+}
+
+/** 按当前状态重算一次指针（每帧一次；拾取状态变了也当场叫一次）*/
+function syncCursor(): void {
+  softCursor.update(cursorWant());
+}
+
 /**
  * 把镜头对到当前行动者身上 —— **逐像素**，不是逐格。
  *
@@ -6931,7 +9990,10 @@ const cursorWarper = createCursorWarper(warpCursor, cursorWarpFrame);
  *   镜头随即恢复跟随（原版 VA 0x00418656 `[0x48be18] = 0`）。
  */
 function centerOnCurrentPlayer(): void {
-  const me = state.players[state.currentPlayer];
+  // ★ D-MAGIC-16：魔法屋逐人那几段里「当前玩家」= 那位中签者（`0x004320c9`），
+  //   每一支开头的 `0x41906a(1)` 重画主窗口时 `fcn_00415e70` 就居中到他（有标记则停在标记上）
+  const shown = magicShownState();
+  const me = shown.players[shown.currentPlayer];
   if (me === undefined) return;
   const node = map.nodes[me.nodeId - 1];
   if (node === undefined) return;
@@ -6978,7 +10040,9 @@ function centerOnCurrentPlayer(): void {
 
   if (minimapMarker !== null) {
     // 走到标记上了？那就把标记收掉，镜头交还给棋子
-    if (Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
+    // ★ D-MAGIC-16：魔法屋逐人那几段里不收 —— 原版 `0x431caa` 整个循环里标记（`[0x48be18]`）一直留着，
+    //   下一位的 `0x41906a(1)` 重画时 `fcn_00415e70` 仍停在上一位 `view_to` / 台词留下的标记上
+    if (magicSeq === null && Math.abs(node.x - minimapMarker.x) <= 16 && Math.abs(node.y - minimapMarker.y) <= 16) {
       minimapMarker = null;
       requestRender();
     } else {
@@ -7002,8 +10066,8 @@ const GO_BLINK_MS = 0x1f4;
 let goBlink = false;
 setInterval(() => {
   goBlink = !goBlink;
-  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）
-  if (screen === 'game') requestRender();
+  // 没在等人掷骰就不用重画（GO 鈕那时根本不显示）；后台也不用（第十九份）
+  if (screen === 'game' && !pageHidden) requestRender();
 }, GO_BLINK_MS);
 
 /**
@@ -7171,14 +10235,21 @@ function rotateView(delta: number): void {
  *   放大倍数变成非整数，像素糊掉——那正是要避免的事。
  *   高 DPI 屏上多出来的物理像素用更大的整数倍吃掉。
  */
-function resizeCanvas(): void {
+function resizeCanvas(): boolean {
   const dpr = window.devicePixelRatio || 1;
   const w = Math.round(canvas.clientWidth * dpr);
   const h = Math.round(canvas.clientHeight * dpr);
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+    // 改尺寸会把画布清空 ⇒ 下一帧无论如何都要贴一次，黑边也要重铺
+    stageBlitOwed = true;
+    letterboxFilled = false;
+    syncSurfaceScale();
+    return true;
   }
+  syncSurfaceScale();
+  return false;
 }
 
 // ============================================================
@@ -7256,6 +10327,7 @@ function renderInteraction(): void {
           log(`▶ ${c.label}：这一屏自己接管输入（不是通用填数页）`);
           return;
         }
+        amountWindowOpened();
         amountPage = { choice: idx, value: AMOUNT_INITIAL };
         dialogHot = null;
         requestRender();
@@ -7369,7 +10441,7 @@ function musicButtons(): HTMLButtonElement[] {
     // Q8：原版没有这一颗 —— 它是本重制版新增的**音色库**入口（见 known-deviations）
     mk(
       music.usingSoundFont ? '♪ 音色庫✓' : '♪ 選音色庫',
-      '音色庫（.sf2，需自備）：有就用採樣還原音色，沒有就退回振盪器',
+      '音色庫（.sf2）：有就用採樣還原音色，沒有就退回振盪器',
       () => void chooseSoundFont(),
     ),
   ];
@@ -7587,7 +10659,7 @@ function startGame(): void {
     //   遊戲時間与勝利條件（`[0x46cb4c]`/`[0x46cb50]` → `[0x49911c]`/`[0x499108]`）
     // @source `VA 0x00407032`（资金）、`0x00407219`（载具）、`0x00406f6b`（权限）、
     //   `0x0040737d..0x004073a3`（勝負條件）
-    initialFund: MONEY_VALUES[setup.money] ?? DEFAULT_INITIAL_FUND,
+    initialFund: GAME_INITIAL_FUNDS[setup.money] ?? DEFAULT_INITIAL_FUND,
     // ★ 开局日期 = **系统当天**钳到 1998-01-01..2010-01-01
     //   @source `_rich4_read_config`（VA 0x00411e8f）用 `libc_getdate()` 覆盖
     //   `CFG+8` 的 day/month/year；钳位常量见 VA 0x00411f30 / 0x00411f49。
@@ -7604,15 +10676,34 @@ function startGame(): void {
   //   会盖着旧局的片子，棋盘还会拿旧局的 before 快照当底（`deferred-board.ts`）。
   buildFx = null;
   pendingBuildFx = null;
+  magicSeq = null;
   buildFlicPending.clear();
   releaseBuildFlics();
   boardFilm = null;
   pendingBoardFilm = null;
+  landingFx = null;
   // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由：旧局的片子不该接着放）
   pendingBoardFilmAfter = null;
+  boardFilmQueueRest = [];
   boardFilmPending.clear();
   releaseBoardFilmFlics();
+  releaseHeldGodFilm();
   deferredBoardBefore = null;
+  resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
+  newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
+  manifestHold = null;
+  vehicleHold = null;
+  godAscend = null;
+  pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
+  pendingCardRoute = null; // 亮牌后待走的那一张同理
+  // ★ 右上角面板四位玩家的页号一起归零 @source `fcn_00417e26` 的 0x401 分支
+  //   `xor edi,edi / mov dword [0x48be24], edi`（4 字节 = 四位）—— 0x401 由
+  //   `_rich4_start_game_loop`（0x401981）进棋盘时 Post 一次（新局 0x401cfe、標題读档 0x401d08 都走它）
+  panelPages.fill(0);
+  // 自動存檔的「上一次算过的日期」清掉：开局那一天不存（`autosaveStep`）
+  autosaveDateKey = null;
   // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
   goButton.reset();
 
@@ -7635,12 +10726,14 @@ function startGame(): void {
   //   「进樂透页听不到猫女的语音」「整体感觉语音没怎么触发」）。
   //   棋盘一局是分钟级的，这里提前拉完，后面每一句都在。
   ensureSpeakingArchive();
-  // ★ 開局宣言（事件 26）—— **不走任何 action**，故 `playSoundFor` 永远看不到它：
-  //   原版那一句在 `fcn_00407842` 里（`@source 0x00407946`，全 exe 唯一一处），
-  //   `callers 0x407842` 只有 `0x40cff0` / `0x41da2d` 两处，都是**开/重开一局**，
-  //   且都在模态消息框之后、棋盘打开之前。这里在开局的同一个点显式播一次。
-  //   台词与語音号：`SPEECH_LINES[角色][26]` / `speechIndex(角色, 26)`。
-  if (speechQueue.push(openingSpeech(state), performance.now()) > 0) requestRender();
+  // ★★ 開局**不说话**（第十四份试玩回报 #1「开局从机舱里跳伞出来时不应该有台词」）。
+  //   先前这里播了一句事件 26（「我要再接再勵…」）—— 那是**输了之后续局**的台词：
+  //   全 exe 唯一一处 `0x00407946` 在 `fcn_00407842` 里（先开模态框 `0x00407919`、选了才说），
+  //   `callers 0x407842` 只有 `0x40cff0`（破产流程「唯一真人出局」）与 `0x41da2d`
+  //   （`0x41d89e` 胜负判定里电脑赢了的那一支）。新开一局的路
+  //   `0x401cd0 call 0x406de7 → 0x401543 → 0x407ad2 → 0x4190cf → 0x4291d6 → 0x415872`（跳伞过场）
+  //   `→ 0x401981` **一句台词都不调**。那个续局模态框本引擎还没复刻（known-deviations），
+  //   故 26 这一句眼下没有落点；`openingSpeech()` 留在 `speech.ts` 等它。
   log(
     `開局：地圖 ${setup.mapId}　種子 ${seed}　` +
       players.map((p, i) => `P${i + 1}${p.kind === 'human' ? '人' : '電'}`).join(' '),
@@ -7700,7 +10793,10 @@ function bindInput(): void {
 
     // ── 股市屏：悬停整行（原版 0x200 那条路）@source loc_0042abbb ──
     if (screen === 'stock') {
-      if (stockAmount !== null) return; // 填数页开着：不理会行的悬停
+      if (stockAmount !== null) {
+        dragAmountBar(p); // 填数页开着：只认拖金额栏，不理会行的悬停
+        return;
+      }
       const row = hitStockRow(p.x, p.y);
       if (row !== stockHover) {
         stockHover = row;
@@ -7715,7 +10811,11 @@ function bindInput(): void {
     if (atm !== null) {
       if (atmDragToClick(atmCode) !== null) {
         const q = eventToStage(e);
-        if (q !== null) atmSeekTo(q.x);
+        if (q !== null) {
+          // 原版把这次移动**重发成一次按下**（`loc_00437904` → `0x201`）⇒ 每次都走金额栏那一支、放一声 9
+          atmSound(4);
+          atmSeekTo(q.x);
+        }
       }
       return;
     }
@@ -7793,9 +10893,12 @@ function bindInput(): void {
     }
     if (screen === 'lobby') {
       const hit = hitLobby(p.x, p.y, {
-        isHost: isHostSeat(net?.seat ?? null),
+        isHost: lobbyIsHost(lobbyRoom, net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
+        // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
+        seats: roomOptions(lobbyRoom).seatCount,
+        room: lobbyRoom,
       });
       if (JSON.stringify(hit) !== JSON.stringify(lobbyHot)) {
         lobbyHot = hit;
@@ -7804,11 +10907,14 @@ function bindInput(): void {
       return;
     }
     if (screen === 'aiSettings') {
-      // 命中测试用的是**对话框相对坐标**，这里减掉居中偏移
-      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
-      if (JSON.stringify(hit) !== JSON.stringify(aiHot)) {
-        aiHot = hit;
-        requestRender();
+      // ★ 原版 `WM_MOUSEMOVE`（`loc_0041de2e`）只做一件事：按住滑槽时跟着改值 —— **没有悬停高亮**
+      const local = { x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y };
+      if (aiModel !== null) {
+        const dragged = aiSettingsDrag(aiModel, local, aiCanEdit);
+        if (dragged !== aiModel) {
+          aiModel = dragged;
+          requestRender();
+        }
       }
       return;
     }
@@ -7837,9 +10943,9 @@ function bindInput(): void {
     }
 
     // 右下角小地图那两颗箭头的**悬停**（原版 VA 0x00418415：鼠标在箭头条上就换成高亮图）
-    const hotArrow = sidebarView === 'map' && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)
-      ? hitMinimapArrow(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y)
-      : null;
+    // （小地图顶边随「視窗」三态走：縮小地圖 280、組合畫面 80 —— `hitMinimapArea`，表 `0x4752aa`）
+    const mmHover = hitMinimapArea(options.windowView, p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    const hotArrow = mmHover !== null ? hitMinimapArrow(mmHover.x, mmHover.y) : null;
     if (hotArrow !== hotMinimapArrow) {
       hotMinimapArrow = hotArrow;
       requestRender();
@@ -7867,10 +10973,18 @@ function bindInput(): void {
     // 商店是整屏的：它在的时候棋盘不在画，光标底下也没有「节点」可悬停
     if (screen === 'game' && shopUi !== null) return;
 
-    // 監獄／醫院保釋屏：整屏，只记光标在哪个槽位上（原版 0x200 那条路）
-    if (screen === 'game' && state.pending?.kind === 'bail') {
-      const pending = state.pending;
-      const next = hitBailSlot(pending.place, p.x, p.y, bailOccupancy());
+    // 監獄／醫院保釋屏：整屏，只记光标在哪个槽位上（原版 0x200 那条路）；YES/NO 开着时只认那两半
+    if (screen === 'game' && bailScreenOn()) {
+      const place = bailPlace();
+      if (bailFlow !== null && bailFlow.stage === 'confirm') {
+        const half = hitBailYesNo(p.x, p.y);
+        if (half !== bailFlow.yesNo) {
+          bailFlow = { ...bailFlow, yesNo: half };
+          requestRender();
+        }
+        return;
+      }
+      const next = place === null ? null : hitBailSlot(place, p.x, p.y, bailOccupancy());
       if (next !== bailHot) {
         bailHot = next;
         requestRender();
@@ -7887,23 +11001,7 @@ function bindInput(): void {
     //     （`0x00452e4b xor dl,dl / mov [0x48cac2],dl`）；同一个字节 == 1 时是拖窗（`0x00453211 cmp dh,1`）。
     //     像素 id 是后面**另一次**查的（`0x004533f9 cmp byte [edx+eax],0x10`）。
     //   ⇒ 条件是两条都要：**在栏上按下的**、且此刻光标**还在栏上**。每换一次放一声音效 9（`[0x482352]`）。
-    if (amountPage === null) amountBarHeld = false;
-    if (amountPage !== null && amountBarHeld) {
-      const barUi = currentDialog();
-      const barAmount = barUi?.choices[amountPage.choice]?.amount;
-      if (barAmount !== undefined) {
-        const next = amountBarDragValue(
-          p.x - LAYOUT.board.x,
-          p.y - LAYOUT.board.y,
-          barAmount.max,
-        );
-        if (next !== null) {
-          amountPage = { ...amountPage, value: next };
-          sound.play('Effect.mkf', AMOUNT_BAR_DRAG_SOUND);
-          requestRender();
-        }
-      }
-    }
+    dragAmountBar(p);
 
     // 对话框盖在棋盘上：它在的时候，先问它
     const dlgHover = currentDialog();
@@ -7938,6 +11036,10 @@ function bindInput(): void {
   });
 
   canvas.addEventListener('click', (e) => {
+    // ★ 填数窗那一下已经在 mousedown（记账 + 音）/ mouseup（动作）上办完 —— 浏览器补来的这个
+    //   `click` 整个吞掉；否则「確定」刚关掉填数页，同一点又落到底下选项页的钮上（一下办两件事）。
+    //   触屏手势模块派的点按也是「按下 → 抬手 → click」三连，同一条路。
+    if (amountPress.click()) return;
     const p = eventToStage(e);
     if (p === null) return;
     unlockAudio();
@@ -7968,29 +11070,17 @@ function bindInput(): void {
     // ── 登记的整屏在的时候，`click` 这一路不碰棋盘（同商店那条注释的道理：
     //   按下的处理已经在 mousedown/mouseup 上做过了，这里再来一次就成两遍）──
     if (activeUiScreen() !== null) return;
-    if (screen === 'aiSettings') {
-      const hit = hitAiSettings({ x: p.x - AI_ORIGIN.x, y: p.y - AI_ORIGIN.y }, aiDraft ?? [], state.currentPlayer);
-      if (hit === null) return;
-      if (hit.kind === 'ok') {
-        closeAiSettings(true);
-        return;
-      }
-      if (hit.kind === 'cancel') {
-        closeAiSettings(false);
-        return;
-      }
-      // 其余都是改草稿；改完重画，还没进引擎（按「確定」才发 action）
-      if (aiDraft !== null) {
-        aiDraft = applyAiSettingsHit(aiDraft, hit);
-        requestRender();
-      }
-      return;
-    }
+    // 託管AI 屏全在 mousedown / mouseup 上处理（原版 0x201 / 0x202 两条分支）——
+    //   `click` 这一路不碰它，否则同一次点会被处理两遍（行上那一下就会「选中 + 立刻翻」）。
+    if (screen === 'aiSettings') return;
     if (screen === 'lobby') {
       const hit = hitLobby(p.x, p.y, {
-        isHost: isHostSeat(net?.seat ?? null),
+        isHost: lobbyIsHost(lobbyRoom, net?.seat ?? null),
         me: net?.seat ?? null,
         started: lobbyRoom?.started ?? false,
+        // ⚠️ 与绘制**同一个数**：不然「画了两格、却点得动第三格」这种鬼事
+        seats: roomOptions(lobbyRoom).seatCount,
+        room: lobbyRoom,
       });
       if (hit === null) return;
       // 座位只读（座位是服务器分的，见 Q-NET-2），点它不做事
@@ -8005,8 +11095,31 @@ function bindInput(): void {
         net?.setMap(hit.globalMapId);
         return;
       }
+      // ★★ 第十一份試玩回報 #1：開局設定某一項的 ◀ / ▶ —— 同样只是**发请求**：
+      //   本地按当前值 ±1 档折成新取值，等服务器校验后广播 `room` 回来才更新。
+      //   ⚠️ 档位**夹紧不回绕**（到头那一侧的箭头本来就是压暗的，见 `drawOptionColumn`；
+      //   能点却画成灰的，就是 UI 骗人）。单机那一屏是**下拉浮窗**选值、没有箭头，
+      //   所以这条没有原版对照，是本项目自定的交互。
+      if (hit.kind === 'option') {
+        const row = LOBBY_OPTION_ROWS.find((r) => r.field === hit.field);
+        if (row === undefined) return;
+        const cur = optionIndexOf(roomOptions(lobbyRoom), hit.field);
+        const next = Math.max(0, Math.min(row.steps - 1, cur + hit.delta));
+        if (next === cur) return; // 到端点了：一个字节都不发
+        net?.setOptions({ [hit.field]: optionValueOf(hit.field, next) });
+        return;
+      }
       if (hit.kind === 'start') {
         net?.start();
+        return;
+      }
+      // ★ 聯機存檔（v6）：存檔房的「這是我 / 離座」—— 同樣只是發請求，等 `room` 廣播回來
+      if (hit.kind === 'claim') {
+        net?.claim(hit.seat);
+        return;
+      }
+      if (hit.kind === 'unclaim') {
+        net?.unclaim(hit.seat);
         return;
       }
       // 离开：断开并回標題
@@ -8033,7 +11146,7 @@ function bindInput(): void {
     //   `click` 这一路不碰它 —— 否则同一次点会被处理两遍。
     if (screen === 'game' && shopUi !== null) return;
     // 監獄／醫院保釋屏同理：整屏接管，别让同一次点再落到通用对话框上
-    if (screen === 'game' && state.pending?.kind === 'bail') return;
+    if (screen === 'game' && bailScreenOn()) return;
 
     // 底下都是棋盘上的交互 —— 其余屏（含個人資產表）到这儿就结束
     if (screen !== 'game') return;
@@ -8053,7 +11166,8 @@ function bindInput(): void {
         p.x - LAYOUT.board.x, p.y - LAYOUT.board.y,
       );
       if (h !== null) {
-        if (h !== 'inside') onDialogHit(dlg, h);
+        // 填数页上的钮归 mousedown / mouseup（原版 0x201 记账、0x202 动作），这里只管选项页
+        if (h !== 'inside' && amountPage === null) onDialogHit(dlg, h);
         return; // ★ 落在框上但没中按钮也要吃掉，别穿透到棋盘去选格子
       }
     }
@@ -8067,18 +11181,20 @@ function bindInput(): void {
   //   定死（只能左右旋转视角），那是本引擎自己发明的，随 `setViewMode` 一起删掉
   //   （D-086-5 / T-086）。滚轮在棋盘上现在什么都不做（也不拦浏览器默认行为）。
 
+  // 指针离开画布：软件指针跟着收（`soft-cursor.ts` 自己听 `mouseleave`；系统指针在画布外照常显示）
+
   canvas.addEventListener('mousedown', (e) => {
     unlockAudio(); // 浏览器要求在用户手势里建 AudioContext
+    // 新的一次按下：上一次抬手留下的「吞掉 click」作废（那个 click 要么已经来过、要么不会来了）
+    amountPress.newGesture();
 
     // ★ 填数页金额栏：记下「这一下是不是按在栏上」（@source `0x00452d5e mov [0x48cac2], al`）。
     //   只记账、不改值、不吞事件 —— 原版按下那一拍对 id 0x10 什么都不做，值是随后的 `WM_MOUSEMOVE` 改的。
     amountBarHeld = false;
     if (e.button === 0 && amountPage !== null) {
       const pt = eventToStage(e);
-      const bar = currentDialog()?.choices[amountPage.choice]?.amount;
-      if (pt !== null && bar !== undefined) {
-        amountBarHeld = amountBarDragValue(pt.x - LAYOUT.board.x, pt.y - LAYOUT.board.y, bar.max) !== null;
-      }
+      const max = amountBarMax();
+      if (pt !== null && max !== null) amountBarHeld = amountBarDragValue(pt.x, pt.y, max) !== null;
     }
 
     // ★ W-69：過路費那段闪在播时，任意滑鼠鍵**跳过**它，而且这一下被它吃掉
@@ -8087,6 +11203,8 @@ function bindInput(): void {
       skipTollFlash();
       return;
     }
+    // ★ 第二十二份：片后 / 闪后那一段静置（`fcn_004528b9`）同样「任意滑鼠鍵」提前返回，这一下被它吃掉
+    if (skipPresentationHold(performance.now())) return;
     // ★ 神明开场白同样「任意滑鼠鍵跳過」，这一下被它吃掉
     if (skipGodLine()) return;
 
@@ -8111,6 +11229,26 @@ function bindInput(): void {
     //   按下这一拍**只吞掉**（原版 0x201 只记高亮），选中的那一下在**抬手**
     //   （0x202 = `loc_00446a2c`）；右键的取消走 `contextmenu` 那一路。
     if (dicePick !== null) return;
+
+    // ── 託管AI 屏（原版 0x201 → `loc_0041de95`）──
+    // ★ 点玩家行：没选中的只**选中**，已选中的才**翻托管**（按下这一拍就办）；
+    //   滑槽按下就改值；其余控件只记账，抬手才动作。见 `ai-settings.ts` 的 `aiSettingsDown`。
+    if (screen === 'aiSettings') {
+      if (e.button !== 0) return;
+      const q = eventToStage(e);
+      if (q !== null) onAiSettingsDown(q);
+      return;
+    }
+
+    // ── 通用填数窗（棋盘 / 銀行 / 股市三处，原版 `fcn_00452c02` 的 0x201）──
+    // ★ 按下只**记账 + 放按键音 7**（0x00452d8e..0x00452d95），数值在抬手才动（见 `mouseup`）。
+    //   先前棋盘 / 銀行那两扇挂在 `click` 上（音与动作都在松手之后），股市那扇在按下就连音带动作一起办了。
+    if (e.button === 0 && amountPage !== null) {
+      const q = eventToStage(e);
+      if (q !== null && amountWindowDown(q)) return;
+    } else {
+      amountPress.reset();
+    }
 
     // ── 設定屏（原版 0x201）──
     // 每颗控件的**立即动作**都在按下这一刻发生（改值 / 换曲 / 亮灯 / 贴按下图），
@@ -8159,19 +11297,11 @@ function bindInput(): void {
       //   休市日（或任何 `closedDays` 非 0 的日子）点计算器上任何一颗数字钮
       //   都等于「点了一下股市屏」⇒ 直接 `closeStock()` 退屏
       //   （试玩 4 报的「鼠标点计算器的数字按钮没反应」）。
+      //   ★ pt26：按下 / 抬手已经在上面的通用填数窗那一支（`amountWindowDown` / `amountWindowUp`）办了 ——
+      //   这里只把落在窗外的点**吞掉**（模态：别漏给股市柜台）。
       if (stockAmount !== null) {
-        const q0 = eventToStage(e);
         if (import.meta.env.DEV) {
-          __devHits.push({ q0, cx: e.clientX, cy: e.clientY, box: boardCtx.canvas.getBoundingClientRect().width });
-        }
-        if (q0 === null) return;
-        const ui0 = stockAmountUi();
-        if (ui0 !== null) {
-          const h0 = hitDialog(boardCtx, ui0, amountPage, q0.x - LAYOUT.board.x, q0.y - LAYOUT.board.y);
-          if (import.meta.env.DEV) __devHits.push({ hit: h0 });
-          if (h0 !== null && h0 !== 'inside') onDialogHit(ui0, h0);
-          if (amountPage === null) stockAmount = null; // 確定/取消都会关掉它
-          requestRender();
+          __devHits.push({ cx: e.clientX, cy: e.clientY, held: amountPress.held });
         }
         return;
       }
@@ -8238,6 +11368,15 @@ function bindInput(): void {
       return;
     }
 
+    // ── 还款提醒窗：左键（`0x201`/`0x203`）哪儿都行 —— 音效 1 + 这一句当场收掉 @source 0x00436596 ──
+    if (e.button === 0 && reminderUi !== null) {
+      sound.play('Effect.mkf', REMINDER_CLICK_SOUND);
+      stopVoice(); // `0x004365a5 push 1 / 0x004365a7 call 0x44ee18` —— 收框连语音一起停（0x0044ee30）
+      reminderUi = reminderClick(reminderUi);
+      requestRender();
+      return;
+    }
+
     // ── 銀行貸款屏（T-029b/T-029c）：四颗钮在**舞台坐标**上 @source loc_00435c12 ──
     const loanNow = bankPending();
     if (e.button === 0 && loanNow !== null && atm === null && amountPage === null) {
@@ -8287,7 +11426,10 @@ function bindInput(): void {
     }
 
     // ── 銀行 ATM 面板（T-029a）──
+    // ★ 只认左键按下：ATM 窗 `fcn_00436ef8` 的分派只接 `0x201` / `0x203`（→ `loc_00437161`），
+    //   右键在**抬手**（`0x205` → `loc_0043791e` 关窗，走 `contextmenu` 那把梯子），按下时既不认钮也不放音
     if (atm !== null) {
+      if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
       const btn = hitAtmButton(q.x, q.y);
@@ -8295,6 +11437,8 @@ function bindInput(): void {
       // 按下图（`[0x48c40b]` = 钮序号 + 1）@source loc_004371f9
       atmCode = btn + 1;
       atmCodeAt = performance.now();
+      // 按下那一声（模式钮 1、金额栏 9、其余 7）@source `0x00437397` 那段分发，见 `atmPressSound`
+      atmSound(atmCode);
       // 金额栏（序号 3）：按住就按位置换算金额，之后再拖动由 `mousemove` 接
       // @source loc_00437413
       if (btn === 3) {
@@ -8318,7 +11462,12 @@ function bindInput(): void {
 
     // ── 道具欄浮窗（T-024）──
     // 按下只**记下选中项 + 放确认音**，抬手才用出去（VA 0x445c8f / 0x445d84）。
+    // ★ 只认**左键**按下：两扇浮窗的消息回调（卡片欄 `fcn_004416f0`、道具欄 `fcn_00445c14`）
+    //   只接 0x201 / 0x202 / 0x205 / 0x401 / 0xf；`WM_RBUTTONDOWN`（0x204）落在
+    //   `0x441715 jb 0x44191f` / `0x445c39 jb 0x445e13` 那条缺省出口 —— 不记选中、不放音。
+    //   右键的取消在**抬手**（0x205，`contextmenu` 那把梯子）。
     if (screen === 'inventory') {
+      if (e.button !== 0) return;
       const q = eventToStage(e);
       if (q === null) return;
       const slot = hitInventory(q.x, q.y);
@@ -8330,6 +11479,14 @@ function bindInput(): void {
           ? toolEntries(state, state.currentPlayer)
           : cardEntries(state, state.currentPlayer);
       const hit = entries.find((it) => it.slot === slot);
+      // ★ 道具欄末格的载具徽章 = 「下車」（道具表第 14 项 `0x447c00`；`0x00447e24 mov byte [0x48c556], 0xe`
+      //   把末格的命中值写成 14 —— 只有骑機車 / 开汽車时才画、才点得中）
+      const traffic = state.players[state.currentPlayer]?.trafficMethod ?? 0;
+      if (hit === undefined && invKind === 'tools' && slot === INV_SLOTS - 1 && (traffic === 1 || traffic === 2)) {
+        invPicked = TOOL_GET_OFF;
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        return;
+      }
       if (hit === undefined) return;
       invPicked = hit.id;
       sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
@@ -8398,6 +11555,9 @@ function bindInput(): void {
         //   原版这一拍是 `fcn_0044ee18(1)`（@source `loc_0042de09`：提前收掉限时訊息框）——
         //   框一收，后续照常推进（状态 2→3→4，`loc_0042e686`）。故道别那一句**改成立刻到期**，
         //   交给 `shopTick` 走同一条关门路；别的气泡照旧直接收。
+        // ★★ 第二十六份 panel #2：`0x44ee18(1)` 收框时连语音一起停（`0x0044ee30 call 0x454493`）——
+        //   否则字框按「语音放完才到期」还会挂着
+        if (ui.bubble !== null) stopVoice();
         ui.bubble = shopBubbleAfterClick(ui.bubble, ui.closing);
         requestRender();
         return;
@@ -8422,7 +11582,9 @@ function bindInput(): void {
 
     // 右上角那四条彩色竖条：**点一下就换页** @source VA 0x004182fa
     // 页号 = `y / 70`；页没变就什么都不做（原版连音效都不放）。
-    const tag = hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    // ★ 組合畫面没有竖条（窄版面板），那一段 y 是小地图：`0x004182fa cmp [cfg+5], 2 / je` 整支跳过
+    const layout = sidebarLayout(options.windowView);
+    const tag = layout.panel === 'full' ? hitPanelTag(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y) : null;
     if (tag !== null) {
       setPanelPage(state.currentPlayer, tag);
       return;
@@ -8434,35 +11596,37 @@ function bindInput(): void {
       requestRender();
       return; // 点在工具栏上就不要同时开始拖动地图
     }
-    if (hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
-      // ★ 右下角那 200×200 —— **日曆那一面也有两颗钮**：太阳/月亮是「日曆 ↔ 月曆」
-      //   的切换钮（VA 0x0041838c）。**只有純小地圖那一面（cfg+5 = 1）什么都不接。**
-      const lx = p.x - LAYOUT.panel.x;
-      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
-      if (sidebarView !== 'map') {
-        const to = hitCalendarToggle(lx, ly);
-        if (to !== null) {
-          // 已经是这一面 → 什么都不做（原版连音效都不放）
-          if (to !== sidebarView) {
-            sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
-            sidebarView = to;
-            requestRender();
-          }
-          return;
-        }
-        return;
+    // ★ 右栏下面两块按「視窗」三态分（`sidebarLayout`）：日曆那 200×200 恒在 y = 280，
+    //   小地图在 280（縮小地圖）或 80（組合畫面）。原版判的顺序也是先日曆、后小地图
+    //   （VA 0x0041835f → 0x00418415）。
+    if (layout.calendar && hitSidebar(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y)) {
+      // 日曆那一面的两颗钮：太阳/月亮是「日曆 ↔ 月曆」的切换钮（VA 0x0041838c）。
+      // **只有純小地圖那一态（cfg+5 = 1）没有这一面**（`0x0041835f cmp [cfg+5], 1 / je`）。
+      const to = hitCalendarToggle(p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y - SIDEBAR.y);
+      // 已经是这一面 → 什么都不做（原版连音效都不放）
+      if (to !== null && to !== calendarPageOf(options)) {
+        sound.play('Effect.mkf', SOUND_IDS.TITLE_CLICK);
+        // @source 0x004183c6 `mov [0x497164], 0`（太阳）/ 0x0041840c `mov [0x497164], 1`（月亮）——
+        //   写的是 cfg 本体；原版随下一次 `rich4_write_config()` 整份存盘（熱鍵「切換視窗組」同样当场存，
+        //   见上面 `saveConfigToStore` 那一处），这里当场写回，关页 / 刷新不丢
+        options = { ...options, calendar: to === 'month' ? 1 : 0 };
+        saveConfigToStore();
+        requestRender();
       }
-
-      const arrow = hitMinimapArrow(lx, ly);
+      return;
+    }
+    const mm = hitMinimapArea(options.windowView, p.x - LAYOUT.panel.x, p.y - LAYOUT.panel.y);
+    if (mm !== null) {
+      const arrow = hitMinimapArrow(mm.x, mm.y);
       if (arrow !== null) {
         // 按下先记账 + 亮起来，**松开才转** —— 原版是按下/抬起两段（VA 0x00418415 / 0x004186cb）
         pressedMinimapArrow = arrow;
         requestRender();
         return;
       }
-      if (hitMinimapBody(lx, ly)) {
+      if (hitMinimapBody(mm.x, mm.y)) {
         // 点小地图本体：把光标处的局部坐标换成世界坐标、夹紧，镜头就停在那儿（可继续拖）
-        minimapMarker = minimapCenterFromLocal(lx, ly);
+        minimapMarker = minimapCenterFromLocal(mm.x, mm.y);
         draggingMinimap = true;
         centerOnMarker();
         requestRender();
@@ -8527,7 +11691,7 @@ function bindInput(): void {
       by > 0 &&
       currentDialog() === null &&
       sceneFor(state.pending) === null &&
-      state.pending?.kind !== 'bail'
+      !bailScreenOn()
     ) {
       const m = tipModel(map, state, bx, by, (wx, wy) =>
         worldToScreen(wx, wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h }),
@@ -8562,6 +11726,15 @@ function bindInput(): void {
         return;
       }
     }
+    // ── 託管AI 屏：抬手照按下时记下的控件动作（原版 0x202 → `loc_0041e0b1`）──
+    // ★ 只认左键：右键抬手是 `0x205` = 关屏（走 `contextmenu` → `cancelTopPanel` 那一路）
+    if (screen === 'aiSettings') {
+      if (e.button === 0) onAiSettingsUp();
+      return;
+    }
+    // ── 通用填数窗：抬手照**按下时记下的那一号**动作（原版 0x202 → `loc_00452fce`）──
+    // ★ 只认左键：右键抬手是 `0x205` = 关窗（走 `contextmenu` → `cancelTopPanel` 那一路）
+    if (e.button === 0 && amountWindowUp()) return;
     // ── 銀行两屏（T-029c）：抬手才收尾 ──
     //   · 貸款屏 EXIT：`loc_00435ea2`（0x202）—— 按下只记 `[0x48c3e1]`，
     //     抬手的 **那一下**才出「謝謝您的惠顧」并把状态推到 0xb。
@@ -8631,7 +11804,17 @@ function bindInput(): void {
     }
 
     // ── 道具欄浮窗：抬手把选中项用出去（VA 0x445d84）──
+    // ★ 只认**左键**抬手（`WM_LBUTTONUP` 0x202）；右键走 `contextmenu` 那把取消梯子。
+    //   不加这一条：macOS 上右键是「按下 → contextmenu → 抬手」，目标拾取右键取消后
+    //   `cardUseFailed` 刚把卡片欄开回来（原版 `0x00441ce3 je 0x441c22`），
+    //   紧跟的右键抬手就落进这里、`invPicked === null` ⇒ 当场又把卡片欄关掉。
     if (screen === 'inventory') {
+      if (e.button !== 0) return;
+      // ★ 没按中任何一格（格外 / 空格）就抬手 ⇒ **什么都不做，浮窗留着**：
+      //   `0x441889 cmp [0x48c544],0 / je 0x441579`（卡片欄）、`0x445d84 cmp [0x48c560],0 / je 0x445d7d`（道具欄）。
+      //   两扇都是整窗的模态回调（`0x4018e7` 把所有消息交给回调栈顶），格外的点击也落在这里。
+      //   先前这里一律 `closeInventory()` —— 点空白就关窗是本引擎自己加的。
+      if (invPicked === null) return;
       applyInventoryPick();
       return;
     }
@@ -8676,24 +11859,30 @@ function bindInput(): void {
       return;
     }
 
-    // ── 監獄／醫院保釋屏：抬手才保釋（原版 0x202，`loc_0043cef6` / `loc_0043e...`）──
-    if (screen === 'game' && state.pending?.kind === 'bail') {
-      const pending = state.pending;
-      const occupancy = pending.place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+    // ── 監獄／醫院保釋屏：抬手（原版 0x202，監獄 `loc_0043cef6` / 醫院 `loc_0043e658`）──
+    //   ★ 2026-09-23：整段走 `bail-screen.ts` 的 `bailFlowStep` —— 字框挂着时点一下只收框；
+    //   付得起先弹 YES/NO（`0x453a32` 居中 (320,240)），YES 才把答复交给 core；
+    //   付不起柜台人员说「抱歉！你的點數不足！」（監獄 (0xe6,0x12c) / 醫院 (8,8) 那只框）。
+    if (screen === 'game' && bailScreenOn()) {
+      // 只认左键抬手（0x202 = WM_LBUTTONUP）；右键那一下由面板取消（0x205）那一路处理
+      if (e.button !== 0) return;
       const q = eventToStage(e);
-      if (q !== null) {
-        const slot = hitBailSlot(pending.place, q.x, q.y, occupancy);
-        if (slot !== null) {
-          // ★ 钱不够就**什么都不做**（原版弹一个「點券不足」的訊息框，见下方偏差记录）。
-          //   够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
-          if (canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot)) {
-            dispatch({ type: 'bail', slot });
-            bailHot = null;
-          } else {
-            log('點券不足，付不起這位的保釋金');
-            requestRender();
-          }
+      const place = bailPlace();
+      if (q !== null && place !== null && bailFlow !== null && state.pending?.kind === 'bail' && localSeatActive()) {
+        if (bailFlow.stage === 'confirm') {
+          bailSend({ kind: 'yesNo', hit: hitBailYesNo(q.x, q.y) });
+        } else {
+          const occupancy = place === 'prison' ? state.prisonOccupancy : state.hospitalOccupancy;
+          const slot = hitBailSlot(place, q.x, q.y, occupancy);
+          // 够不够用这一屏自己的判据（`>= 赎金`），不是电脑那条更严的。
+          const affordable = slot !== null && canPayOnScreen(state.players[state.currentPlayer]?.points ?? 0, slot);
+          if (slot !== null && !affordable) log('點券不足，付不起這位的保釋金');
+          bailSend({ kind: 'click', slot, affordable });
+          bailHot = null;
         }
+      } else if (bailFlow !== null && bailFlowHasBubble(bailFlow.stage)) {
+        // 收尾那几句（答复已落地）也照样点一下就收
+        bailSend({ kind: 'bubbleEnd' });
       }
       return;
     }
@@ -8711,6 +11900,11 @@ function bindInput(): void {
       sound.play('Effect.mkf', SOUND_TARGET_PICKED);
       const source = pick.source;
       endPick();
+      if (source.kind === 'build') {
+        // 建設公司：选中的实例编码交回（`0x00446691 push [0x48c584]`）；0 级設施的选种类窗由 core 挂 `buildFacility`
+        if (hit.code !== undefined) dispatch({ type: 'buildTarget', entityId: hit.code });
+        return;
+      }
       if (source.kind === 'card') {
         // ★ 搶奪卡（13）打**人**：原版在这里换成 `fcn_0044192a` 那扇模态选牌窗
         //   （见 `steal-picker.ts`），挑完才 `consume_card` + `receive_card`；
@@ -8718,12 +11912,28 @@ function bindInput(): void {
         const t = hit.target;
         if (t.kind === 'player' && needsStealPick(state, source.cardId, t)) {
           openStealPicker(t.index, 'steal', (pick) => {
-            if (pick === null) return; // 取消：什么都不派（照抄 exe）
+            // 取消：什么都不派（照抄 exe）；卡片函数返回 0（`loc_00441f1b` 的 `mov eax, ebx`）
+            //   ⇒ 调度器失败音 3 + 卡片欄重开（`0x00441cd9` / `0x00441ce3`）
+            if (pick === null) {
+              cardUseFailed();
+              return;
+            }
             dispatch({
               type: 'useCard',
               cardId: source.cardId,
               target: { kind: 'player', index: t.index, steal: pick },
             });
+          });
+          return;
+        }
+        // ★★ 天使卡（9）打**0 级設施**：原版在 `0x40b110` 里给真人开「請選擇設施類別」
+        //   （`0x0040b1e4 call 0x440aac(0)`），种类挂在 facility 目标的 `buildType` 上
+        const tgt = hit.target;
+        if (source.cardId === 9 && tgt.kind === 'facility' && pickerNeededFor(state, topo, hit.nodeId)) {
+          const cardId = source.cardId;
+          openFacilityPicker((type) => {
+            if (type === null) return;
+            dispatch({ type: 'useCard', cardId, target: { ...tgt, buildType: type } });
           });
           return;
         }
@@ -8738,6 +11948,17 @@ function bindInput(): void {
           if (type === null) return;
           dispatch({ type: 'useTool', toolId, nodeId, value: type });
         });
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom === undefined) {
+        // ★★ 傳送機第一段选完来源 ⇒ 马上开第二段（地块 `0x2090802` / 設施 `0x2090804` / 其余 `0x2090001`）；
+        //   第二段右键取消 = 道具不消耗（`0x00447506` / `0x004475a9` / `0x00447673` / `0x004478f2 je 0x4479b3`）
+        const from = hit.code ?? 0;
+        pick = startPick(state, topo, { kind: 'tool', toolId: TOOL_TELEPORTER, teleportFrom: from }, 'none', teleportTargetParam(from));
+        pickHover = null;
+        if (pick.candidates.length === 0) log('「傳送機」这一件现在搬不到任何地方');
+        refreshPickCursor();
+        requestRender();
+      } else if (source.toolId === TOOL_TELEPORTER && source.teleportFrom !== undefined) {
+        dispatch({ type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: source.teleportFrom, value: hit.code ?? hit.nodeId });
       } else {
         dispatch({ type: 'useTool', toolId: source.toolId, nodeId: hit.nodeId });
       }
@@ -8777,8 +11998,9 @@ function bindInput(): void {
       // 按着小地图拖 —— 光标停在哪，镜头就移到哪（原版 VA 0x0041899b 也是这么算的）
       const p = eventToStage(e);
       if (p === null) return;
+      // 顶边随「視窗」三态走（VA 0x0041895b：組合畫面 `lea esi, [edx - 0x50]`）
       const lx = p.x - LAYOUT.panel.x;
-      const ly = p.y - LAYOUT.panel.y - SIDEBAR.y;
+      const ly = p.y - LAYOUT.panel.y - (sidebarLayout(options.windowView).minimapTop ?? SIDEBAR.y);
       minimapMarker = minimapCenterFromLocal(
         Math.min(SIDEBAR.w - 1, Math.max(0, lx)),
         Math.min(SIDEBAR.h - 1, Math.max(0, ly)),
@@ -8799,6 +12021,11 @@ function bindInput(): void {
     if (tollFlash !== null) {
       e.preventDefault();
       skipTollFlash();
+      return;
+    }
+    // ★ 第二十二份：静置那一截（右键也算「任意滑鼠鍵」`0x205`）
+    if (skipPresentationHold(performance.now())) {
+      e.preventDefault();
       return;
     }
     // ── 登记的整屏（契约见 ui-screen.ts）：**声明了** `contextmenu` 的屏先收 ──
@@ -8833,6 +12060,9 @@ function bindInput(): void {
   });
 
   window.addEventListener('resize', requestRender);
+  // 地址栏展开/收起、分屏、Stage Manager 改窗口 —— iPad Safari 上**不一定**发 window
+  // `resize`，但一定发 `visualViewport` 的；页面矩形已由 `installViewportFit` 重钉，这里排一帧
+  window.visualViewport?.addEventListener('resize', requestRender);
 
   // ── 熱鍵 ──────────────────────────────────────────────
   //
@@ -8858,8 +12088,20 @@ function bindInput(): void {
   });
   window.addEventListener('unhandledrejection', (e) => {
     const r: unknown = e.reason;
-    onUncaught('unhandledrejection', r instanceof Error ? r.message : String(r), r instanceof Error ? (r.stack ?? null) : null);
+    const message = r instanceof Error ? r.message : String(r);
+    const stack = r instanceof Error ? (r.stack ?? null) : null;
+    // ★ 扩展 / 系统注入脚本的消息桥失败（如 iOS Safari 的「NoResponse: No response from target」）
+    //   不是本程序的错：不上日志栏、不落回报，只记飞行记录仪 + 宿主日志（判据与取证见 `external-rejection.ts`）
+    if (isExternalRejection(message, stack)) {
+      recorder.error({ t: Date.now(), kind: 'note', message: `[外来 rejection，已忽略] ${message}`, stack: null });
+      hostLog(`[unhandledrejection·external] ${message}`);
+      return;
+    }
+    onUncaught('unhandledrejection', message, stack);
   });
+
+  // ★★ 第十六份：演出死锁看门狗（见 `watchPresentationDeadlock`）—— 定时器驱动，卡死时渲染循环早停了
+  window.setInterval(() => watchPresentationDeadlock(Date.now()), 1_000);
 
   // ★★ 停摆看门狗：**电脑的回合** 60 秒没有任何进展 = 回合链断了（电脑不需要等人）。
   //   真人回合不算 —— 人可以想多久都行。只落一次回报；浏览器下不自动弹下载，只记一行。
@@ -8874,11 +12116,14 @@ function bindInput(): void {
       stallSince = now;
       return;
     }
-    if (stallReported || screen !== 'game' || state.phase === 'gameOver' || !isAiTurn(state)) return;
-    if (net !== null && !localSeatActive()) return; // 联机：别人的回合卡不卡不由本机判
+    // ★ 第十六份：回合开始 / 走子 / 落点结算这几段**不等人**（真人回合也是自动派的）⇒ 停着就是断了
+    //   （线上那一次停在真人的 `turnStart`，先前这里只认电脑回合，一份回报都没落）
+    const autoPhase = state.phase === 'turnStart' || state.phase === 'moving' || state.phase === 'settling';
+    if (stallReported || screen !== 'game' || state.phase === 'gameOver' || (!isAiTurn(state) && !autoPhase)) return;
+    if (net !== null && !localSeatActive() && !autoPhase) return; // 联机：别人的回合卡不卡不由本机判
     // 电脑的回合里也可能在**等人**：竞价轮到真人举牌（core `actingSeat`）⇒ 不算停摆
     const acting = state.players[actingSeat(state)];
-    if (acting === undefined || !isAiControlled(acting)) return;
+    if (!autoPhase && (acting === undefined || !isAiControlled(acting))) return;
     // 整屏演出（月結、開獎…）可能在等人点一下才收 ⇒ 放宽到 3 分钟，免得误报
     const limit = activeUiScreen() === null ? 60_000 : 180_000;
     if (now - stallSince < limit) return;
@@ -8892,12 +12137,22 @@ function bindInput(): void {
   }, 5_000);
 
   window.addEventListener('keydown', (e) => {
+    // ★ 浏览器自动填充（Chrome 填账号/密码时）会派发**不是 KeyboardEvent** 的 `keydown`：
+    //   没有 `code` / `key`。下游一律按 `e.code.startsWith(…)` 读物理键位 ⇒ 抛
+    //   「Cannot read properties of undefined (reading 'startsWith')」（2026-09-23 Ruan 的自动回报，
+    //   标题画面、刚进站）。这种事件不是按键，整条丢掉。
+    if (typeof e.code !== 'string' || typeof e.key !== 'string') return;
     // ★ F9 = 问题回报（原版的键名表里没有 F1..F12，不占任何原版热键）
     if (e.key === 'F9') {
       e.preventDefault();
       fileReport('manual');
       return;
     }
+    // ★ 焦点在**文字输入框**里（门厅昵称、联机存档命名、回报说明…）⇒ 这是在打字，不是按熱鍵：
+    //   整条交给输入框自己，游戏一概不收、不 `preventDefault`。
+    //   先前这里没有这道闸，熱鍵表里的字母（S 存檔 / C / M / H …）被下面的熱鍵段吞掉，
+    //   昵称里那几个字母就打不进去（需求方 2026-09-24「输入昵称时有些字母输不进去」）。
+    if (isTextEntryTarget(e.target)) return;
     unlockAudio();
     // 开局过场：任意键跳过（原版同样可跳过）
     if (screen === 'intro') {
@@ -9141,8 +12396,23 @@ const RECONNECT_MS = 1500;
  *   之后**只**施加服务器广播的 action。断线就带着 `since`（本地已施加到几号）
  *   重连，同名认回原座位，服务器补发漏掉的那段。
  */
-function connectOnline(url: string, room: string, name: string): void {
+function connectOnline(
+  url: string,
+  room: string,
+  name: string,
+  opts: {
+    /** 房间列表（v5）：建房 / 加入已有的；不给 = 旧语义（老调试入口）*/
+    mode?: JoinMode;
+    /** 还没坐下就被拒（房间不在了 / 满了 / 版本不符）—— 给了就断开并交给它（回列表）*/
+    onJoinFailed?: (message: string) => void;
+    /** ★ 聯機存檔（v6）：建房時從這份存檔繼續 */
+    fromSave?: string;
+    /** ★ 聯機存檔（v6）：加入已開局的存檔房時認領這一座 */
+    claimSeat?: number;
+  } = {},
+): void {
   let closedByUs = false;
+  let firstOpen = true;
   // ★ W-73：身份令牌 —— 断线重连**认回原座位**只认它，不认名字。
   //   老的 `?ws=…&room=…&name=…` 调试入口也走这一条（从同一个 localStorage 取 / 生成）。
   const clientId = loadClientId(browserStorage());
@@ -9153,19 +12423,41 @@ function connectOnline(url: string, room: string, name: string): void {
       closedByUs = true;
       ws.close();
     };
+    // ★ 断线重连一律按「加入已有的」：头一次是「建房」的，重连时房间当然已经在了
+    //   （照 `'create'` 再发一次只会撞上自己的房间被拒）
+    const mode = opts.mode === undefined ? undefined : firstOpen ? opts.mode : 'join';
+    // ★ 聯機存檔（v6）：「從存檔建」「認領座位」都只在頭一次 —— 重連時憑 clientId 認回
+    const once = firstOpen
+      ? {
+          ...(opts.fromSave === undefined ? {} : { fromSave: opts.fromSave }),
+          ...(opts.claimSeat === undefined ? {} : { claimSeat: opts.claimSeat }),
+        }
+      : {};
+    firstOpen = false;
+    let lastError: string | null = null;
     const client = new NetClient(
       { send: (text) => ws.send(text) },
       {
         room,
         name,
         clientId,
+        ...(mode === undefined ? {} : { mode }),
+        ...once,
         ...(since === undefined ? {} : { since }),
         onJoined: (seat, info) => {
-          log(`✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === 0 ? '（房主，按 START 開局）' : ''}`);
+          log(
+            seat < 0
+              ? `✔ 進房 ${info.id}（從存檔繼續）：還沒入座 —— 點自己那一座的「這是我」`
+              : `✔ 進房 ${info.id}：我是 ${seat + 1} 號座${seat === roomHostSeat(info) ? '（房主，按 START 開局）' : ''}`,
+          );
+          // ★ 只有「进房时还没开局」才该播開局過場（见 `roomJoinedUnstarted` 的注释）
+          roomJoinedUnstarted = !info.started;
           enterLobby(info);
           // ★ W-75：第一次拿到快照 ⇒ 屋里已经在的人按「加入了」报一遍
-          lastToastRoom = null;
-          netToasts.update(null, info, seat);
+          //   ★ v6：同一間房裡又來一條 `joined`（「這是我」坐下、前面有人離開往前挪了座）不重報
+          const sameRoom = lastToastRoom !== null && lastToastRoom.id === info.id;
+          if (!sameRoom) lastToastRoom = null;
+          netToasts.update(lastToastRoom, info, seat);
           lastToastRoom = info;
         },
         onRoom: (info) => {
@@ -9183,28 +12475,87 @@ function connectOnline(url: string, room: string, name: string): void {
         },
         onStart: (start) => {
           // 重连时 start 会再来一次；局面已在，别重建（那会把 since 之前的进度清掉）
-          if (since !== undefined && screen === 'game') return;
+          // ★ 開局過場也算「已在這一局」—— 否则过场期间若再收到一条 `start`，会重建局面并把过场重置
+          if (since !== undefined && (screen === 'game' || screen === 'intro')) return;
           lobbyRoom = null;
           lobbyHot = null;
           map = parseMap(readMapData(archives, start.globalMapId));
           topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
-          // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上
-          state = newGame({
-            map,
-            globalMapId: start.globalMapId,
-            players: start.seats.map((s) => ({ character: s.character, kind: s.kind })),
-            seed: start.seed,
-            mode: 'multiplayer',
-          });
+          // ★ 与服务器镜像（server/room.ts）逐字段一致，否则指纹对不上 ——
+          //   新局 `newGame`，★ 聯機存檔（v6）從存檔繼續的局讀快照（`net-start.ts`，與 `onResync` 同一段）
+          state = initialNetState(start, map);
           history.length = 0;
           recorder.reset();
           hoverNode = null;
-          const first = map.nodes[state.players[0]?.nodeId ?? 1];
+          // ★ 换局：把上一局「这一刻在播」的影片全收掉 —— 与单机 `startGame()`（7602-7617）同一理由，
+          //   旧局的影片时间轴还挂着会盖在新棋盘上，棋盘还会拿旧局的 before 快照当底。
+          buildFx = null;
+          pendingBuildFx = null;
+          magicSeq = null;
+          buildFlicPending.clear();
+          releaseBuildFlics();
+          boardFilm = null;
+          pendingBoardFilm = null;
+          landingFx = null;
+          // 「狗咬 → 救护车」那一段的排队也要一起清（同一条理由）
+          pendingBoardFilmAfter = null;
+          boardFilmQueueRest = [];
+          boardFilmPending.clear();
+          releaseBoardFilmFlics();
+          releaseHeldGodFilm();
+          deferredBoardBefore = null;
+          resetBankruptScreen(); // ★ 第二十五份：破產影片（整屏）同属「这一刻在播」
+          newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
+          manifestHold = null;
+          vehicleHold = null;
+          godAscend = null;
+          pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+          pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+          renderer.clearRelocate();
+          pendingCardRoute = null; // 亮牌后待走的那一张同理
+          // ★ 与单机 `startGame()` 同一条：面板页号归零（`0x48be24`）、自動存檔日期清掉
+          panelPages.fill(0);
+          autosaveDateKey = null;
+          // GO 鈕的位置回到静态初值（原版 `[0x475284]/[0x475288]` 不存档，重开一盘就复位）
+          goButton.reset();
+
+          const first = map.nodes[state.players[state.currentPlayer]?.nodeId ?? state.players[0]?.nodeId ?? 1];
           camera = pixelCamera(first?.x ?? 0, first?.y ?? 0, state.viewRotation);
-          screen = 'game';
+          // ★★ 第九份试玩回报（2026-09-22，Charles）：「多人模式开局没有机舱跳伞的过场动画」。
+          //   过场本身一直在（`intro.ts`，单机也一直在播）—— 是**联机这条路根本没接**：
+          //   先前这里直接 `screen = 'game'`，跳过了单机 7622-7626 那四行。
+          //   现在与单机逐项对齐（`intro.ts` 一个字不用改）。
+          //
+          //   ⚠️ 只有「进房时还没开局」才播，否则刷新/重连每来一次就重看 13 秒 —— 见
+          //      `roomJoinedUnstarted` 的注释。过场期间**不报** `awaiting`（`tickAwaiting`
+          //      第一句就是 `screen !== 'game'` 闸），所以 60 秒不会被过场吃掉；
+          //      但前提是过场时长短于服务端的兜底值（4 人局 ≤ 14.9 s ≪ `awaitingFallbackMs` 45 s）。
+          // ★ 聯機存檔（v6）：從存檔繼續的局不是「開局」，不播跳傘
+          if (start.snapshot !== undefined) roomJoinedUnstarted = false;
+          if (roomJoinedUnstarted) {
+            introStartedAt = performance.now();
+            introSkipped = false;
+            introSoundPlayed = false;
+            screen = 'intro';
+          } else {
+            screen = 'game';
+          }
           log(`開局（聯機）：地圖 ${start.globalMapId}　種子 ${start.seed}`);
-          ground = null;
-          void loadGround(archives, start.globalMapId).then((g) => {
+          // ★ 背景曲从**片头过场里**就起了 @source 0x00415963 `push 1 / call sub_00454d91`
+          //   —— 与单机 7629-7630 同一个点（`bgmBackground` 初值 false，这里不起就没人起）
+          holidayBgmDays = 0;
+          playBoardBgm(1);
+          // ★ `Speaking.mkf` 进棋盘这一刻就开始拉（与单机 7637 同一理由；网页版是 no-op）
+          ensureSpeakingArchive();
+          // ★★ 開局**不说话** —— 与单机 `startGame()` 同一条（第十四份试玩回报 #1）：
+          //   事件 26 是「输了续局」那一句（`fcn_00407842`，只在 `0x40cff0` / `0x41da2d` 调），
+          //   新开一局的路（`0x406de7 → … → 0x415872` 跳伞过场）不说。
+          // 换地图要重新解底图 —— `setGround(null)` 会 close 掉旧位图，
+          // 先前这里只把 `ground` 置 null，旧 bitmap 就泄漏了（与单机 7650 对齐）
+          // ★★ 第十六份试玩回报「以后两边模式都要同步」：先前这里漏了 `hdSource`（单机 `startGame()` 有）
+          //   ⇒ 开了高清底图的人一进联机就退回原图。与单机同一个调用。
+          setGround(null);
+          void loadGround(archives, start.globalMapId, hdSource).then((g) => {
             ground = g;
             requestRender();
           });
@@ -9220,6 +12571,14 @@ function connectOnline(url: string, room: string, name: string): void {
           netInbox.push({ action, seq });
           pumpNetInbox();
         },
+        // ★ v8（gap-audit #7）：别的座位转来的纯演出提示 —— 排进收件箱同一个位置，轮到它才演
+        onPresent: ({ seat, cue }) => {
+          netInbox.push({ cue, seat });
+          pumpNetInbox();
+        },
+        // ★★ 第十二份試玩回報：中途进房（刷新 / 断线重连）时「进房之前」的那一段 —— **静默**追上，
+        //   不走 `pumpNetInbox` 那条会起演出的路（见 `catchUpSilently`）。
+        onCatchUp: (items) => catchUpSilently(items),
         // ★ W-74：服务器广播的剩余毫秒（`-1` = 这一轮计时作废）
         onClock: (c) => {
           clockSeat = c.remainingMs < 0 ? null : c.seat;
@@ -9227,7 +12586,31 @@ function connectOnline(url: string, room: string, name: string): void {
           clockAt = performance.now();
           requestRender();
         },
-        onError: (message) => log(`⚠ 伺服器：${message}`),
+        onError: (message) => {
+          log(`⚠ 伺服器：${message}`);
+          lastError = message;
+          // ★ 本机那一掷被服务器拒了（`illegalAction` 等）⇒ 那条回包**不会来了**。
+          //   当场把预测的滚骰收掉并松开节拍闸，别让它空转到 3 秒超时。
+          //   （重复点 GO、超时被别人接管之后再发 intent，都会走到这里。）
+          if (awaitingOwnRoll) {
+            awaitingOwnRoll = false;
+            diceFx.cancel();
+            resumeTurnDriver();
+          }
+          // ★ 房间列表：还没坐下就被拒 ⇒ 这条连接没用了，回列表（把原因摆出来）
+          if (client.seat === null && opts.onJoinFailed !== undefined) {
+            closedByUs = true;
+            ws.close();
+            if (net === client) net = null;
+            netClose = null;
+            opts.onJoinFailed(message);
+          }
+        },
+        // ★ 聯機存檔（v6）：房主存了一份檔 —— 全桌都知道
+        onSaved: (name) => {
+          log(`💾 房主存檔：${name}`);
+          showNetNotice(`房主存了一份檔：「${name}」`);
+        },
         onDesync: (d) =>
           log(`⚠ 失步！第 ${d.seq} 號後 ${d.seat + 1} 號座的校驗和 ${d.got} ≠ ${d.expected}，已請求全量重放`),
         // ★ Q-NET-1 自愈：服务器把**完整** action 日志重放回来了 → 整体重建本地状态。
@@ -9237,13 +12620,8 @@ function connectOnline(url: string, room: string, name: string): void {
         onResync: (r) => {
           map = parseMap(readMapData(archives, r.globalMapId));
           topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
-          state = newGame({
-            map,
-            globalMapId: r.globalMapId,
-            players: r.seats.map((s) => ({ character: s.character, kind: s.kind })),
-            seed: r.seed,
-            mode: 'multiplayer',
-          });
+          // ★ 同上：重放重建也必须带上开局选项 / 存檔快照（否则重建出来的不是同一局）
+          state = initialNetState(r, map);
           history.length = 0;
           recorder.reset();
           // 收着没播的那些已经包含在这份重放里了（`NetClient` 把序号指针接成了 `actions.length`）
@@ -9252,26 +12630,8 @@ function connectOnline(url: string, room: string, name: string): void {
             state = reduce(state, action, topo);
             history.push(action);
           }
-          // 本屏的临时 UI 状态一律收掉：重放可能把 pending 换成了另一种，旧的指认不再成立
-          amountPage = null;
-          dialogHot = null;
-          pick = null;
-          pickHover = null;
-          hoverNode = null;
-          diceFx.cancel();
-          // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
-          buildFx = null;
-          pendingBuildFx = null;
-          buildFlicPending.clear();
-          releaseBuildFlics();
-          // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
-          deferredBoardBefore = null;
-          npcWalksDrawn = null;
+          settleAfterSilentRebuild();
           log(`⟳ 失步自愈：重放 ${r.actions.length} 條 action，本地狀態已重建（第 ${r.actions.length} 號）`);
-          requestRender();
-          renderPanel();
-          scheduleAi();
-          scheduleHumanTurn();
         },
         fingerprint: () => stateFingerprint(state),
       },
@@ -9285,6 +12645,14 @@ function connectOnline(url: string, room: string, name: string): void {
     ws.onmessage = (ev) => client.receive(String(ev.data));
     ws.onclose = () => {
       if (closedByUs) return;
+      // ★ 聯機存檔（v6）：存檔房裡還沒入座的人，房主一開局就被請出去 ⇒ 回列表（那裡有「認領座位」）
+      if ((client.seat ?? -1) < 0 && lastError !== null && opts.onJoinFailed !== undefined) {
+        closedByUs = true;
+        if (net === client) net = null;
+        netClose = null;
+        opts.onJoinFailed(lastError);
+        return;
+      }
       log(`⚠ 與伺服器斷線，${RECONNECT_MS / 1000} 秒後重連…`);
       window.setTimeout(() => open(client.expectedSeq > 0 ? client.expectedSeq - 1 : undefined), RECONNECT_MS);
     };
@@ -9317,9 +12685,8 @@ async function loadArchivesForWeb(): Promise<LoadedArchives> {
     try {
       showLoadingScreen();
       const loaded = await loadAllArchives(assetBase(), renderLoadProgress);
-      // ★ HD 素材：清单里**没有** `hd-manifest.json` 就一次都不问
-      //   （`assets/hd/` 是空的，那份 3.8 MB 的清单白拉 —— 任务书 W-72 §5）
-      hdListed = loaded.manifest?.files.some((f) => f.name === HD_MANIFEST_NAME) ?? true;
+      // ★ HD 素材：清单里登记了超分清单就记下它的版本（见 `hdManifestVersion`）
+      hdManifestVersion = loaded.manifest?.files.find((f) => f.name === HD_MANIFEST_NAME)?.sha256.slice(0, 8) ?? null;
       const speaking = loaded.archives.get('Speaking.mkf');
       const effect = loaded.archives.get('Effect.mkf');
       if (speaking !== undefined) {
@@ -9340,7 +12707,7 @@ async function loadArchivesForWeb(): Promise<LoadedArchives> {
 
 function showLoadingScreen(): void {
   metaEl.className = 'meta';
-  metaEl.textContent = '正在载入原版素材… 0%';
+  metaEl.textContent = '正在载入素材… 0%';
   loadBarEl.hidden = false;
   loadFillEl.style.width = '0%';
   loadHintEl.hidden = false;
@@ -9355,7 +12722,7 @@ function showLoadingScreen(): void {
  */
 function renderLoadProgress(p: LoadProgress): void {
   const pct = p.total > 0 ? Math.floor((p.loaded / p.total) * 100) : 0;
-  metaEl.textContent = `正在载入原版素材… ${pct}%`;
+  metaEl.textContent = `正在载入素材… ${pct}%`;
   loadFillEl.style.width = `${pct}%`;
   // 已经从缓存里拿到过东西了 —— 「首次载入约 130 MB」那句就不必再挂着
   if (p.cachedHits > 0) loadHintEl.hidden = true;
@@ -9383,57 +12750,113 @@ function clearLoadingScreen(): void {
   metaEl.className = 'meta';
 }
 
+/** ★ 聯機提示（右下角那一疊）—— 聯機存檔等用 */
+function showNetNotice(text: string): void {
+  netToasts.push(text);
+}
+
 /**
- * ★ W-73 门厅：**只在网页版、且地址里没有 `screen=` 调试参数时**，
+ * ★ 聯機存檔（v6）：遊戲內「儲存進度」在聯機時 —— 房主取個名字、存到伺服器。
+ * 非房主只給一句提示（伺服器那邊也會拒）。
+ */
+async function promptNetSave(): Promise<void> {
+  const client = net;
+  if (client === null) return;
+  if (client.seat === null || client.seat !== roomHostSeat(client.room)) {
+    showNetNotice('只有房主能存檔（伺服器每過一天也會自動存一份）');
+    return;
+  }
+  const name = await promptSaveName(defaultSaveName(state));
+  if (name === null || net !== client) return;
+  client.save(name);
+}
+
+/** 门厅 / 房间列表连哪台服务器：`?ws=` 给了就用它（本机调试），否则同源 `wss://<host>/ws` */
+let foyerWsUrl: string | null = null;
+
+function foyerUrl(): string {
+  return foyerWsUrl ?? defaultWsUrl(window.location);
+}
+
+/**
+ * ★ 左侧佈告欄与门厅之间那块开关（见 `board-panel.ts` 的 `BoardPanelFoyer`）。
+ * 门厅是 `position: fixed` 的满屏覆盖层，以前正好把佈告欄盖死 —— 第一次来的人
+ * 看不到公告。现在门厅的左边界是 `--board-w`（面板自己写），而这块开关让面板在
+ * **门厅期间一律展开**（连手机也是）：需求方「一进去就要看到」。
+ */
+const boardFoyer = boardPanelFoyer();
+
+/** 门厅在屏幕上的这段期间：佈告欄让出左边那一条 + 一律展开；结束（含中途抛了）回到正常判据 */
+async function whileFoyerUp<T>(open: () => Promise<T>): Promise<T> {
+  boardFoyer.up = true;
+  boardFoyer.refresh?.();
+  try {
+    return await open();
+  } finally {
+    boardFoyer.up = false;
+    boardFoyer.refresh?.();
+  }
+}
+
+/**
+ * ★ 门厅：**只在网页版、且地址里没有 `screen=` 调试参数时**，
  * 在素材载入完成之后、標題畫面之前出现（任务书 W-73 §1）。
  *
- * · **單機遊戲** ⇒ 关掉覆盖层，走现有標題畫面；
- * · **建立 / 加入房間** ⇒ 用 `defaultWsUrl(location)` + 房间码 + 名字进大厅。
+ * · **單人模式** ⇒ 关掉覆盖层，走现有標題畫面；
+ * · **在線聯機** ⇒ 房间列表 ⇒ 「加入 / 重新連線 / 建立房間」⇒ 进大厅。
+ *   进房失败（房间刚解散、人满了……）⇒ 带着那句话回到列表。
  */
-async function openFoyer(): Promise<void> {
-  const choice = await showFoyer({ inviteRoom: inviteRoomFrom(window.location.search) });
+async function openFoyer(opts: { view?: 'home' | 'rooms'; notice?: string; inviteRoom?: string | null } = {}): Promise<void> {
+  const storage = browserStorage();
+  const choice = await whileFoyerUp(() =>
+    showFoyer({
+      ...opts,
+      wsUrl: foyerUrl(),
+      clientId: loadClientId(storage),
+      storage,
+      hd: { on: hdStage, set: setHdStage },
+    }),
+  );
   if (choice.kind === 'solo') {
     enterTitleScreen();
     return;
   }
-  log(`房間 ${choice.room}（${choice.name}）`);
-  connectOnline(defaultWsUrl(window.location), choice.room, choice.name);
+  joinFromFoyer(choice.room, choice.name, choice.mode, {
+    ...(choice.fromSave === undefined ? {} : { fromSave: choice.fromSave }),
+    ...(choice.claimSeat === undefined ? {} : { claimSeat: choice.claimSeat }),
+  });
+}
+
+/** 从门厅 / 旧链接进一间房；进不去就回列表并把原因摆在最上面 */
+function joinFromFoyer(
+  room: string,
+  name: string,
+  mode: JoinMode,
+  extra: { fromSave?: string; claimSeat?: number } = {},
+): void {
+  log(`房間 ${room}（${name}，${mode === 'create' ? '建立' : '加入'}）`);
+  connectOnline(foyerUrl(), room, name, {
+    mode,
+    ...extra,
+    onJoinFailed: (message) => void openFoyer({ view: 'rooms', notice: message }),
+  });
 }
 
 /**
- * ★ W-73：大厅那颗「複製邀請連結」是 **DOM** 按钮。
+ * 网页版的旧邀请链接（`?room=`）：**直接进那一间**（名字存过的话连门厅都不停）。
  *
- * 为什么不做进 canvas：复制要用 `navigator.clipboard`，而且这段文字是本项目自己的，
- * 不该往复刻屏里加（任务书 W-73 §1 的同一条理由）。
- *
- * 每帧同步一次可见性 —— 幂等，比在十几个「离开大厅」的出口上各挂一次可靠。
+ * ★ `?room=` 用过一次就从地址里拿掉：之后从大厅退回列表、再刷新，不该又被拽回那一间
+ *   （真断线了，列表上那一行会是「重新連線」）。
  */
-function syncInviteButton(): void {
-  const show = screen === 'lobby' && net !== null;
-  if (inviteEl.hidden !== show) return; // `hidden === !show` ⇒ 已经对了
-  inviteEl.hidden = !show;
-}
-
-/** 点一下：把 `https://<host>/?room=<码>` 放进剪贴板 */
-function copyInviteLink(): void {
-  const room = net?.room?.id ?? '';
-  if (room === '') return;
-  const link = inviteLink(window.location.origin, room);
-  const done = (text: string): void => {
-    inviteEl.textContent = text;
-    window.setTimeout(() => {
-      inviteEl.textContent = '複製邀請連結';
-    }, 1600);
-  };
-  const clip = navigator.clipboard;
-  if (clip === undefined) {
-    done('請手動複製：' + link);
-    return;
+function startFoyerInvite(invite: string): void {
+  try {
+    window.history.replaceState(null, '', window.location.pathname + withoutRoomParam(window.location.search));
+  } catch {
+    /* 拿不掉也不影响进房 */
   }
-  clip.writeText(link).then(
-    () => done('已複製邀請連結！'),
-    () => done('複製失敗，請手動複製'),
-  );
+  const name = loadName(browserStorage());
+  if (name !== '') joinFromFoyer(invite, name, 'join');
+  else void openFoyer({ inviteRoom: invite });
 }
 
 // ============================================================
@@ -9476,8 +12899,18 @@ let clockAt = 0;
 // ★ 锁步不受影响：顺序不变，只是晚一点施加；校验和改在**真的施加完**那一刻取（`noteApplied`）。
 // ★ `awaiting`（W-74）要等收件箱**放空**才报 —— 否则玩家还在看电脑走棋，60 秒已经开数了。
 
+/**
+ * 收件箱的一格：定序后的 action，或 ★ v8 别的座位转来的**纯演出**提示（`present`，gap-audit #7）——
+ * 提示排在它到达那一刻的位置（`NetClient.onPresent` 保证在第 `after` 号之后），轮到它才演，不 reduce。
+ */
+type NetInboxItem = { action: Action; seq: number } | { cue: PresentCue; seat: number };
+
+function isNetAction(item: NetInboxItem): item is { action: Action; seq: number } {
+  return 'action' in item;
+}
+
 /** 收着还没播的广播 */
-const netInbox: { action: Action; seq: number }[] = [];
+const netInbox: NetInboxItem[] = [];
 let netPumpTimer: number | null = null;
 /**
  * 积压超过这个数就不按节拍了，前面的**一口气**施加掉、只留最后这些慢慢播。
@@ -9485,6 +12918,88 @@ let netPumpTimer: number | null = null;
  */
 const NET_INBOX_FAST_FORWARD = 150;
 const NET_INBOX_KEEP = 40;
+
+/**
+ * ★★ 第十二份試玩回報（「断线重连后莫名其妙又进入魔法屋」「断线重连后所有文本提示又重新触发了一轮」）：
+ * 中途进房时服务器补发的「进房之前」那一段 —— **只 reduce、不起任何演出**。
+ *
+ * 根因：先前补发与实时广播走同一条 `onAction → pumpNetInbox → applyAction` 路，
+ * 而 `applyAction` 会经 `notifyApplied` 把每一条 `before → after` 派给各整屏的 `event()`。
+ * 刷新页面后服务器从 0 号补发整局 ⇒ 整局的訊息框 / 命運 / 魔法屋 / 台词按节拍**重演一遍**
+ * （回报里的日志：刷新后又出现第 25 回合那次「魔法屋：就地拆除房屋」、几十条「付费訊息框：…」；
+ * 本地局面落后服务器十来个回合，还按旧局面替自己出手 → 「拒绝：notYourTurn」）。
+ *
+ * 口径：**每台只把实时发生的演出演一次**。进房之前的事，这台要么刷新前已经演过、
+ * 要么断线期间根本不在 —— 都不补演；追上之后此刻还挂着的**待决交互**（自己的买地框、
+ * 商店、銀行…）由 `state.pending` 照常画出来，不受影响。
+ *
+ * @param items `NetClient` 攒齐的补发（seq 连续、到 `start.through` 为止）
+ */
+function catchUpSilently(items: readonly { action: Action; seq: number }[]): void {
+  // 断线前已经收下、还没轮到播的那几条排在补发**之前** —— 一并静默施加，保持顺序
+  const queued = netInbox.splice(0);
+  clearNetInbox();
+  for (const item of [...queued, ...items]) {
+    // ★ v8：排着的演出提示随追赶一并作废（那一刻已经过去了）
+    if (!isNetAction(item)) continue;
+    const next = reduce(state, item.action, topo);
+    if (next !== state) history.push(item.action);
+    state = next;
+  }
+  settleAfterSilentRebuild();
+  log(`⟳ 聯機追上：靜默施加 ${queued.length + items.length} 條 action（第 ${state.turnCount} 回合）`);
+}
+
+/**
+ * 本地状态被**静默**重建之后（失步重放 / 中途进房追上）的收尾：
+ * 收掉指着旧局面的临时 UI 与「这一刻在播」的东西，按新局面重排两条回合驱动。
+ */
+function settleAfterSilentRebuild(): void {
+  // 本屏的临时 UI 状态一律收掉：重放可能把 pending 换成了另一种，旧的指认不再成立
+  amountPage = null;
+  dialogHot = null;
+  pick = null;
+  pickHover = null;
+  hoverNode = null;
+  diceFx.cancel();
+  // 本地状态已重建 ⇒ 那条自己在等的回包（以及它对应的预测动画）不再有意义
+  awaitingOwnRoll = false;
+  // ★ 建屋影片也是「这一刻在播」的东西：本地状态已经重建，旧片子不该接着放
+  buildFx = null;
+  pendingBuildFx = null;
+  magicSeq = null;
+  buildFlicPending.clear();
+  releaseBuildFlics();
+  // 影片窗口的 before 快照同理作废（状态已经重放重建，旧快照不再对应任何一帧）
+  deferredBoardBefore = null;
+  newsFlash = null; // 新聞 18 / 19 的白闪同属「这一刻在播」
+  manifestHold = null;
+  vehicleHold = null;
+  godAscend = null;
+  pendingCardFlight = null; // 挂起的卡片飞行（等亮牌）属于旧局
+  pendingRelocateWalk = null; // 住进旅館那一段（审计 #17）同理
+  renderer.clearRelocate();
+  pendingCardRoute = null; // 亮牌后待走的那一张同理
+  npcWalksDrawn = null;
+  // ★ pt22：追上之后回合已不在本机 / 那一格已答掉 ⇒ 本机留着的模态窗一并收掉（同 `notifyApplied`）
+  dropStaleLocalModals();
+  // ★ 第十二份試玩回報：追上之后此刻仍挂着的**场所**（商店 / 銀行 / 路過銀行）照常铺起来 ——
+  //   与 `notifyApplied` 同一道人机闸；它们平时只在「一条 action 落地」时同步。
+  if (!aiVenuePending(state)) {
+    syncShopUi();
+    syncLoanUi();
+    syncAtmPending();
+  }
+  // ★ 同理：追上之后仍挂着**真人**的魔法屋点选（`pending{magicHouse}`，重连前没点完）⇒ 把女巫窗口重新铺起来，
+  //   否则这位真人只能干等回合计时替他托管。窗口只认「pending 刚挂出」，所以拿去掉 pending 的一份当 before。
+  if (state.pending?.kind === 'magicHouse' && !magicScreenState().playing) {
+    magicScreen.event?.({ ...state, pending: null }, state, uiEnv());
+  }
+  requestRender();
+  renderPanel();
+  scheduleAi();
+  scheduleHumanTurn();
+}
 
 function clearNetInbox(): void {
   netInbox.length = 0;
@@ -9502,24 +13017,94 @@ function applyNetAction(item: { action: Action; seq: number }): void {
   netToasts.noteIntent(actingSeat(state));
   if (item.action.type === 'step') stepTick();
   applyAction(item.action);
+  // ★ 本机那一掷的回包到了 ⇒ 撤销「在等回包」这一位（`predictRoll` 起的滚骰
+  //   已在 `applyAction` 里由 `diceFx.roll()` 补上权威点数）。见 `awaitingOwnRoll`。
+  if (item.action.type === 'rollDice') awaitingOwnRoll = false;
   net?.noteApplied(item.seq);
 }
 
 function pumpNetInbox(delay = 0): void {
   if (netPumpTimer !== null || netInbox.length === 0) return;
-  if (netInbox.length > NET_INBOX_FAST_FORWARD) {
-    while (netInbox.length > NET_INBOX_KEEP) applyNetAction(netInbox.shift()!);
+  // ★ 审计 #15：过场期间连「积压太多就静默快进」也不做（与 `catchUpNetAfterHidden` 同一条闸）——
+  //   快进施加出来的框会占住整屏；过场放完再快进
+  if (netInbox.length > NET_INBOX_FAST_FORWARD && screen !== 'intro') {
+    while (netInbox.length > NET_INBOX_KEEP) {
+      const item = netInbox.shift()!;
+      // ★ v8：一口气施加的那一截里，演出提示直接丢（不演）
+      if (isNetAction(item)) applyNetAction(item);
+    }
   }
   netPumpTimer = window.setTimeout(() => {
     netPumpTimer = null;
-    // 与 `scheduleAi` / `scheduleHumanTurn` 同一道闸；被挡下就过一个渲染周期再看
-    if (holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
+    // ★★ 過場期間先別施加網絡 action（第九份试玩回报：联机接過場时一并补）。
+    //   過場是**每台自己放、可各自跳過**的純表現（`intro.ts`，不派 action、不同步），
+    //   先跳過的人一掷骰，伺服器就廣播；若這裡照常施加，還在看過場的人第一回合的
+    //   演出（走子/買地/影片）會被靜默吞掉 —— 過場放完直接看到結果。
+    //   排隊等它放完是安全的：過場有硬上限（4 人局 `introMs` ≤ 約 14.9 s），必然結束。
+    if (screen === 'intro') {
+      // ★ 第十九份：后台时过场不会前进（没有 rAF），别每 20 ms 空转
+      if (pageHidden) driversParked = true;
+      else pumpNetInbox(RENDER_MS);
+      return;
+    }
+    // ★★ 放行「本机自己在等的那条 `rollDice` 回包」（第九份试玩回报「掷骰延迟」）。
+    //
+    //   改动前这里是死锁：`holdForActorWalk` 的 `diceFxActive` 这一位只能由
+    //   `applyAction(rollDice)` → `diceFx.roll()` 清掉，而 `applyAction` 正被这道闸挡着
+    //   ⇒ 每掷空转到 3 秒超时才松开（见 `awaitingOwnRoll` 的注释）。
+    //
+    //   ⚠️ 只放行**这一种**：`awaitingOwnRoll` 只在本机发出 `rollDice` 时置位，
+    //   且要求队首就是 `rollDice`。电脑座位那一串 action 照旧受闸 —— 那正是
+    //   第七份试玩回报第 1 条要的（别把电脑回合秒播完、别互相顶掉骰子动画）。
+    const queuedHead = netInbox[0];
+    // ★ v8：队首若是演出提示（`present`），`head` 为空 —— 下面那几道只认 action 的判据都不适用
+    const head = queuedHead !== undefined && isNetAction(queuedHead) ? queuedHead : undefined;
+    // ★★ 第十二份試玩回報续（需求方拍板：点得掉的整屏提示，旁观端跟着行动者一起关）：
+    //   队首是**别的真人座位**派的下一条 ⇒ 他那台已经把此前的演出全部演完（点掉）了，
+    //   本台还在演的那几屏直接落到终态，不再自己一段段放完（判据与边界见 `follow-presenter.ts`）。
+    //   ⚠️ 必须在 `holdForActorWalk` 之前：那几屏正占着台，节拍闸会一直挡着。
+    //   队首还没施加，此刻的 `state` 就是服务器受理它那一刻的镜像。
+    if (head !== undefined && presenterMovedOn(state, head.action, net?.seat ?? null)) followPresenter();
+    // ★ v8：队首是别的真人转来的演出提示（`present`）⇒ 同样说明他那台已经把此前的演出演完（点掉）了
+    //   （服务器只收「轮到的那一座、不是代打」的 `present`，故发起者必是真人自己的客户端）
+    else if (queuedHead !== undefined && !isNetAction(queuedHead) && queuedHead.seat !== (net?.seat ?? null)) followPresenter();
+    const ownRollEcho = awaitingOwnRoll && head !== undefined && head.action.type === 'rollDice';
+    if (!ownRollEcho && holdForActorWalk(() => pumpNetInbox(RENDER_MS))) return;
     const item = netInbox.shift();
     if (item === undefined) return;
+    // ★ v8：演出提示过了同一道节拍闸才演（不 reduce、不报校验和）
+    if (!isNetAction(item)) {
+      applyNetCue(item.seat, item.cue);
+      pumpNetInbox(paceDelay());
+      return;
+    }
     applyNetAction(item);
     // `aiNext` 只是决策链的内部簿记，不占时间（同 `aiDelay`）；其余至少一个 tick、走子等补间
     pumpNetInbox(item.action.type === 'aiNext' ? 0 : paceDelay());
   }, delay);
+}
+
+/**
+ * 跟着行动者收场：演出类整屏（`BLOCKING_PRESENTATIONS`）一律落到终态（各屏的 `fastForward`）。
+ *
+ * ★ 顺手收掉那几屏经 `voice-sink` 起的语音（女巫 / 開獎主持人 / 事件框里的 `#NNNN`）——
+ *   屏已经关了，话不该接着说。只停**文本语音**那一路（`lastVoiceCode`）；角色台词
+ *   （`speechQueue`，棋盘上的气泡）不属于整屏，照常演。
+ */
+function followPresenter(): void {
+  const closed = fastForwardPresentations(SCREENS, BLOCKING_PRESENTATIONS, uiEnv());
+  // ★ 魔法屋逐人那几段（D-MAGIC-16）同样属于已施加的 action ⇒ 剩下的不演了
+  if (magicSeq !== null) {
+    magicSeq = null;
+    closed.push('magicBeats');
+  }
+  if (closed.length === 0) return;
+  const voice = lastVoiceCode;
+  if (voice !== null && spokenBubble?.voice !== voice && sound.isPlaying('Speaking.mkf', voice)) {
+    sound.stop('Speaking.mkf', voice);
+  }
+  log(`⏭ 跟著 P${actingSeat(state) + 1} 收場：${closed.join(' / ')}`);
+  requestRender();
 }
 
 function startNetTick(): void {
@@ -9542,6 +13127,8 @@ function waitingForInput(s: GameState): boolean {
 function tickAwaiting(): void {
   const client = net;
   if (client === null || client.seat === null || screen !== 'game') return;
+  // ★ 第十二份試玩回報：还在追「进房之前」那一段 —— 本地状态是旧的，别替它报「在等输入」
+  if (client.catchingUp) return;
   if (actingSeat(state) !== client.seat) return;
   // ★ 收件箱没放空 = 画面还在播别人的回合，本机状态也还没追上服务器 —— 不报
   if (netInbox.length > 0) return;
@@ -9583,6 +13170,52 @@ function clockLeftMs(): number {
   return Math.max(0, clockBaseMs - (performance.now() - clockAt));
 }
 
+// ============================================================
+//  触屏的「取消」钮（需求方 2026-09-24：触屏上没有右键，用了卡片 / 开了卡片欄就退不出来）
+// ============================================================
+//
+//  点它 = 在画布上派**一次右键**（`contextmenu`），走的就是下面 `bindInput` 里那条右键处理，
+//  不另写取消逻辑。只在触屏、且 `rightClickMeaningfulNow()` 为真时露出来；
+//  放在舞台外的黑边里（竖屏手机在下、横放 iPad 在右），放不下才压在棋盘右下角。
+
+const touchCancelEl = $<HTMLButtonElement>('touchcancel');
+touchCancelEl.addEventListener('click', (e) => {
+  e.preventDefault();
+  // 各屏的 `contextmenu` 都不看坐标，但 `main.ts` 那条处理要求落在舞台里 ⇒ 取舞台正中
+  const c = stageToClient(SCREEN_W / 2, SCREEN_H / 2);
+  dispatchMouse(canvas, 'contextmenu', c.x, c.y);
+  requestRender();
+});
+
+/** 舞台坐标 → 页面 CSS 像素（`eventToStage` 反过来）*/
+function stageToClient(x: number, y: number): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect();
+  const m = currentMetrics();
+  const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+  return { x: rect.left + (m.offsetX + x * m.scale) / dpr, y: rect.top + (m.offsetY + y * m.scale) / dpr };
+}
+
+function syncTouchCancel(): void {
+  const show = isTouchDevice(window) && rightClickMeaningfulNow();
+  if (!show) {
+    if (!touchCancelEl.hidden) touchCancelEl.hidden = true;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const tl = stageToClient(0, 0);
+  const br = stageToClient(SCREEN_W, SCREEN_H);
+  const at = cancelButtonPlacement(
+    { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    { left: tl.x, top: tl.y, width: br.x - tl.x, height: br.y - tl.y },
+  );
+  touchCancelEl.className = at.mode;
+  touchCancelEl.style.left = `${at.left}px`;
+  touchCancelEl.style.top = `${at.top}px`;
+  touchCancelEl.style.width = `${at.width}px`;
+  touchCancelEl.style.height = `${at.height}px`;
+  touchCancelEl.hidden = false;
+}
+
 /** 棋盘右上角那颗倒计时 */
 function syncClockOverlay(): void {
   const left = clockLeftMs();
@@ -9615,7 +13248,7 @@ async function boot(): Promise<void> {
     // ★ W-72：网页版走「一次下完 7 个」那条路（带进度条 + Cache Storage）；
     //   桌面壳一行没变 —— 还是边拉边开那 5 个基础档案。
     if (isDesktop()) {
-      metaEl.textContent = '正在载入原版素材…';
+      metaEl.textContent = '正在载入素材…';
       archives = await loadArchives(assetBase());
     } else {
       archives = await loadArchivesForWeb();
@@ -9629,8 +13262,11 @@ async function boot(): Promise<void> {
     // 就整包走原图。**按图**回退在 SpriteCache 里（PRD §4.5）。
     // ★ W-72：网页版先看清单里有没有 `hd-manifest.json` —— `assets/hd/` 是空的，
     //   那份 3.8 MB 的清单白拉（任务书 §1 末条）。
-    hdSource = hdListed ? await loadHdSource(hdBase()) : null;
-    sprites = new SpriteCache(archives, hdSource === null ? {} : { hd: hdSource });
+    // ★ 高清关着（`?hd=0` / 门厅里取消勾选）就一次都不拉超分清单 —— 与改造前一致
+    hdSource = hdStage ? await loadHdSource(hdBase(), hdManifestVersion) : null;
+    sprites = new SpriteCache(archives, { hdFlics, ...(hdSource === null ? {} : { hd: hdSource }) });
+    // ★ 高清图是后台拉、到了原地换位图（先原图、后高清）—— 换上来那一刻重画一帧
+    sprites.addUpgradeListener(() => requestRender());
     if (hdSource !== null) log('HD 素材：已接上（缺图的按图回退原图）');
 
     // 先用地址栏（或默认值）建一局，好让渲染器与面板有东西可读；
@@ -9672,6 +13308,12 @@ async function boot(): Promise<void> {
     // 走 raw 出口后交给 `minigame-bg.ts`；图异步到，到了催一帧（见 D-MINI-1）
     onMinigameBackgroundReady(requestRender);
     void loadMinigameBackground(archives).then(setMinigameBackground);
+    // 企鵝挖寶的命中表（Panel.mkf #81，640×480 每像素 = 格号）—— 同一个已过素材闸门的 Panel.mkf，
+    // 取原始字节即可（D-MINI-2 已解，原版 0x00414ae1..0x00414b2f 逐像素查）
+    setPenguinHitMask(parsePenguinHitMask(readRawBytes(archives, 'Panel.mkf', PENGUIN_HIT_RES)));
+    // 通用填数窗的逐像素 id 图（Panel.mkf #0x16，128×192，每像素 = 钮号）—— 同一条 raw 出口；
+    //   载到了 `hitDialog` 就照 exe 取号（`amountPixelId`，0x00452d4f..0x00452d5b），没载到退回矩形表
+    setAmountHitMap(parseAmountHitMap(readRawBytes(archives, 'Panel.mkf', AMOUNT_WINDOW.hitResource)));
     // 新聞/命運 插画 + 抽卡 卡面也是无头 RGB555 块 —— 同一条 raw 出口，
     // 解好一张催一帧（图异步到，画的时候可能还没有）
     onEventBoxArtReady(requestRender);
@@ -9701,10 +13343,39 @@ async function boot(): Promise<void> {
         get screen() { return screen; },
         /** 目标拾取会话（T-026）—— `null` = 没在拾取 */
         get pickSession() { return pick; },
+        /** 拾取模式下光标底下是第几个候选（`null` = 红叉 / 没在拾取）*/
+        get pickHover() { return pickHover; },
+        /** 拾取候选此刻在**页面 CSS 像素**上的落点（不在视野内的不列）—— 给无头验收把鼠标真的移过去点 */
+        pickTargetsOnPage: () => {
+          if (pick === null) return [];
+          const out: { i: number; code: number | null; nodeId: number; x: number; y: number }[] = [];
+          for (const [i, c] of pick.candidates.entries()) {
+            const q = worldToScreen(c.wx, c.wy, camera, { w: LAYOUT.board.w, h: LAYOUT.board.h });
+            if (q === null || q.x < 0 || q.y < 0 || q.x >= LAYOUT.board.w || q.y >= LAYOUT.board.h) continue;
+            const pt = stageToClient(q.x + LAYOUT.board.x, q.y + LAYOUT.board.y);
+            out.push({ i, code: c.code ?? null, nodeId: c.nodeId, x: pt.x, y: pt.y });
+          }
+          return out;
+        },
+        /** 软件指针（`soft-cursor.ts`）：此刻要哪一支 + 画着的图号 / 舞台落点（没画 = `null`）+ 画布上的系统指针 */
+        cursor: () => ({
+          frame: cursorFrame(),
+          want: cursorWant(),
+          drawn: softCursor.drawn(),
+          os: canvas.style.cursor,
+          seat: net?.seat ?? null,
+        }),
         /** 個人資產表的故事板状态 */
         get sheetUi() { return sheetUi; },
+        /** 託管AI 屏：草稿 + 选中行 + 按下的控件（`null` = 没开）*/
+        get aiModel() { return aiModel; },
+        /** 通用填数页（`null` = 没开）+ 按下时记下的那一颗 */
+        get amountPage() { return amountPage; },
+        get amountHeld() { return amountPress.held; },
         /** 卡片商店／道具商店的界面状态（页号、滑入位置、气泡、货架快照）*/
         get shopUi() { return shopUi; },
+        /** 还款提醒窗的演出状态（`null` = 没开）*/
+        get reminderUi() { return reminderUi; },
         get setup() { return setup; },
         get options() { return { saved: options, draft: optionsDraft, variant: optionsVariant }; },
         goto: (s: Screen) => { screen = s; requestRender(); },
@@ -9717,6 +13388,11 @@ async function boot(): Promise<void> {
         hoverToolbar: (i: number | null) => { hotTool = i; requestRender(); },
         /** 直接派一个 action —— 自动化测试用，走的与人点按钮同一条路 */
         dispatch: (a: Action) => { dispatch(a); },
+        /** ★ 第十六份：驱动 / 收件箱被演出挡了多久（按原因）与演出死锁看门狗放行次数 */
+        presStats: () => ({
+          unwinds: presentationStats.unwinds,
+          holdMs: Object.fromEntries(Object.entries(presentationStats.holdMs).map(([k, v]) => [k, Math.round(v)])),
+        }),
         /**
          * 把当前玩家挪到某一格并结算 —— **只给自动化测试用**。
          * 走的是引擎的傳送機规则（rules/teleport.ts）加一次 settle，
@@ -9738,6 +13414,25 @@ async function boot(): Promise<void> {
          * 他自己跟价 / 放弃、落槌演出」只能在这块屏上验收。
          * @returns 真的开出一场返回 true（`state.pending.kind === 'auction'`）
          */
+        /** ★ 第十九份：绘制指令去重的计数（帧 / 真画 / 跳过 / 自检不符）—— 给 `tools/perf-mobile-pw.mjs` 用 */
+        renderStats: () => ({ ...displayList.stats }),
+        /**
+         * ★ W-80 §8：高清舞台此刻的状态 —— 开没开、倍率 / 上限、三块离屏画布的像素、超分来源接没接。
+         *   给 `tools/perf-mobile-pw.mjs`（`HD=1`）量「高清把画布像素放大了多少」用。
+         */
+        hdStats: () => ({
+          hd: hdStage,
+          scale: surfaceScale,
+          cap: hdScaleCap,
+          flics: hdFlics,
+          hdSource: hdSource !== null,
+          stage: [stage.width, stage.height],
+          board: [boardCanvas.width, boardCanvas.height],
+          hud: [hudCanvasOff.width, hudCanvasOff.height],
+          surfacePx: stage.width * stage.height + boardCanvas.width * boardCanvas.height + hudCanvasOff.width * hudCanvasOff.height,
+        }),
+        /** ★ W-80 §8：门厅那个勾选框的同一条路（自动化切换高清用） */
+        setHd: (on: boolean) => setHdStage(on),
         /** 此刻接管整屏的那一屏的 id（`null` = 棋盘）—— 给自动化用 */
         overlayId: () => activeUiScreen()?.id ?? null,
         /**
@@ -9772,6 +13467,7 @@ async function boot(): Promise<void> {
             kind === 'buy'
               ? { kind: 'buy', stock: row, max: stockCounterBuyMax(me.moneyInBank, st.price, st.f10) }
               : { kind: 'sell', stock: row, max: state.holdings[state.currentPlayer]?.[row]?.amount ?? 0 };
+          amountWindowOpened();
           amountPage = { choice: 0, value: AMOUNT_INITIAL };
           dialogHot = null;
           requestRender();
@@ -9784,7 +13480,7 @@ async function boot(): Promise<void> {
          * 那一对 `before/after` 摆出来（`lotteryDrawCue` 的判据与日期推进
          * 那一条完全一样），演出本身一格都不改。
          */
-        lotteryDraw: () => {
+        lotteryDraw: (won = true) => {
           const lot = new Array<number>(36).fill(0);
           lot[6] = 1; // 1 号玩家持 07 号
           const before: GameState = {
@@ -9793,14 +13489,17 @@ async function boot(): Promise<void> {
             totalDays: state.totalDays,
             pool: 5000,
             lottery: lot,
-            players: state.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash + 5000 } : p)),
+            lastLotteryDraw: null,
+            players: state.players.map((p, i) => (i === 0 && won ? { ...p, cash: p.cash + 5000 } : p)),
           };
+          // ★ 开出的号由 core 交出来（`lastLotteryDraw`）：中奖开 07（槽 6），空号开 23（槽 22）
           const after: GameState = {
             ...before,
             day: 15,
             totalDays: before.totalDays + 1,
-            pool: 0,
-            lottery: new Array<number>(36).fill(0),
+            pool: won ? 0 : 5000,
+            lottery: won ? new Array<number>(36).fill(0) : [...lot],
+            lastLotteryDraw: { number: won ? 6 : 22, winner: won ? 0 : null, pool: 5000, sold: [...lot] },
           };
           state = after;
           const cue = lotteryDrawCue(before, after);
@@ -9844,7 +13543,14 @@ async function boot(): Promise<void> {
           renderQueued = false;
           requestRender();
         },
-        /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
+        /**
+         * ★ gap-audit #4 活体验收：拍卖屏每一口挥槌的取证（来源 / 起点 / 实际画出的帧）+ 本机回包没演第二遍的次数。
+         *   `auctionTrace(true)` 开（清空）、`auctionTrace()` 读 —— 见 `tools/net-e2e-auction.mjs`。
+         */
+        auctionTrace: (on?: boolean) => auctionTrace(on),
+        /** ★ gap-audit #4：整屏音效的发出记录（`performance.now()` + 音效号；DEV 才记）*/
+        sfxLog: () => [...devSfxLog],
+                /** 拍卖屏的当前运行态（屏内 + core 的 pending 快照）—— 给自动化用 */
         auctionView: () => {
           const run = auctionRunForTest();
           const p = state.pending;
@@ -9900,8 +13606,8 @@ async function boot(): Promise<void> {
           return state.pending?.kind === 'auction';
         },
         /**
-         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `phase` /
-         *   `hover` / `ring` / `view`。
+         * ★ 魔法屋那一屏的状态（`magicScreenState()`）：`playing` / `state`（原版 `[0x48c3a2]` 1..8）/
+         *   `line`（字框里那一句，`null` = 收起）/ `criterion` / `chosen` / `hover` / `interactive`。
          *
          * 加它是因为这一屏**要玩到才会出现**（落点随机），而「一圈十二格每一项
          * 都点得到」只能用鼠标真的去点、再读状态来验收；`#log` 里那句
@@ -9974,6 +13680,12 @@ async function boot(): Promise<void> {
               why: 'facility-picker:slot1',
             };
           }
+          // 魔法屋女巫窗口：状态 7 等真人点一格（原版窗口返回值 = 效果号，`0x004338b7`）
+          //   ⇒ 真实出口 = 点一圈里的一格；落点取本屏自己的图标中心表（`MAGIC_RING_AT`）
+          if (activeUiScreen()?.id === 'magic') {
+            const pick = magicHumanPickPoint();
+            return pick === null ? null : { gesture: 'click', x: pick.x, y: pick.y, why: 'magic:pick' };
+          }
           // 其余登记的整屏（轉盤 / 訊息框 / 事件框…）自己演、自己收，脚本不伸手
           if (activeUiScreen() !== null) return null;
           const mid = { x: LAYOUT.board.x + LAYOUT.board.w / 2, y: LAYOUT.board.y + LAYOUT.board.h / 2 };
@@ -9986,7 +13698,9 @@ async function boot(): Promise<void> {
               why: 'shop:EXIT',
             };
           }
-          if (state.pending?.kind === 'bail') return { gesture: 'rightClick', ...mid, why: 'bail' };
+          if (bailScreenOn()) return { gesture: 'rightClick', ...mid, why: 'bail' };
+          // 建設公司选地（点地图）：真实出口 = 右键（窗交回 0，`0x004466c6`）
+          if (pick?.source.kind === 'build') return { gesture: 'rightClick', ...mid, why: 'build-pick' };
           // 通用填数页：右键只是退回上一扇 YES/NO（脚本再点 YES 就成了死循环）⇒ 真人的做法是
           //   **敲数字 + Enter**（那扇窗自己认主键盘 0-9 / Enter，@source `loc_00452e4b`）。
           if (amountPage !== null) {
@@ -10001,17 +13715,18 @@ async function boot(): Promise<void> {
          *   （`stageBusy(stageBusyFlags())` + 台词队列），不另写一份。
          */
         stageBusy: () => ({
-          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || deferredSpeech !== null,
+          busy: stageBusy(stageBusyFlags()) || speechQueue.length > 0 || heldSpeech.length > 0,
           flags: stageBusyFlags(),
           speech: speechQueue.length,
-          deferred: deferredSpeech !== null,
+          deferred: heldSpeech.length > 0,
         }),
         /** 查一张图的尺寸与锚点 —— 命中判定对不上时先看这个 */
         sprite: (archive: 'Data.mkf' | 'Panel.mkf', res: number, idx: number, key = false) => {
           const s2 = spriteNow(archive, res, idx, key);
           return s2 === null
             ? null
-            : { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY };
+            : // bw/bh = 位图像素（超分图比逻辑 w/h 大）—— 验「先原图、后高清」用
+              { w: s2.width, h: s2.height, ax: s2.anchorX, ay: s2.anchorY, bw: s2.bitmap.width, bh: s2.bitmap.height };
         },
         viewport: () => ({ w: LAYOUT.board.w, h: LAYOUT.board.h }),
         /** 某个节点此刻画在**棋盘区**的哪里；不在视野内返回 null */
@@ -10108,23 +13823,54 @@ async function boot(): Promise<void> {
 
     document.body.classList.add('no-debug');
     bindInput();
+    // ★ 触屏：长按 = 右键；点 / 拖照旧派成鼠标事件，由上面同一批监听收（见 `touch-input.ts`）
+    //   金额条那几屏长按不算右键（`longPressAllowedNow`）
+    bindTouchGestures(canvas, { longPress: longPressAllowedNow });
     // ★ 第一次交互就解锁音频 —— 画布之外的任意一点/任意一键也算（autoplay 政策）
     bindAudioUnlock();
-    // ★ W-73：大厅那颗 DOM 按钮（可见性由 `syncInviteButton` 每帧同步）
-    inviteEl.addEventListener('click', copyInviteLink);
+    // ★ 第十九份：切后台 / 回前台（音频挂起、驱动停在闸口、回来静默追上）
+    bindPageVisibility();
+    // ★ 左侧佈告欄（需求方 2026-09-25）：内容来自同源 `/board.json`
+    //   （部署时由 `tools/build-board.mjs` 生成，见 board-panel.ts）。
+    //   ⚠️ 位置在 `boot()` 的**末尾**，不在模块顶层：面板一露出来就要 `requestRender()`
+    //      （它一展开画布就变窄，`resizeCanvas()` 得在那一帧里读新尺寸），
+    //      而渲染链要等素材与状态都铺好才安全。
+    //   拿不到 / 解析不动 / 是空的 ⇒ 面板一直 `hidden`、一个监听都不挂，游戏一个字节不受影响。
+    const boardDom = boardPanelDom(document);
+    if (boardDom !== null) {
+      void installBoardPanel({
+        dom: boardDom,
+        load: async () => {
+          const text = await fetchBoardText((url) => fetch(url, { cache: 'no-cache' }));
+          return text === null ? null : parseBoard(text);
+        },
+        storage: boardStorage(),
+        view: readBoardView(window),
+        // ★ 门厅期间面板一律展开、并把左边界让给它（见 `whileFoyerUp` 与 `BoardPanelFoyer`）
+        foyer: boardFoyer,
+        onLayoutChange: requestRender,
+        onError: (err) => log(`⚠ 佈告欄載入失敗：${err instanceof Error ? err.message : String(err)}`),
+      });
+    }
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
     for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
       window.addEventListener(type, noteAlive, { passive: true });
     }
     // ★ W-73：老的 `?ws=…&room=…&name=…` 调试入口**保留**（`tools/net-e2e.js` 在用），
     //   它优先级最高；其次是 `?screen=` 调试屏；两者都没有才轮到门厅。
+    //   ★ 房间列表（2026-09-23）：`?ws=` **单独**出现时不再算老入口 —— 只换门厅连的服务器地址。
     const debugScreen = new URLSearchParams(window.location.search).has('screen');
-    const online = netParamsFrom(window.location.search);
+    const entry = foyerEntry(window.location.search);
+    const online = entry.kind === 'direct' ? netParamsFrom(window.location.search) : null;
     lastToastRoom = null;
     if (online !== null) connectOnline(online.url, online.room, online.name);
     else if (straightToGame) startGame();
     else if (isDesktop() || debugScreen) enterTitleScreen();
-    else void openFoyer();
+    else if (entry.kind === 'foyer') {
+      foyerWsUrl = entry.wsUrl;
+      if (entry.inviteRoom === null) void openFoyer();
+      else startFoyerInvite(entry.inviteRoom);
+    }
     // ★ 一进標題就点 MIDI01（原版 `ui_main.asm:187` → `fcn_004549cf(0)`）。
     //   此刻通常还没有用户手势：`MusicPlayer.play()` 会把它记成 **pending**，
     //   第一次交互时立刻补播，不用再等一次 fetch —— 这就是「打开游戏后

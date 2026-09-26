@@ -115,16 +115,21 @@ function fakeStage(): CanvasRenderingContext2D {
 
 interface Harness {
   env: UiScreenEnv;
+  /** 屏上点出来的 action（开 / 关窗那两步另记在 `edges`）*/
   actions: Action[];
+  /** 开窗清理 / 关窗收回（`noticeBoard` 的 `open` / `close`）*/
+  edges: Action[];
   logs: string[];
   renders: number;
 }
 
 function harness(state: GameState, topo: MapTopology = { nodes: [] }): Harness {
   const actions: Action[] = [];
+  const edges: Action[] = [];
   const logs: string[] = [];
   const h: Harness = {
     actions,
+    edges,
     logs,
     renders: 0,
     env: {
@@ -135,7 +140,8 @@ function harness(state: GameState, topo: MapTopology = { nodes: [] }): Harness {
       now: 1000,
       stage: fakeStage(),
       sprite: () => null,
-      dispatch: (a) => actions.push(a),
+      dispatch: (a) =>
+        (a.type === 'noticeBoard' && (a.op === 'open' || a.op === 'close') ? edges : actions).push(a),
       requestRender: () => {
         h.renders += 1;
       },
@@ -888,6 +894,29 @@ describe('開屏 / 關屏 @source VA 0x00417dee（工具列第 10 颗）/ rich4.
     expect(boardScreen.active(h.env)).toBe(true);
   });
 
+  it('★★ 开窗先清理（0x004284c5 call 0x42483e）、关窗收回特別融資（0x0042885c push 0 / call 0x436b0a）—— 只在会生效时才交 action', () => {
+    // 0 号挂着手上已没有的卡 5；1 号欠特別融資（没有銀行董事長 ⇒ 关窗时收回）
+    const base = stateWithBoard([{ seller: 0, slot: 0, kind: 4, id: 5, price: 100, amount: 0 }]);
+    const s = { ...base, players: base.players.map((p, i) => (i === 1 ? { ...p, moneyInBank: 5000, specialFinance: 1000 } : p)) };
+    const h = harness(s);
+    resetBoardScreen();
+    expect(boardScreen.toolbar?.(9, h.env)).toBe(true);
+    expect(h.edges).toEqual([{ type: 'noticeBoard', op: 'open' }]);
+    expect(boardScreen.toolbar?.(9, h.env)).toBe(true); // 再按一次 = 关
+    expect(h.edges).toEqual([{ type: 'noticeBoard', op: 'open' }, { type: 'noticeBoard', op: 'close' }]);
+    // 什么都不欠、没有失效挂牌 ⇒ 开关都不交（空操作在联机里会被当成非法）
+    const idle = harness(makeGameState());
+    resetBoardScreen();
+    boardScreen.toolbar?.(9, idle.env);
+    boardScreen.toolbar?.(9, idle.env);
+    expect(idle.edges).toEqual([]);
+    // 联机旁观端（本机不是回合主人）不交
+    const watch = harness(s);
+    resetBoardScreen();
+    boardScreen.toolbar?.(9, { ...watch.env, localSeat: 2 });
+    expect(watch.edges).toEqual([]);
+  });
+
   it('★ 不在 game 屏時不開（也不认领熱鍵）', () => {
     const h = harness(makeGameState());
     resetBoardScreen();
@@ -993,6 +1022,22 @@ describe('挂东西：选物 → 填数 → dispatch(list) @source VA 0x00453544
     expect(boardScreenState().amountPage?.value).toBe(1500);
   });
 
+  it('触屏：只有出价填数页（金额条 + 数字键盘）开着时 amountEntry 为真 ⇒ 长按不算右键', () => {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    resetBoardScreen();
+    const h = harness(state);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false);
+    openBoard(h.env);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false); // 主屏
+    drag(h.env, 500, 90, 545, 170);
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false); // 选物窗
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    expect(boardScreen.amountEntry?.(h.env)).toBe(true);
+    boardScreen.contextmenu?.(0, 0, h.env); // 右键 / 「取消」钮 退回
+    expect(boardScreen.amountEntry?.(h.env)).toBe(false);
+  });
+
   it('★ 填数页按「確定」→ noticeBoard op:list，卖价就是填的那个数', () => {
     const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
     const h = harness(state);
@@ -1019,6 +1064,45 @@ describe('挂东西：选物 → 填数 → dispatch(list) @source VA 0x00453544
       { type: 'noticeBoard', op: 'list', kind: LISTING.card, id: a.id, price: 8200 },
     ]);
     expect(boardScreenState().mode).toBe('board');
+  });
+
+  it('★★ 金额栏按住拖动改值（通用填数窗 `fcn_00453544` 的 `loc_00453394`；舞台坐标，与画出来的栏同一处）', () => {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    const h = harness(state);
+    const sounds: number[] = [];
+    h.env.playEffect = (id: number) => void sounds.push(id);
+    openBoard(h.env);
+    drag(h.env, 500, 90, 545, 170);
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    const max = boardScreenState().amount!.market * LIST_PRICE_MAX_FACTOR;
+    // 栏在舞台上：窗 AMOUNT_WINDOW (0x100,0x90) + 栏 (9,41,110,14)
+    const y = 0x90 + 41 + 7;
+    const left = 0x100 + 9;
+    const right = 0x100 + 117;
+    // 没按着：鼠标划过栏不改值（第七份试玩回报 #4）
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(1500);
+    // 按在栏上 → 拖到最右 = 上限；拖到最左 = 0
+    boardScreen.down?.(left + 50, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(1500); // 按下那一拍不改值
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(max);
+    boardScreen.move?.(left, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    expect(sounds).toEqual([9, 9]);
+    // 拖出栏外：值不动
+    boardScreen.move?.(right, y + 40, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    // 抬手 = 松开；之后再划过栏不改值
+    boardScreen.up?.(left, y, h.env);
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).toBe(0);
+    expect(boardScreenState().mode).toBe('price');
+    // 按在钮上（不是栏）再划到栏上：不改值
+    boardScreen.down?.(0x100 + 60, 0x90 + 170, h.env);
+    boardScreen.move?.(right, y, h.env);
+    expect(boardScreenState().amountPage?.value).not.toBe(max);
   });
 
   it('★ 填数页的初值是「市價」，上限是市價 × 10', () => {
@@ -1157,5 +1241,90 @@ describe('撤件 / 購買 @source VA 0x00427ad9 / 0x00427b19 / 0x00427b3b', () =
     expect(h.actions).toEqual([]);
     expect(boardScreenState().mode).toBe('board');
     expect(boardScreen.active(h.env)).toBe(true); // 屏还开着
+  });
+});
+
+describe('★ pt26 #3：公佈欄出价填数页 —— 按下放按键音 7、抬手才动作（只认按下那一颗）@source 0x00452d95 / loc_00452fce', () => {
+  function priceHarness() {
+    const state = makeGameState({ players: [makePlayer({ index: 0, cards: [7] })] });
+    resetBoardScreen();
+    const h = harness(state);
+    const sounds: number[] = [];
+    h.env.playEffect = (id: number) => void sounds.push(id);
+    openBoard(h.env);
+    drag(h.env, 500, 90, 545, 170);
+    click(h.env, 177, 209);
+    expect(boardScreenState().mode).toBe('price');
+    sounds.length = 0;
+    const a = boardScreenState().amount!;
+    const layout = layoutDialog(h.env.stage, boardPriceUi(a.kind, a.id, a.amount, a.market), boardScreenState().amountPage);
+    const at = (id: number) => {
+      const b = layout.buttons.find((x) => x.hit.kind === 'amountSlot' && x.hit.id === id)!;
+      return { x: b.rect.x + LAYOUT.board.x + 2, y: b.rect.y + LAYOUT.board.y + 2 };
+    };
+    return { h, sounds, at, a };
+  }
+
+  it('数字钮：按下只放 7、值不变；抬手才接上那一位', () => {
+    const { h, sounds, at } = priceHarness();
+    const before = boardScreenState().amountPage!.value;
+    const c = at(4); // C = 清零
+    boardScreen.down?.(c.x, c.y, h.env);
+    expect(sounds).toEqual([7]);
+    expect(boardScreenState().amountPage!.value).toBe(before);
+    boardScreen.up?.(c.x, c.y, h.env);
+    expect(sounds).toEqual([7]); // 抬手不再放
+    expect(boardScreenState().amountPage!.value).toBe(0);
+    const five = at(0xb); // '5'
+    boardScreen.down?.(five.x, five.y, h.env);
+    boardScreen.up?.(five.x, five.y, h.env);
+    expect(boardScreenState().amountPage!.value).toBe(5);
+    expect(sounds).toEqual([7, 7]);
+  });
+
+  it('★ 抬手照**按下那一颗**办（抬手时指针已挪到别处也一样）', () => {
+    const { h, at, a } = priceHarness();
+    boardScreenState().amountPage!.value = 4200;
+    const ok = at(3);
+    boardScreen.down?.(ok.x, ok.y, h.env);
+    expect(h.actions).toEqual([]); // 按下不成交
+    boardScreen.up?.(5, 5, h.env); // 抬在屏外
+    expect(h.actions).toEqual([{ type: 'noticeBoard', op: 'list', kind: LISTING.card, id: a.id, price: 4200 }]);
+    expect(boardScreenState().mode).toBe('board');
+  });
+
+  it('★ 拖窗：按在窗底空白（id 1）拖着走；按钮跟着新落点；关了再开回 (0x100,0x90)', async () => {
+    const { amountWindowPos } = await import('./amount-keys.ts');
+    const { h, sounds } = priceHarness();
+    expect(amountWindowPos()).toEqual({ x: 0x100, y: 0x90 });
+    boardScreen.down?.(0x100 + 120, 0x90 + 186, h.env); // 窗底右下角空白
+    expect(sounds).toEqual([]); // 拖窗不响
+    boardScreen.move?.(0x100 + 120 - 150, 0x90 + 186 - 60, h.env);
+    expect(amountWindowPos()).toEqual({ x: 0x100 - 150, y: 0x90 - 60 });
+    boardScreen.up?.(0, 0, h.env);
+    boardScreen.move?.(600, 400, h.env); // 松了手：不再跟
+    expect(amountWindowPos()).toEqual({ x: 0x100 - 150, y: 0x90 - 60 });
+    // 在新落点上点「C」
+    const a = boardScreenState().amount!;
+    const layout = layoutDialog(h.env.stage, boardPriceUi(a.kind, a.id, a.amount, a.market), boardScreenState().amountPage);
+    const c = layout.buttons.find((b) => b.hit.kind === 'amountSlot' && b.hit.id === 4)!;
+    boardScreen.down?.(c.rect.x + LAYOUT.board.x + 2, c.rect.y + LAYOUT.board.y + 2, h.env);
+    boardScreen.up?.(c.rect.x + LAYOUT.board.x + 2, c.rect.y + LAYOUT.board.y + 2, h.env);
+    expect(boardScreenState().amountPage!.value).toBe(0);
+    expect(c.rect.x + LAYOUT.board.x).toBe(0x100 - 150 + 8);
+    // 右键退回、再开：回初值
+    boardScreen.contextmenu?.(0, 0, h.env);
+    priceHarness();
+    expect(amountWindowPos()).toEqual({ x: 0x100, y: 0x90 });
+  });
+
+  it('按在窗里的空白 / 金额栏上：不放音，抬手也不办事', () => {
+    const { h, sounds } = priceHarness();
+    const v = boardScreenState().amountPage!.value;
+    boardScreen.down?.(0x100 + 50, 0x90 + 41 + 7, h.env); // 金额栏（原版 0x10：不放音）
+    boardScreen.up?.(0x100 + 50, 0x90 + 41 + 7, h.env);
+    expect(sounds).toEqual([]);
+    expect(boardScreenState().amountPage!.value).toBe(v);
+    expect(h.actions).toEqual([]);
   });
 });

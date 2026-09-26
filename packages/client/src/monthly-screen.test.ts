@@ -1,1118 +1,399 @@
 /*
- * 每月結算 + 頒獎屏的版面、摘要与演出帧序
+ * 每月結算 + 頒獎 —— 照 exe 逐状态重写之后的钉子（第二十一份 `20260924-144653022`）
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * 坐标与判据全部照汇编抄（VA 见 `monthly-screen.ts` 的注释），把最容易
- * 写错的几条钉住：
- *   ① **结算屏那一行**（`loc_00439cd7`）：头像在 `x = 600`、`y = MONTHLY_SEAT_Y[行]`
- *      = `{60,180,300,420}`；四段文字（`存款：`/存款额/`利息：`/利息额）照原版
- *      图 `11+行` 的局部 `(4,6)`/`(0x9a,6)`/`(4,0x2e)`/`(0x9a,0x2e)` 排布；
- *      **没有**行底板（图 2）/ 3D 数字（图 6..10）/ 金币 blit；
- *   ② **摘要来自 before → after 的 diff**：利息 = 存款增量（= `trunc(存款×0.1)`）；
- *   ③ **頒獎判据**：`(最高 − 次高) / 最高 > 0.4`，且最高分或次高分为 0 时无人获奖；
- *   ④ **状态机**：结算屏先逐行点亮，确认后才进頒獎屏，頒獎屏叠完还要再一拍才关。
+ * 回报：「这个页面应该有台词，评比本月最倒霉和最幸运…2 个评比，不是这样直接发利息」。
+ * 状态表与 VA 见 `monthly-screen.ts` 文件头；这里钉住：
+ *   ① 整段**自己往下走**（100 ms 一拍、每一步等上一句字框挂满 2000 ms / 语音说完），从不等点击；
+ *   ② 台词（语音号）与音效的**次序**：#0092 → #0093 →（悲情）#0095 + 27 → 名字 #0096+c + 60 → 影片 → #0108
+ *      → #0109 + 27 → 名字 #0110+c + 28 → 奖座影片 → #0122 → 1 秒后关屏；
+ *   ③ 没有悲情人物 / 悲情 = 冠軍 ⇒ 直接冠軍那一段；「動畫過程」关 ⇒ 只说 #0093、3 秒后关；
+ *   ④ 点一下 = 收掉字框 + 停语音 + 跳过（`0x00439b62`）；影片放着时点的是影片；
+ *   ⑤ 名牌写**加息前**的存款与 `trunc(存款×0.1)`（有贷款写红字 `貸款中`），贴在 (360, 行 y − 36)；
+ *   ⑥ 起播判据 = core 交下来的 `lastMonthlySettle`（只活一条 action），单机 / 联机同一条。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { makeGameState, makePlayer, type GameState, type MonthlySettleHint } from '@rich4/core';
 import {
-  applyMonthlyInterest,
-  isAlive,
-  newGame,
-  parseMap,
-  type GameState,
-  type MapTopology,
-  type Player,
-} from '@rich4/core';
-import {
-  MONTHLY_AVATAR_FRAME,
-  MONTHLY_AVATAR_STRIDE,
-  MONTHLY_AWARD_PATCH,
-  MONTHLY_BAR_FRAME,
-  MONTHLY_BAR_X,
-  MONTHLY_BAR_Y,
+  MONTHLY_BLINK,
+  MONTHLY_BOX_BUBBLE,
+  MONTHLY_BOX_COURAGE,
+  MONTHLY_BOX_FAREWELL,
   MONTHLY_CHUNK,
-  MONTHLY_CHAMPION,
-  MONTHLY_CHAMPION_LABELS,
-  MONTHLY_DETAIL_AT,
-  MONTHLY_DETAIL_LABELS,
-  MONTHLY_DETAIL_ROWS,
-  MONTHLY_INTRO,
-  MONTHLY_FAREWELL_BOX,
-  MONTHLY_TROPHY_PLATE,
-  MONTHLY_FAREWELL_TICKS,
-  MONTHLY_SKIP_TICKS,
-  MONTHLY_TABLE_PLATE,
-  MONTHLY_LABELS,
-  MONTHLY_NO_AWARD,
-  MONTHLY_PANEL_AT,
-  MONTHLY_BLINK_PATCH,
-  MONTHLY_BLINK_TICKS,
-  MONTHLY_RESOURCE,
-  MONTHLY_ROW_AT,
-  MONTHLY_ROW_BLOCK_X,
-  MONTHLY_SEAT_AVATAR_X,
-  MONTHLY_SEAT_BASE_Y,
-  MONTHLY_AWARD_SEAT_FRAME,
-  MONTHLY_AWARD_SEAT_X,
-  MONTHLY_SEAT_FRAME,
-  MONTHLY_SEAT_X,
-  MONTHLY_SEAT_Y,
-  MONTHLY_SLOTS,
-  MONTHLY_TRAGIC,
-  awardScore,
+  MONTHLY_FLIC_OFFSETS,
+  MONTHLY_LINE_MS,
+  MONTHLY_LINEUP_X,
+  MONTHLY_LINES,
+  MONTHLY_MOUTH,
+  MONTHLY_PLATE_AT,
+  MONTHLY_ROW_Y,
+  MONTHLY_SOUND_CHAMP_NAME,
+  MONTHLY_SOUND_INTRO,
+  MONTHLY_SOUND_SAD_NAME,
+  MONTHLY_SPOT_CHUNK,
+  MONTHLY_SPOT_X,
+  MONTHLY_TICK_MS,
   drawMonthlyScreen,
-  monthlyAward,
-  monthlyAwardStart,
-  monthlyChampionLines,
-  monthlyDetailLines,
-  monthlyKeyedBlack,
-  monthlyPlaybackStart,
-  monthlyPlaybackTick,
-  monthlyRowLayout,
-  monthlyRowText,
+  monthlyAdvance,
+  monthlyAvatarChunk,
+  monthlyClick,
+  monthlyFlicResource,
+  monthlyFlicSpec,
+  monthlyNameLine,
+  monthlyPlateText,
   monthlyScreen,
   monthlyScreenState,
-  monthlySummary,
-  pickAward,
+  monthlyStart,
+  monthlyViewOf,
   resetMonthlyScreen,
-  type MonthlyAward,
-  type MonthlyPlayback,
+  setMonthlyRand,
+  type MonthlyEffect,
+  type MonthlyIo,
+  type MonthlyRun,
   type MonthlyView,
-  MONTHLY_BARS,
-  MONTHLY_SOUND_CLOSE,
-  MONTHLY_SOUND_DETAIL,
-  MONTHLY_SOUND_STEP,
-  drawMonthlyAwardFlic,
-  monthlyAwardFlicResource,
-  MONTHLY_AWARD_FLIC_DX,
-  MONTHLY_FLIC_OFFSETS,
-  monthlyAwardFlicOffset,
-  monthlyChampionOf,
-  monthlyConsolationWho,
 } from './monthly-screen.ts';
 import type { Sprite } from './assets.ts';
+import { PresentationHost } from './presentation-host.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
 
 // ============================================================
-//  素材 @source `read_mkf(panel_mkf, 0x19, 0, 0)` VA 0x00439c04
+//  夹具
 // ============================================================
 
-describe('用到的图 @source 0x00439c04 / 0x0043849e', () => {
-  it('★ 全部素材都在 Panel.mkf 资源 25（83 张）', () => {
-    expect(MONTHLY_RESOURCE).toBe(25);
-    expect(MONTHLY_CHUNK.bg).toBe(0);
-    expect(MONTHLY_CHUNK.bubble).toBe(1);
-    expect(MONTHLY_CHUNK.plate).toBe(2);
-  });
-
-  it('★ 图 6..10（3D 数字 / 金币）**结算屏原版一个都没 blit** @source loc_00439cd7', () => {
-    // 资源的图号仍然照实记下来（6..9 = 3D 的 1/2/3/4、10 = 金币），
-    // 但 `loc_00439cd7` 里没有任何一处贴它们 —— 本轮已从绘制里删掉。
-    expect(MONTHLY_CHUNK.digitFirst).toBe(6);
-    expect(MONTHLY_CHUNK.digitFirst + 3).toBe(9);
-    expect(MONTHLY_CHUNK.coin).toBe(10);
-  });
-
-  it('★ 4 块窄板 = 图 11..14、4 列竖栏 = 图 15..18 @source 0x0043849e / 0x004387f9', () => {
-    expect(MONTHLY_CHUNK.barFirst).toBe(11);
-    expect(MONTHLY_CHUNK.columnFirst).toBe(15);
-    // 窄板与竖栏**首尾相接**：11..14 之后紧接着 15..18
-    expect(MONTHLY_CHUNK.barFirst + MONTHLY_SLOTS).toBe(MONTHLY_CHUNK.columnFirst);
-  });
-
-  it('★ 头像 = 图 `3×角色 + 47`（12 角色 × 3 帧 = 47..82；本屏只取第 0 帧）@source 0x00437c9f', () => {
-    expect(MONTHLY_CHUNK.avatarFirst).toBe(47);
-    expect(MONTHLY_AVATAR_STRIDE).toBe(3);
-    // 12 个角色、每角色 3 帧，正好用完 47..82 —— 包里共 83 张（0..82）
-    expect(MONTHLY_CHUNK.avatarFirst + 12 * MONTHLY_AVATAR_STRIDE - 1).toBe(82);
-  });
-
-  it('★ 结算屏左侧面板 = 图 19（`0xf0 = 0xc + 12×19`）、落在 (24,70) 且**要抠黑**', () => {
-    // @source 0x00439c3a `mov eax,[0x48c41c] / add eax,0xf0`：
-    // 图素表第 0 项在 `[0x48c41c] + 0xc`，每项 12 字节 ⇒ 图号 = (0xf0−0xc)/12
-    expect(MONTHLY_CHUNK.panel).toBe(19);
-    expect(0x0c + 12 * MONTHLY_CHUNK.panel).toBe(0xf0);
-    // @source 0x00439c5d `push 0x46`（y）/ 0x00439c5f `push 0x18`（x）
-    expect(MONTHLY_PANEL_AT).toEqual({ x: 0x18, y: 0x46 });
-    expect(MONTHLY_PANEL_AT.x).toBe(24);
-    expect(MONTHLY_PANEL_AT.y).toBe(70);
-    // @source 0x00439c73 `call 0x456418` = fcn_00456418 = 抠掉纯黑那份
-    expect(monthlyKeyedBlack(MONTHLY_CHUNK.panel)).toBe(true);
-    // 而整屏底图（图 0）走的是不透明那份 0x00439c55
-    expect(monthlyKeyedBlack(MONTHLY_CHUNK.bg)).toBe(false);
-  });
-
-  it('★ 头像（图 47..82）一律抠黑 @source 0x00439d35 / 0x0043850d', () => {
-    for (let c = 0; c < 12; c++) {
-      expect(monthlyKeyedBlack(MONTHLY_CHUNK.avatarFirst + c * MONTHLY_AVATAR_STRIDE)).toBe(true);
-    }
-    expect(monthlyKeyedBlack(82)).toBe(true);
-    // 越界/别的图不在这一族里
-    expect(monthlyKeyedBlack(83)).toBe(false);
-    expect(monthlyKeyedBlack(MONTHLY_CHUNK.bg)).toBe(false);
-  });
-
-  it('★ 頒獎屏 4 块窄板的帧与落点 x @source 0x475948 / 0x475960', () => {
-    expect(MONTHLY_BAR_FRAME).toEqual([16, 17, 15, 16]);
-    // 落点 x 是拿同一个「帧」再查那张 4 列网格表 —— 值就是 16/17/15/16
-    expect(MONTHLY_BAR_X).toEqual([16, 17, 15, 16]);
-    expect(MONTHLY_BAR_Y).toBe(0x11);
-    // 表里第 0 项就是 16，所以「帧 → x」在槽 0 上是自指的
-    expect(MONTHLY_BAR_X[0]).toBe(MONTHLY_BAR_FRAME[0]);
-  });
-});
-
-// ============================================================
-//  版面（layout 快照）
-// ============================================================
-
-/** 最少一个玩家的状态 —— 只喂 `players`，其余字段对齐 `newGame` 的形状 */
-function playerOf(index: number, character: number): Player {
+/** 一位在场者的结算现场 */
+function row(player: number, over: Partial<MonthlySettleHint['rows'][number]> = {}): MonthlySettleHint['rows'][number] {
   return {
-    index,
-    character,
-    whoPlays: 2,
-    xpos: 0,
-    ypos: 0,
-    nodeId: 1,
-    lastNodeId: 1,
-    direction: 0,
-    trafficMethod: 0,
-    ndices: 1,
-    isMale: true,
-    aiFlags: 3,
-    cashRatio: 50,
-    loanRatio: 50,
-    stockRatio: 50,
-    personality: 1,
-    cash: 0,
-    moneyInBank: 0,
+    player,
+    bankBefore: 100_000,
+    interest: 10_000,
     loan: 0,
-    specialFinance: 0,
-    loanDueDate: 0,
-    points: 0,
-    blocking: {
-      inHotel: 0,
-      disappearing: 0,
-      inPrison: 0,
-      inHospital: 0,
-      sleeping: 0,
-      sleepWalking: 0,
-      stopping: 0,
-      tortoiseWalking: 0,
-    },
-    daysRejectedByBank: 0,
-    bankFreezeDays: 0,
-    godInfo: 0,
-    f64: 0,
-    cards: [],
-    tools: [],
-    totalWinterSleepDays: 0,
-    alliedPlayer: 0,
-    alliedDays: 0,
-    insuranceDays: 0,
-    savedTrafficMethod: 0,
-    savedNdices: 1,
-    misfortune: 0,
-    fortune: 0,
-    luck: 0,
-    hostility: [0, 0, 0, 0],
-    monthlyPaid: 0,
-    monthlyReceived: 0,
+    unexpectedLoss: 0,
+    unexpectedGain: 0,
+    unluckyDays: 0,
+    cash: 50_000,
+    bank: 110_000,
+    wealth: 300_000,
+    ...over,
   };
 }
 
-/** 只用 `players`（+ 首富估值要的 holdings / market）的假状态 */
-function fakeState(players: readonly Player[]): GameState {
-  return {
-    players: [...players],
-    holdings: [],
-    // ★ 必须有 `priceIndex`：`awardScore` 里 `totalWinterSleepDays * priceIndex * 2500`
-    //   一旦碰上 `undefined` 就是 NaN，`pickAward` 的 `max < v` 永远不成立 →
-    //   **每次都是「无人获奖」**，这类夹具就测不出获奖那一支了。
-    priceIndex: 0,
-    market: { stocks: Array.from({ length: 12 }, () => ({ price: 0 })) },
-  } as unknown as GameState;
+function stateWith(hint: MonthlySettleHint, characters = [4, 0, 1, 7]): GameState {
+  return makeGameState({
+    totalMonths: 1,
+    players: characters.map((c, i) => makePlayer({ index: i, character: c, whoPlays: 1 })),
+    lastMonthlySettle: hint,
+  });
 }
 
-describe('★ layout 快照：结算屏每行的摆位 @source 0x00439cd7 起', () => {
-  const four = (): GameState =>
-    fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-
-  it('★ 结算屏行头像：**x = 600（常数）**、y = `MONTHLY_SEAT_Y[行]` = {60,180,300,420}', () => {
-    // @source 0x00439cfe `push 0x258`（x = 600）/ 0x00439cf5 查表当 y
-    expect(MONTHLY_SEAT_AVATAR_X).toBe(0x258);
-    expect(MONTHLY_SEAT_AVATAR_X).toBe(600);
-    expect(MONTHLY_SEAT_Y).toEqual([60, 180, 300, 420]);
-    const state = four();
-    for (let i = 0; i < MONTHLY_SLOTS; i++) {
-      const at = monthlyRowLayout(state, i, 'settle');
-      expect(at.screen).toBe('settle');
-      expect(at.avatar.x).toBe(600);
-      expect(MONTHLY_SEAT_Y).toContain(at.avatar.y);
-      expect(at.avatar.y).toBe(MONTHLY_SEAT_Y[i]);
-    }
-    // 默认（不传第二个参数）就是结算屏
-    expect(monthlyRowLayout(state, 0).avatar.x).toBe(600);
-    expect(monthlyRowLayout(state, 0).avatar.y).toBe(60);
-  });
-
-  it('★★ 頒獎屏那 4 列的 x 是**按 (在榜人数, 名次) 查表** @source 0x475930', () => {
-    // 行 = `[0x48c420]`（who_plays != 0 的人数，0x00439caa 数出来的）
-    expect(MONTHLY_AWARD_SEAT_X[2]).toEqual([407, 490]);
-    expect(MONTHLY_AWARD_SEAT_X[3]).toEqual([324, 407, 490]);
-    expect(MONTHLY_AWARD_SEAT_X[4]).toEqual([324, 407, 490, 573]);
-    // 四人局四列间距 83（旧读法那个 {60,180,300,420} 其实是**死数据**那一行）
-    for (let i = 1; i < 4; i++) {
-      expect(MONTHLY_AWARD_SEAT_X[4]![i]! - MONTHLY_AWARD_SEAT_X[4]![i - 1]!).toBe(83);
-    }
-    expect(MONTHLY_SEAT_BASE_Y).toBe(0x14a);
-    expect(MONTHLY_SEAT_BASE_Y).toBe(330);
-    const state = four();
-    for (let i = 0; i < MONTHLY_SLOTS; i++) {
-      const at = monthlyRowLayout(state, i, 'award');
-      expect(at.screen).toBe('award');
-      expect(at.avatar.x).toBe(MONTHLY_AWARD_SEAT_X[4]![i]);
-      const size = MONTHLY_AVATAR_FRAME[at.avatar.bar]!;
-      expect(at.avatar.y).toBe(330 - size.h + size.y);
-      // 四帧的 height/y 都是 (72,36) → 四列同高，y = 294
-      expect(at.avatar.y).toBe(294);
-      // 竖栏图号也查同一形状的表（四人是 15/16/17/18）
-      expect(at.avatar.bar).toBe(MONTHLY_AWARD_SEAT_FRAME[4]![i]);
-    }
-  });
-
-  it('★★ 在榜人数决定用哪一行：两人局 x = {407,490}、竖栏 = {16,17}', () => {
-    // 只留两个人（原版 `[0x48c420]` 就是数 who_plays != 0）
-    const base = four();
-    const two = {
-      ...base,
-      players: base.players.map((p, i) => (i >= 2 ? { ...p, whoPlays: 0 } : p)),
-    };
-    const a = monthlyRowLayout(two, 0, 'award');
-    const b = monthlyRowLayout(two, 1, 'award');
-    expect(a.avatar.x).toBe(407);
-    expect(b.avatar.x).toBe(490);
-    expect(a.avatar.bar).toBe(16);
-    expect(b.avatar.bar).toBe(17);
-  });
-
-  it('★★ 頒獎屏的 y 吃**真立绘**的 height/锚点（D-MONTHLY-10 结案）@source 0x004384de/e2', () => {
-    const state = fakeState([playerOf(0, 3), playerOf(1, 0), playerOf(2, 4), playerOf(3, 1)]);
-    // 角色 3 的立绘在 Panel#25 里是 36×58、锚点 y=29（manifest 实测）
-    const byCharacter: Record<number, { height: number; anchorY: number }> = {
-      0: { height: 72, anchorY: 36 },
-      1: { height: 68, anchorY: 34 },
-      3: { height: 58, anchorY: 29 },
-      4: { height: 66, anchorY: 33 },
-    };
-    for (let i = 0; i < 4; i++) {
-      const ch = state.players[i]!.character;
-      const face = byCharacter[ch]!;
-      const at = monthlyRowLayout(state, i, 'award', face);
-      expect(at.avatar.y, `角色 ${ch}`).toBe(330 - face.height + face.anchorY);
-    }
-    // 不给图素时退回近似表（三个兜底帧都是 (72,36) ⇒ 294）
-    expect(monthlyRowLayout(state, 0, 'award').avatar.y).toBe(294);
-    // 角色 3 那一列因此是 301 而不是 294
-    expect(monthlyRowLayout(state, 0, 'award', byCharacter[3]!).avatar.y).toBe(301);
-  });
-
-  it('★ 旧常数 `MONTHLY_SEAT_X` 只服务结算屏的 y 表（同值），不再是頒獎屏的 x', () => {
-    expect(MONTHLY_SEAT_X).toEqual([60, 180, 300, 420]);
-    expect(MONTHLY_SEAT_FRAME).toEqual([16, 17, 15, 16]);
-  });
-
-  it('★ 头像图号 = 3×角色 + 47（**不加帧**）@source `lea edi, [eax + 0x2f]` 0x00439d23', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 5), playerOf(2, 11)]);
-    expect(monthlyRowLayout(state, 0).avatar.chunk).toBe(3 * 0 + 47);
-    expect(monthlyRowLayout(state, 1).avatar.chunk).toBe(3 * 5 + 47);
-    expect(monthlyRowLayout(state, 2).avatar.chunk).toBe(3 * 11 + 47);
-    // ★ 回归：先前多加了頒獎屏那张竖栏表的「帧」（15/16/17）⇒ 图号 62..98，
-    //   越过资源 0..82 ⇒ sprite() 返回 null ⇒ 有些角色整块不画。
-    const all = Array.from({ length: 12 }, (_, c) => fakeState([playerOf(0, c)]));
-    for (let c = 0; c < 12; c++) {
-      const chunk = monthlyRowLayout(all[c]!, 0).avatar.chunk;
-      expect(chunk).toBeGreaterThanOrEqual(MONTHLY_CHUNK.avatarFirst);
-      expect(chunk).toBeLessThanOrEqual(82);
-      expect(monthlyKeyedBlack(chunk)).toBe(true);
-    }
-  });
-
-  it('★ 那一行四段文字 = 原版图 `11+行` 的那四个局部偏移 @source 0x00439d3d 起', () => {
-    expect(MONTHLY_ROW_AT).toEqual({
-      bankLabel: { dx: 4, dy: 6 },
-      bank: { dx: 0x9a, dy: 6 },
-      interestLabel: { dx: 4, dy: 0x2e },
-      interestValue: { dx: 0x9a, dy: 0x2e },
-    });
-    expect(MONTHLY_ROW_BLOCK_X).toBe(0xe0);
-    const state = four();
-    for (let i = 0; i < MONTHLY_SLOTS; i++) {
-      const at = monthlyRowLayout(state, i);
-      const b = at.block;
-      expect(b).toEqual({ x: MONTHLY_ROW_BLOCK_X, y: at.avatar.y });
-      expect(at.bankLabel).toEqual({ x: b.x + 4, y: b.y + 6 });
-      expect(at.bank).toEqual({ x: b.x + 0x9a, y: b.y + 6 });
-      expect(at.interestLabel).toEqual({ x: b.x + 4, y: b.y + 0x2e });
-      expect(at.interestValue).toEqual({ x: b.x + 0x9a, y: b.y + 0x2e });
-      // ① **不裁字**：四段文字的 x 都在屏内（≥ 0）
-      for (const p of [at.bankLabel, at.bank, at.interestLabel, at.interestValue]) {
-        expect(p.x).toBeGreaterThanOrEqual(0);
-        expect(p.x).toBeLessThan(640);
-      }
-      // ② **不压立绘**：(24,70) 那块 186×410
-      expect(b.x).toBeGreaterThanOrEqual(MONTHLY_PANEL_AT.x + 186);
-      // ③ **不碰右侧那列头像**（x = 600）
-      expect(b.x + MONTHLY_ROW_AT.bank.dx).toBeLessThan(MONTHLY_SEAT_AVATAR_X);
-      // ④ 相邻两行不叠（块高 71 < 行距 120）
-      if (i > 0) {
-        const prev = monthlyRowLayout(state, i - 1);
-        expect(b.y - prev.block.y).toBeGreaterThan(71);
-      }
-    }
-  });
-
-  it('★ layout 里**没有**行底板 / 数字球 / 金币 / 现金 / 玩家名（原版这一屏一个都没画）', () => {
-    const at = monthlyRowLayout(fakeState([playerOf(0, 0)]), 0) as unknown as Record<
-      string,
-      unknown
-    >;
-    for (const gone of ['plate', 'digit', 'coin', 'cash', 'name']) {
-      expect(gone in at).toBe(false);
-    }
-  });
-
-  it('★ 完整快照（4 人，角色 0/1/2/3）', () => {
-    const state = fakeState([
-      playerOf(0, 0),
-      playerOf(1, 1),
-      playerOf(2, 2),
-      playerOf(3, 3),
-    ]);
-    expect(
-      [0, 1, 2, 3].map((i) => monthlyRowLayout(state, i)),
-    ).toMatchInlineSnapshot(`
-      [
-        {
-          "avatar": {
-            "bar": 15,
-            "chunk": 47,
-            "x": 600,
-            "y": 60,
-          },
-          "bank": {
-            "x": 378,
-            "y": 66,
-          },
-          "bankLabel": {
-            "x": 228,
-            "y": 66,
-          },
-          "block": {
-            "x": 224,
-            "y": 60,
-          },
-          "index": 0,
-          "interestLabel": {
-            "x": 228,
-            "y": 106,
-          },
-          "interestValue": {
-            "x": 378,
-            "y": 106,
-          },
-          "screen": "settle",
-        },
-        {
-          "avatar": {
-            "bar": 16,
-            "chunk": 50,
-            "x": 600,
-            "y": 180,
-          },
-          "bank": {
-            "x": 378,
-            "y": 186,
-          },
-          "bankLabel": {
-            "x": 228,
-            "y": 186,
-          },
-          "block": {
-            "x": 224,
-            "y": 180,
-          },
-          "index": 1,
-          "interestLabel": {
-            "x": 228,
-            "y": 226,
-          },
-          "interestValue": {
-            "x": 378,
-            "y": 226,
-          },
-          "screen": "settle",
-        },
-        {
-          "avatar": {
-            "bar": 17,
-            "chunk": 53,
-            "x": 600,
-            "y": 300,
-          },
-          "bank": {
-            "x": 378,
-            "y": 306,
-          },
-          "bankLabel": {
-            "x": 228,
-            "y": 306,
-          },
-          "block": {
-            "x": 224,
-            "y": 300,
-          },
-          "index": 2,
-          "interestLabel": {
-            "x": 228,
-            "y": 346,
-          },
-          "interestValue": {
-            "x": 378,
-            "y": 346,
-          },
-          "screen": "settle",
-        },
-        {
-          "avatar": {
-            "bar": 18,
-            "chunk": 56,
-            "x": 600,
-            "y": 420,
-          },
-          "bank": {
-            "x": 378,
-            "y": 426,
-          },
-          "bankLabel": {
-            "x": 228,
-            "y": 426,
-          },
-          "block": {
-            "x": 224,
-            "y": 420,
-          },
-          "index": 3,
-          "interestLabel": {
-            "x": 228,
-            "y": 466,
-          },
-          "interestValue": {
-            "x": 378,
-            "y": 466,
-          },
-          "screen": "settle",
-        },
-      ]
-    `);
-  });
-
-  it('★ 頒獎屏状态 1 那一小块是**裁切拷贝**、不是缩放 @source 0x00437fff', () => {
-    // `fcn_0045643d(dst, 图 1, x=0x46, y=0x18, x_move=0x19a, y_move=0xba, w=0x46, h=0x18)`
-    expect(MONTHLY_AWARD_PATCH).toEqual({
-      srcX: 0x46,
-      srcY: 0x18,
-      w: 0x46,
-      h: 0x18,
-      dstX: 0x18,
-      dstY: 0x46,
-    });
-    // 拷贝尺寸 70×24 落在源图 290×201 之内
-    expect(MONTHLY_AWARD_PATCH.srcX + MONTHLY_AWARD_PATCH.w).toBeLessThanOrEqual(290);
-    expect(MONTHLY_AWARD_PATCH.srcY + MONTHLY_AWARD_PATCH.h).toBeLessThanOrEqual(201);
-    // ⚠️ 目的地那两点（旧读法）已作废 —— 见 D-MONTHLY-8 的订正
-  });
-});
-
-// ============================================================
-//  真的画一遍：结算屏这一帧贴了哪些图、字画在哪
-// ============================================================
-
-/** 记一笔 `drawImage` */
-interface RecordedBlit {
-  resource: number;
-  index: number;
-  keyed: boolean;
-  x: number;
-  y: number;
-  /** 9 参数形态（裁切拷贝）的源矩形与尺寸；3 参数形态为 undefined */
-  src?: { x: number; y: number; w: number; h: number };
-  size?: { w: number; h: number };
+function viewOf(hint: MonthlySettleHint, characters?: number[]): MonthlyView {
+  const v = monthlyViewOf(stateWith(hint, characters));
+  if (v === null) throw new Error('view');
+  return v;
 }
 
-/** 记一笔 `strokeText` / `fillText` */
-interface RecordedText {
-  text: string;
-  x: number;
-  y: number;
-  align: string;
+/** 悲情 = 2 号（角色 1 沙隆巴斯）、冠軍 = 0 号（角色 4 阿土伯）*/
+const HINT_A: MonthlySettleHint = {
+  rows: [row(0, { unexpectedGain: 900 }), row(1, { loan: 3 }), row(2, { unexpectedLoss: 88_000, unluckyDays: 4 }), row(3)],
+  unlucky: 2,
+  champion: 0,
+};
+const HINT_B: MonthlySettleHint = { ...HINT_A, unlucky: -1 };
+
+/** 语音一句 ≈ 0（字框按 2000 ms 算）、影片一遍 500 ms、`rand()` 恒大（不眨眼、不张嘴）*/
+const IO: MonthlyIo = { voiceBusy: false, rand: () => 0x7fff, filmMs: () => 500 };
+
+interface Trace {
+  voices: string[];
+  sfx: number[];
+  films: number[];
+  closedAt: number | null;
+  states: { t: number; st: number }[];
 }
 
-/**
- * 最小假 ctx —— **只**实现本屏用到的那两个出口，把落点记下来。
- *
- * `anchorX/anchorY` 一律 0：本测试钉的是「布局给的落点」，
- * 锚点换算由真实 `Sprite` 带（`monthly-screen.ts` 的 `drawAnchored`）。
- */
-function fakeCanvas(): {
-  ctx: CanvasRenderingContext2D;
-  blits: RecordedBlit[];
-  texts: RecordedText[];
-} {
-  const blits: RecordedBlit[] = [];
-  const texts: RecordedText[] = [];
-  const ctx = {
-    font: '',
-    textAlign: 'left',
-    textBaseline: 'top',
-    lineWidth: 0,
-    strokeStyle: '',
-    fillStyle: '',
-    drawImage(bitmap: unknown, ...rest: number[]): void {
-      const b = bitmap as { resource?: number; index?: number; keyed?: boolean };
-      const rec: RecordedBlit = {
-        resource: b.resource ?? -1,
-        index: b.index ?? -1,
-        keyed: b.keyed === true,
-        x: rest[0] ?? 0,
-        y: rest[1] ?? 0,
-      };
-      // ★ 9 参数形态 = 裁切拷贝：(sx,sy,sw,sh,dx,dy,dw,dh)
-      if (rest.length === 8) {
-        rec.src = { x: rest[0]!, y: rest[1]!, w: rest[2]!, h: rest[3]! };
-        rec.x = rest[4]!;
-        rec.y = rest[5]!;
-        rec.size = { w: rest[6]!, h: rest[7]! };
-      }
-      blits.push(rec);
-    },
-    strokeText(text: string, x: number, y: number): void {
-      texts.push({ text, x, y, align: String(this.textAlign) });
-    },
-    fillText(text: string, x: number, y: number): void {
-      texts.push({ text, x, y, align: String(this.textAlign) });
-    },
+/** 从 t=0 起一路推到关屏（或到 `until`），每 50 ms 推一次（真机是每帧）*/
+function play(view: MonthlyView, animation: boolean, io: MonthlyIo = IO, until = 120_000): { run: MonthlyRun; trace: Trace } {
+  const s = monthlyStart(view, animation, 0);
+  const run = s.run;
+  const trace: Trace = { voices: [], sfx: [], films: [], closedAt: null, states: [{ t: 0, st: run.st }] };
+  const eat = (effects: readonly MonthlyEffect[], t: number) => {
+    for (const e of effects) {
+      if (e.k === 'voice') trace.voices.push(e.line.slice(0, 5));
+      if (e.k === 'sfx') trace.sfx.push(e.id);
+      if (e.k === 'loadFilm') trace.films.push(e.resource);
+      if (e.k === 'close') trace.closedAt = t;
+    }
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, blits, texts };
+  eat(s.effects, 0);
+  for (let t = 50; t <= until && !run.closed; t += 50) {
+    const before = run.st;
+    eat(monthlyAdvance(run, t, io), t);
+    if (run.st !== before) trace.states.push({ t, st: run.st });
+  }
+  return { run, trace };
 }
 
-/** 假 `sprite()`：按 (档案, 资源, 图号) 造一张可辨认的位图并记下请求 */
-function fakeSpriteFn(): {
-  sprite: (archive: string, resource: number, index: number, keyed?: boolean) => Sprite | null;
-  asked: { archive: string; resource: number; index: number; keyed: boolean }[];
-} {
-  const asked: { archive: string; resource: number; index: number; keyed: boolean }[] = [];
-  const sprite = (archive: string, resource: number, index: number, keyed = false): Sprite => {
-    asked.push({ archive, resource, index, keyed });
-    return {
-      bitmap: { resource, index, keyed } as unknown as ImageBitmap,
-      width: 66,
-      height: 72,
-      anchorX: 0,
-      anchorY: 0,
-    };
-  };
-  return { sprite, asked };
-}
+// ============================================================
+//  ① ② 整段次序
+// ============================================================
 
-describe('★ 画一遍结算屏：贴的图与落点（缺陷 1/2/3/4 的回归）', () => {
-  it('★ 只有 图0 / 图19 / 行头像 三类 blit，没有图 2、6..10、11..14', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const { ctx, blits } = fakeCanvas();
-    const { sprite, asked } = fakeSpriteFn();
-    drawMonthlyScreen(
-      ctx,
-      sprite,
-      state,
-      { nodes: [], lands: [], facilities: [] },
-      view,
-      null,
-      monthlyPlaybackStart(),
-    );
+describe('★★ 路径 A：有悲情人物且 ≠ 冠軍（状态 1 → 2 → 5 → 6 → 7 → 8 → 9 → 0xf → 0x10 → 0x11 → 0x12 → 0x13 → 0x16）', () => {
+  const view = viewOf(HINT_A);
+  const { trace } = play(view, true);
 
-    // `monthlySprite()` 一律问 `Panel.mkf` 资源 25，**图号**才区分是哪张
-    const chunks = blits.filter((b) => b.resource === MONTHLY_RESOURCE).map((b) => b.index);
-    // 底图 0（不透明）与立绘 19（抠黑）都在
-    expect(chunks).toContain(0);
-    expect(chunks).toContain(19);
-    // ★ 缺陷 2/4 的回归：图 2（行底板）、6..10（3D 数字/金币）、11..14（窄板）一个都不许贴
-    for (const gone of [2, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
-      expect(chunks).not.toContain(gone);
-    }
-    // 立绘抠黑、底图不抠
-    const bg = blits.find((b) => b.index === 0)!;
-    const portrait = blits.find((b) => b.index === 19)!;
-    expect(bg.keyed).toBe(false);
-    expect(portrait.keyed).toBe(true);
-    expect(portrait.x).toBe(MONTHLY_PANEL_AT.x);
-    expect(portrait.y).toBe(MONTHLY_PANEL_AT.y);
-    // 立绘那一次请求一定带抠黑
-    const askedPortrait = asked.find((a) => a.index === 19)!;
-    expect(askedPortrait.keyed).toBe(true);
-    expect(askedPortrait.archive).toBe('Panel.mkf');
+  it('台词（语音号）逐句：#0092 → #0093 → #0095 → 悲情名字 → #0108 → #0109 → 冠軍名字 → #0122', () => {
+    expect(trace.voices).toEqual([
+      '#0092',
+      '#0093',
+      '#0095',
+      `#${String(96 + 1).padStart(4, '0')}`, // 悲情 = 2 号座 = 角色 1 ⇒ #0097
+      '#0108',
+      '#0109',
+      `#${String(110 + 4).padStart(4, '0')}`, // 冠軍 = 0 号座 = 角色 4 ⇒ #0114
+      '#0122',
+    ]);
   });
 
-  it('★ 4 个头像落在 x=600、y ∈ {60,180,300,420}，且**没有**第 5 个', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const { ctx, blits } = fakeCanvas();
-    const { sprite } = fakeSpriteFn();
-    drawMonthlyScreen(
-      ctx,
-      sprite,
-      state,
-      { nodes: [], lands: [], facilities: [] },
-      view,
-      null,
-      { ...monthlyPlaybackStart(), revealed: 3 },
-    );
-    const avatars = blits.filter(
-      (b) => b.index >= MONTHLY_CHUNK.avatarFirst && b.index <= 82,
-    );
-    expect(avatars.map((b) => b.x)).toEqual([600, 600, 600, 600]);
-    expect(avatars.map((b) => b.y)).toEqual([...MONTHLY_SEAT_Y]);
-    // 4 人局就 4 个（不是 5 个）
-    expect(avatars).toHaveLength(MONTHLY_SLOTS);
+  it('音效：27（悲情引出）→ 60（悲情名字）→ 27（冠軍引出）→ 28（冠軍名字）', () => {
+    expect(trace.sfx).toEqual([MONTHLY_SOUND_INTRO, MONTHLY_SOUND_SAD_NAME, MONTHLY_SOUND_INTRO, MONTHLY_SOUND_CHAMP_NAME]);
   });
 
-  it('★ 每一段字的 x 都 ≥ 0（缺陷 1/3 的回归），标签与数值不互相压', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const { ctx, texts } = fakeCanvas();
-    const { sprite } = fakeSpriteFn();
-    drawMonthlyScreen(
-      ctx,
-      sprite,
-      state,
-      { nodes: [], lands: [], facilities: [] },
-      view,
-      null,
-      { ...monthlyPlaybackStart(), revealed: 3 },
-    );
-    for (const t of texts) {
-      expect(t.x, `${t.text} @ ${t.x}`).toBeGreaterThanOrEqual(0);
-      expect(t.x).toBeLessThan(640);
-      expect(t.y).toBeGreaterThanOrEqual(0);
-      expect(t.y).toBeLessThan(480);
-    }
-    // 标签左对齐在块内 +4、数值右对齐在块内 +0x9a ⇒ 天然错开
-    const labels = texts.filter((t) => t.align === 'left').map((t) => t.x);
-    const values = texts.filter((t) => t.align === 'right').map((t) => t.x);
-    expect(Math.min(...labels)).toBe(MONTHLY_ROW_BLOCK_X + MONTHLY_ROW_AT.bankLabel.dx);
-    expect(Math.max(...values)).toBe(MONTHLY_ROW_BLOCK_X + MONTHLY_ROW_AT.bank.dx);
-    // 标签左边缘离数值的右边缘至少 0x40（值最宽 ≈70px，标签最长 54px）
-    expect(Math.min(...labels)).toBeLessThan(Math.max(...values) - 0x40);
+  it('两段影片：先悲情 `0x1a1+2c`、后奖座 `0x1a0+2c`', () => {
+    expect(trace.films).toEqual([monthlyFlicResource(1, 'sad'), monthlyFlicResource(4, 'trophy')]);
+  });
+
+  it('状态序与 exe 一致，最后关屏', () => {
+    expect(trace.states.map((s) => s.st)).toEqual([1, 2, 5, 6, 7, 8, 9, 0xf, 0x10, 0x11, 0x12, 0x13, 0x16]);
+    expect(trace.closedAt).not.toBeNull();
+  });
+
+  it('每一句都挂满 2000 ms 才走下一步（`0x44ee18` 的闸）；状态 5 / 0xf 各数 30 拍（3 秒）', () => {
+    const at = (st: number) => trace.states.find((s) => s.st === st)!.t;
+    expect(at(2) - 0).toBeGreaterThanOrEqual(MONTHLY_LINE_MS); // #0092 挂满才到 1 → 2
+    expect(at(5) - at(2)).toBeGreaterThanOrEqual(MONTHLY_LINE_MS); // #0093
+    expect(at(6) - at(5)).toBeGreaterThanOrEqual(30 * MONTHLY_TICK_MS);
+    expect(at(0x10) - at(0xf)).toBeGreaterThanOrEqual(MONTHLY_LINE_MS); // #0108 挂满才开始数
+  });
+});
+
+describe('★★ 路径 B：没有悲情人物 ⇒ 状态 2 直接跳 0xf（`0x00438267 cmp ch, 0xff`）', () => {
+  it('只有冠軍那一段', () => {
+    const { trace } = play(viewOf(HINT_B), true);
+    expect(trace.voices).toEqual(['#0092', '#0093', '#0109', '#0114', '#0122']);
+    expect(trace.sfx).toEqual([MONTHLY_SOUND_INTRO, MONTHLY_SOUND_CHAMP_NAME]);
+    expect(trace.films).toEqual([monthlyFlicResource(4, 'trophy')]);
+    expect(trace.states.map((s) => s.st)).toEqual([1, 2, 0xf, 0x10, 0x11, 0x12, 0x13, 0x16]);
+  });
+
+  it('悲情 = 冠軍 同样跳过悲情那一段（`0x00438263 cmp al, ch / je`）', () => {
+    const { trace } = play(viewOf({ ...HINT_A, unlucky: 0, champion: 0 }), true);
+    expect(trace.voices).not.toContain('#0095');
+    expect(trace.states.map((s) => s.st)).toEqual([1, 2, 0xf, 0x10, 0x11, 0x12, 0x13, 0x16]);
+  });
+});
+
+describe('★★ 路径 C：「動畫過程」关（`0x00437f39` / `0x0043827e`）', () => {
+  it('不说 #0092；#0093 照说；状态 2 → 0x16（30 拍）→ 关屏；不颁奖', () => {
+    const { trace } = play(viewOf(HINT_A), false);
+    expect(trace.voices).toEqual(['#0093']);
+    expect(trace.sfx).toEqual([]);
+    expect(trace.films).toEqual([]);
+    expect(trace.states.map((s) => s.st)).toEqual([1, 2, 0x16]);
+    const at2 = trace.states.find((s) => s.st === 0x16)!.t;
+    expect(trace.closedAt! - at2).toBeGreaterThanOrEqual(29 * MONTHLY_TICK_MS);
   });
 });
 
 // ============================================================
-//  摘要：从 before → after 的 diff 取
+//  ④ 点击
 // ============================================================
 
-/** 造一份 「月结前 → 月结后」 的最小对 */
-function settlePair(players: readonly Partial<Player>[]): {
-  before: GameState;
-  after: GameState;
-} {
-  const before = fakeState(
-    players.map((p, i) => ({ ...playerOf(i, i), moneyInBank: 0, ...p })),
-  );
-  const after = fakeState(
-    players.map((p, i) => {
-      const b = before.players[i]!;
-      return { ...b, moneyInBank: applyMonthlyInterest(b.moneyInBank, b.loan) };
-    }),
-  );
-  return { before, after };
-}
+describe('★ 点一下（`0x00439b62`）：收字框 + 停语音 + 跳过', () => {
+  it('字框挂着时点：交出 stopVoice、下一拍就往下走', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    monthlyAdvance(run, 500, IO);
+    expect(run.st).toBe(1);
+    expect(monthlyClick(run, 500, IO)).toEqual([{ k: 'stopVoice' }]);
+    expect(run.line).toBeNull();
+    monthlyAdvance(run, 600, IO);
+    expect(run.st).toBe(2); // 状态 1 走过去了，#0093 挂上
+    expect(run.line?.text).toContain('加發１０％的儲金利息');
+  });
 
-describe('★ 月结摘要 = before → after 的 diff', () => {
-  it('★ 利息 = 存款增量 = `trunc(存款 × 0.1)`（有贷款则 0）', () => {
-    const { before, after } = settlePair([
-      { character: 0, moneyInBank: 100000 },
-      { character: 1, moneyInBank: 5000 },
-      { character: 2, moneyInBank: 100000, loan: 1 },
-      { character: 3, moneyInBank: 0 },
-    ]);
-    const v = monthlySummary(before, after);
-    expect(v.rows.map((r) => r.interest)).toEqual([10000, 500, 0, 0]);
-    // 规则侧同一个函数算出来的差值，必须与摘要一致
-    expect(v.rows[0]!.interest).toBe(
-      applyMonthlyInterest(100000, 0) - 100000,
+  it('状态 5 的 30 拍：点一下就跳到悲情引出', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    let t = 0;
+    while (run.st !== 5) monthlyAdvance(run, (t += 50), IO);
+    monthlyClick(run, t, IO);
+    monthlyAdvance(run, t + 100, IO);
+    expect(run.st).toBe(6);
+  });
+
+  it('影片放着时点的是影片（flags bit1 可点掉），不置跳过', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    let t = 0;
+    const io: MonthlyIo = { ...IO, filmMs: () => 60_000 };
+    while (run.film === null || run.film.startedAt === null) monthlyAdvance(run, (t += 50), io);
+    expect(run.film.kind).toBe('sad');
+    monthlyClick(run, t, io);
+    expect(run.film).toBeNull();
+    expect(run.st).toBe(9);
+    expect(run.skip).toBe(false);
+    // 影片停在最后一帧（原版逐帧直接贴屏）+ 图 38 姿势
+    expect(run.ops.some((o) => o.k === 'film')).toBe(true);
+    expect(run.ops.some((o) => o.k === 'img' && o.chunk === MONTHLY_CHUNK.pose4)).toBe(true);
+  });
+
+  it('影片一直解不出来 ⇒ 等 4 秒就当没有（演出照走，不卡回合）', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    const io: MonthlyIo = { ...IO, filmMs: () => null };
+    let t = 0;
+    while (!run.closed && t < 200_000) monthlyAdvance(run, (t += 50), io);
+    expect(run.closed).toBe(true);
+    expect(run.ops.some((o) => o.k === 'film')).toBe(false);
+  });
+
+  it('语音还在响（`0x4544b9`）就一直挂着', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    monthlyAdvance(run, 10_000, { ...IO, voiceBusy: true });
+    expect(run.st).toBe(1);
+    monthlyAdvance(run, 10_100, IO);
+    expect(run.st).toBe(2);
+  });
+});
+
+// ============================================================
+//  ⑤ 版面
+// ============================================================
+
+describe('★ 版面（绘制指令）', () => {
+  it('建屏：图 0 → 图 19 抠黑 (24,70) → 各行头像 `3c+47` 抠黑 (600, 行 y)；字框预开在图 1 (190,10)', () => {
+    const view = viewOf(HINT_A);
+    const { run } = monthlyStart(view, true, 0);
+    expect(run.ops[0]).toEqual({ k: 'img', chunk: 0, x: 0, y: 0, keyed: false });
+    expect(run.ops[1]).toEqual({ k: 'img', chunk: MONTHLY_CHUNK.panel, x: 24, y: 70, keyed: true });
+    expect(run.ops.slice(2)).toEqual(
+      view.rows.map((r, i) => ({ k: 'img', chunk: monthlyAvatarChunk(r.character, 0), x: 600, y: MONTHLY_ROW_Y[4]![i], keyed: true })),
     );
+    expect(run.box).toEqual(MONTHLY_BOX_BUBBLE);
+    expect(run.line?.text).toBe(MONTHLY_LINES.intro.slice(5));
   });
 
-  it('★ 不在场的玩家（`whoPlays === 0`）不出现在摘要里 @source 0x00439c93', () => {
-    const { before, after } = settlePair([
-      { character: 0 },
-      { character: 1, whoPlays: 0 },
-      { character: 2 },
-      { character: 3, whoPlays: 0 },
-    ]);
-    expect(monthlySummary(before, after).rows.map((r) => r.index)).toEqual([0, 2]);
+  it('状态 2：名牌（加息前存款 / `trunc(×0.1)` / 贷款红字）贴 (360, 行 y − 36)、头像换 `3c+49`', () => {
+    const view = viewOf(HINT_A);
+    const { run } = monthlyStart(view, true, 0);
+    let t = 0;
+    while (run.st !== 5) monthlyAdvance(run, (t += 50), IO);
+    const plates = run.ops.filter((o) => o.k === 'plate');
+    expect(plates).toHaveLength(4);
+    expect(plates[0]).toMatchObject({ row: 0, x: MONTHLY_PLATE_AT.x, y: 60 - 36, bank: '$100,000', interest: '$10,000', loan: false });
+    expect(plates[1]).toMatchObject({ row: 1, interest: '貸款中', loan: true });
+    expect(run.ops.filter((o) => o.k === 'img' && o.chunk === monthlyAvatarChunk(4, 2))).toHaveLength(1);
+    expect(monthlyPlateText({ ...view.rows[0]!, bankBefore: 123_456 }).interest).toBe('$12,345');
   });
 
-  it('★ 收入 / 支出两个本月累计照样带上（頒獎屏要用）', () => {
-    const { before, after } = settlePair([
-      { character: 0, monthlyPaid: 26000, monthlyReceived: 394432 },
-    ]);
-    const row = monthlySummary(before, after).rows[0]!;
-    expect(row.monthlyPaid).toBe(26000);
-    expect(row.monthlyReceived).toBe(394432);
+  it('状态 6：聚光查表（人数 × 名次）+ 图 37 (0,89) + 全员站队；状态 7：悲情表四行 + 站队除悲情者', () => {
+    const view = viewOf(HINT_A);
+    const { run } = monthlyStart(view, true, 0);
+    let t = 0;
+    while (run.st !== 7) monthlyAdvance(run, (t += 50), IO);
+    expect(run.ops).toContainEqual({ k: 'img', chunk: MONTHLY_SPOT_CHUNK[4]![2], x: MONTHLY_SPOT_X[4]![2], y: 0, keyed: false });
+    expect(run.ops).toContainEqual({ k: 'img', chunk: MONTHLY_CHUNK.pose3, x: 0, y: 0x59, keyed: true });
+    expect(run.ops.filter((o) => o.k === 'figure')).toHaveLength(4);
+    while ((run.st as number) !== 8) monthlyAdvance(run, (t += 50), IO);
+    const texts = run.ops.filter((o) => o.k === 'text').map((o) => (o.k === 'text' ? o.text : ''));
+    expect(texts).toEqual(['獲獎原因：', '本月意外損失：', '$88,000', '本月意外之財：', '$0', '本月倒楣天數：', '4天']);
+    const figs = run.ops.filter((o) => o.k === 'figure').map((o) => (o.k === 'figure' ? o.x : 0));
+    expect(figs).toEqual([MONTHLY_LINEUP_X[4]![0], MONTHLY_LINEUP_X[4]![1], MONTHLY_LINEUP_X[4]![3]]);
   });
 
-  it('★ 角色名取自 CHARACTERS', () => {
-    const { before, after } = settlePair([{ character: 3 }]);
-    expect(monthlySummary(before, after).rows[0]!.name).toBe('錢夫人');
+  it('影片落点 = 站队 x + dx、330 + dy（左上角）；播几遍 = flags 第二字节（至少 1）', () => {
+    const view = viewOf(HINT_A);
+    const { run } = monthlyStart(view, true, 0);
+    let t = 0;
+    while (run.film === null) monthlyAdvance(run, (t += 50), IO);
+    const spec = monthlyFlicSpec(1, 'sad');
+    expect(spec).toMatchObject({ dx: -48, dy: -90, plays: 6, skippable: true });
+    expect(run.film).toMatchObject({ x: MONTHLY_LINEUP_X[4]![2]! - 48, y: 330 - 90, plays: 6 });
+    expect(monthlyFlicSpec(0, 'sad').plays).toBe(1); // flags 3 ⇒ 第二字节 0 ⇒ 只播一遍
+    expect(MONTHLY_FLIC_OFFSETS).toHaveLength(12);
   });
 
-  it('★ 文字快照：有贷款画红字 `貸款中`', () => {
-    const { before, after } = settlePair([
-      { character: 0, cash: 12345, moneyInBank: 100000 },
-      { character: 1, cash: -500, moneyInBank: 0, loan: 7000 },
-    ]);
-    const rows = monthlySummary(before, after).rows;
-    expect(rows.map(monthlyRowText)).toMatchInlineSnapshot(`
-      [
-        {
-          "bank": "$110,000",
-          "bankLabel": "存款：",
-          "cash": "$12,345",
-          "interest": "$10,000",
-          "interestLabel": "利息：",
-          "loan": false,
-          "name": "約翰喬",
-        },
-        {
-          "bank": "$0",
-          "bankLabel": "存款：",
-          "cash": "$-500",
-          "interest": "貸款中",
-          "interestLabel": "利息：",
-          "loan": true,
-          "name": "沙隆巴斯",
-        },
-      ]
-    `);
-    expect(MONTHLY_LABELS.loan).toBe('貸款中');
+  it('状态 9 / 0x13 换字框（图 3 / 图 4），状态 0xf 换回图 1', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    let t = 0;
+    const seen: number[] = [];
+    while (!run.closed) {
+      monthlyAdvance(run, (t += 50), IO);
+      if (run.line !== null && seen.at(-1) !== run.box.chunk) seen.push(run.box.chunk);
+    }
+    expect(seen).toEqual([MONTHLY_BOX_BUBBLE.chunk, MONTHLY_BOX_COURAGE.chunk, MONTHLY_BOX_BUBBLE.chunk, MONTHLY_BOX_FAREWELL.chunk]);
+  });
+
+  it('站队那一笔：头像按锚点 x、脚底落在 330（`0x14a − 高 + 锚点 y`）', () => {
+    const calls: number[][] = [];
+    const ctx = {
+      drawImage: (...a: unknown[]) => calls.push(a.slice(1).map(Number)),
+      fillText: () => undefined,
+      set font(_v: string) {},
+      set fillStyle(_v: string) {},
+      set textAlign(_v: string) {},
+      set textBaseline(_v: string) {},
+    } as unknown as CanvasRenderingContext2D;
+    const spr = { bitmap: {} as ImageBitmap, width: 60, height: 72, anchorX: 30, anchorY: 36 } as Sprite;
+    const run = monthlyStart(viewOf(HINT_A), true, 0).run;
+    run.ops = [{ k: 'figure', character: 4, x: 324 }];
+    run.line = null;
+    drawMonthlyScreen(ctx, () => spr, () => null, run, 0);
+    expect(calls).toEqual([[324 - 30, 330 - 72]]);
   });
 });
 
 // ============================================================
-//  頒獎判据 @source fcn_00437d1a
+//  待机
 // ============================================================
 
-describe('★ 頒獎判据 @source 0x00437d1a / 0x00437dfe', () => {
-  it('★ 分公式 = (支出 − 收入) + 冬眠天数×物价×2500 + 衰運×10', () => {
-    const p: Player = {
-      ...playerOf(0, 0),
-      monthlyPaid: 26000,
-      monthlyReceived: 1000,
-      totalWinterSleepDays: 2,
-      misfortune: 5,
-    };
-    expect(awardScore(p, 1)).toBe(26000 - 1000 + 2 * 1 * 2500 + 5 * 10);
-    expect(awardScore(p, 3)).toBe(26000 - 1000 + 2 * 3 * 2500 + 50);
+describe('★ 待机（`0x00439196`）：眨眼三帧 + 第 4 拍还原；说话时摆嘴型', () => {
+  it('`rand()>>10 == 0` ⇒ 眨眼：姿势 0 贴 21/20/21 于 (76,120)，第 4 拍从图 19 拷回', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    const n0 = run.ops.length;
+    let k = 0;
+    // 第一拍 rand 给 0（眨眼），其余给大数（不张嘴）
+    const io: MonthlyIo = { ...IO, rand: () => (k++ === 0 ? 0 : 0x7fff) };
+    for (let t = 100; t <= 400; t += 100) monthlyAdvance(run, t, io);
+    const added = run.ops.slice(n0);
+    const b = MONTHLY_BLINK[0]!;
+    expect(added.slice(0, 3)).toEqual(b.frames.map((chunk) => ({ k: 'img', chunk, x: b.at.x, y: b.at.y, keyed: false })));
+    expect(added[3]).toMatchObject({ k: 'copy', chunk: 19, x: 76, y: 120, w: 80, h: 40 });
   });
 
-  it('★ 领先 0.4 倍：`3×最高 > 5×次高` 才颁奖', () => {
-    // 100 / 60：差值 40 → 40/100 = 0.4 → **不**颁奖（原版是 `jbe`）
-    expect(pickAward([100, 60, 0, 0])).toBe(-1);
-    // 100 / 59：0.41 → 颁奖
-    expect(pickAward([100, 59, 0, 0])).toBe(0);
-    // 最大者在第 2 位
-    expect(pickAward([59, 100, 0, 0])).toBe(1);
-  });
-
-  it('★ 最高分为 0 或次高分为 0 → 无人获奖（只有一个人在场也一样）', () => {
-    expect(pickAward([])).toBe(-1);
-    expect(pickAward([0])).toBe(-1);
-    expect(pickAward([1000])).toBe(-1); // 次高分 = 0
-    expect(pickAward([0, 0, 0, 0])).toBe(-1);
-    // 负分：最高仍是 0 → 不颁
-    expect(pickAward([-5, -3])).toBe(-1);
-  });
-
-  it('★ 与「先取最高、把它清零后再取最高」的朴素实现逐例交叉验证', () => {
-    /** core `pickAwardWinner` 用的那套朴素算法 */
-    const naive = (scores: readonly number[]): number => {
-      let max = 0;
-      let at = 0;
-      for (let i = 0; i < scores.length; i++) {
-        if (max < scores[i]!) {
-          max = scores[i]!;
-          at = i;
-        }
-      }
-      let second = 0;
-      for (let i = 0; i < scores.length; i++) {
-        const v = scores[i] === max ? 0 : scores[i]!;
-        if (second < v) second = v;
-      }
-      if (max === 0 || second === 0) return -1;
-      return 3 * max > 5 * second ? at : -1;
-    };
-    const vals = [-3, 0, 1, 4, 7];
-    for (const a of vals) {
-      for (const b of vals) {
-        for (const c of vals) {
-          for (const d of vals) {
-            const s = [a, b, c, d];
-            expect(pickAward(s)).toBe(naive(s));
-          }
-        }
-      }
-    }
-  });
-
-  it('★ 平手：两人同分时最高分者只有一个「最高」，次高 = 同分值 → 不颁', () => {
-    // 100/100：朴素算法会把两个 100 都清零 → second = 0 → 不颁
-    expect(pickAward([100, 100])).toBe(-1);
-    // 100/100/10：清零两个 100 后 second = 10 → 90/100 = 0.9 > 0.4 → 颁给先出现的
-    expect(pickAward([100, 100, 10])).toBe(0);
-  });
-
-  it('★ 无人获奖时 `winner = -1`，收尾那句换成「本月悲情人物是」', () => {
-    const { before, after } = settlePair([{ character: 0 }, { character: 1 }]);
-    const award = monthlyAward(before, after, {
-      nodes: [],
-      lands: [],
-      facilities: [],
-    } satisfies MapTopology);
-    expect(award.winner).toBe(-1);
-    expect(MONTHLY_TRAGIC).toBe('本月悲情人物是');
-    expect(MONTHLY_CHAMPION).toBe('本月冠軍是');
-    expect(MONTHLY_NO_AWARD).toBe('別灰心，再加油喔！');
-  });
-
-  it('★ 悲情那张表是**四行**、且损失/之财不许取反 @source 串 0x464de4 / 0x464def / 0x464dfe / 0x464e0d', () => {
-    const { before, after } = settlePair([
-      { character: 0, cash: 1000, monthlyPaid: 11, monthlyReceived: 22, totalWinterSleepDays: 3 },
-      { character: 1, cash: 999999, monthlyPaid: 0, monthlyReceived: 0 },
+  it('字框挂着且 `rand()>>11 < 4` ⇒ 张嘴，停 `(rand&7)+1` 拍后闭嘴', () => {
+    const { run } = monthlyStart(viewOf(HINT_A), true, 0);
+    const n0 = run.ops.length;
+    const seq = [0x7fff, 0, 1, 0]; // 不眨眼 / 张嘴 / rand&1=1 选张嘴图 / 停 1 拍
+    let k = 0;
+    const io: MonthlyIo = { ...IO, rand: () => seq[k++] ?? 0x7fff };
+    monthlyAdvance(run, 100, io);
+    monthlyAdvance(run, 200, io);
+    const m = MONTHLY_MOUTH[0]!;
+    expect(run.ops.slice(n0)).toEqual([
+      { k: 'img', chunk: m.open, x: m.at.x, y: m.at.y, keyed: false },
+      { k: 'img', chunk: m.closed, x: m.at.x, y: m.at.y, keyed: false },
     ]);
-    const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
-    const award = monthlyAward(before, after, topo);
-    const lines = monthlyDetailLines(after, topo, award);
-    expect(MONTHLY_DETAIL_ROWS).toBe(4);
-    expect(lines.map((l) => l.label)).toEqual([
-      MONTHLY_DETAIL_LABELS.reason,
-      MONTHLY_DETAIL_LABELS.unexpectedLoss,
-      MONTHLY_DETAIL_LABELS.unexpectedGain,
-      MONTHLY_DETAIL_LABELS.unluckyDays,
-    ]);
-    // 第 1 行原版**只画标签**（`loc_00438570` 里 `0x172` 那行后面没有取值/画值的代码）
-    expect(lines[0]!.value).toBe('');
-    // 1 号现金最多 → 首富是他；0 号支出 11 < 收入 22 → 悲情分负 → 无人获奖
-    expect(award.winner).toBe(-1);
-    // 无人获奖 ⇒ 后三行都按 0 画（但标签顺序不许乱）
-    expect(lines[1]!.value).toBe('$0');
-    expect(lines[2]!.value).toBe('$0');
-    expect(lines[3]!.value).toBe('0天');
-  });
-
-  it('★ 损失/之财取的是悲情那位本人的月度收支 @source `player[+0x5c]` / `player[+0x60]`', () => {
-    // 0 号本月支出巨大 → 他就是悲情人物；monthlyPaid → 意外損失，monthlyReceived → 意外之財
-    // （1 号要给一个**正但较小**的分：`pickAward` 里「次高分为 0 → 无人获奖」会把 0/负分否掉）
-    const { before, after } = settlePair([
-      { character: 0, cash: 5000, monthlyPaid: 700, monthlyReceived: 30, totalWinterSleepDays: 9 },
-      { character: 1, cash: 8000, monthlyPaid: 200, monthlyReceived: 0 },
-    ]);
-    const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
-    const award = monthlyAward(before, after, topo);
-    expect(award.winner).toBe(0);
-    const lines = monthlyDetailLines(after, topo, award);
-    expect(lines[1]!.label).toBe('本月意外損失：');
-    expect(lines[1]!.value).toBe('$700');
-    expect(lines[2]!.label).toBe('本月意外之財：');
-    expect(lines[2]!.value).toBe('$30');
-    expect(lines[3]!.value).toBe('9天');
-  });
-
-  it('★ 冠军那张表：獲獎原因/現金/存款/總資產，都是**首富**的数 @source `loc_00438d40`', () => {
-    // 存款 4000 → 月息 10% → 结息后 4400（`applyMonthlyInterest`），故断言用 after 的值
-    const { before, after } = settlePair([
-      { character: 0, cash: 5000, monthlyPaid: 900, monthlyReceived: 0 },
-      { character: 1, cash: 1234, moneyInBank: 4000 },
-    ]);
-    const topo = { nodes: [], lands: [], facilities: [] } satisfies MapTopology;
-    const award = monthlyAward(before, after, topo);
-    const lines = monthlyChampionLines(after, topo, award);
-    expect(MONTHLY_CHAMPION_LABELS.reason).toBe('獲獎原因：');
-    expect(lines.map((l) => l.label)).toEqual([
-      MONTHLY_CHAMPION_LABELS.reason,
-      MONTHLY_CHAMPION_LABELS.cash,
-      MONTHLY_CHAMPION_LABELS.bank,
-      MONTHLY_CHAMPION_LABELS.assets,
-    ]);
-    expect(lines[0]!.value).toBe('');
-    // 冠军 = 首富（`[0x48c430]`），不是悲情那位；他的现金/存款/总资产
-    expect(award.richest).toBe(1);
-    expect(after.players[1]!.moneyInBank).toBe(4400);
-    expect(lines[1]!.value).toBe('$1,234');
-    expect(lines[2]!.value).toBe('$4,400');
-    expect(lines[3]!.value).toBe('$5,634');
-  });
-
-  it('★★ `#0092` 开屏串逐字节对照 exe @source 0x004d60 起（VA 0x00464d60）', () => {
-    // ★ 2026-09-17 订正：先前那份转写是「月底快到了！⏎又到了每個月結算的日子。」
-    //   —— 从 exe 里逐字节 dump 出来是**三行、两个换行**，而且开头不同：
-    const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
-    if (existsSync(EXE)) {
-      const buf = readFileSync(EXE);
-      const off = 398848 + (0x464d60 - 0x463000); // VA → 文件偏移（exe 专用换算）
-      const end = buf.indexOf(0, off);
-      const raw = buf.subarray(off, end).toString('latin1');
-      // `#0092` 是消息号前缀，本模块的常量不带它
-      const text = new TextDecoder('big5').decode(Buffer.from(raw.slice(5), 'latin1'));
-      expect(MONTHLY_INTRO).toBe(text);
-      expect(MONTHLY_INTRO).toBe('各位客戶辛苦了！\n又到了每月銀行\n結算的日子。');
-      expect(MONTHLY_INTRO.split('\n')).toHaveLength(3);
-    }
-    // ★ 本模块**刻意不画它**：原版那句受「上一次开过的字框」这个脏全局管辖
-    //   （`fcn_0044ecb6` 开头 `cmp [0x4762bc], 0 / je 返回`，而它从不清零）——
-    //   见 `docs/known-deviations.md` 的「動畫過程」表末行。
-    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
-    expect(src).not.toContain('monthlyText(ctx, MONTHLY_INTRO');
-  });
-
-  it('★ 四行的行距与落点 @source 0x00438570 的 `push 0x172` 起', () => {
-    expect(MONTHLY_DETAIL_AT.y0).toBe(0x172);
-    expect(MONTHLY_DETAIL_AT.step).toBe(0x12);
-    expect(MONTHLY_DETAIL_AT.x).toBe(0x140);
-    expect(MONTHLY_DETAIL_AT.valueX).toBe(0x230);
   });
 });
 
 // ============================================================
-//  演出状态机
+//  ⑥ 屏幕本体
 // ============================================================
 
-describe('★ 演出状态机', () => {
-  it('★ 结算屏：先逐行点亮，全亮后停在「等确认」', () => {
-    let p = monthlyPlaybackStart();
-    expect(p).toEqual({
-      phase: 'settle',
-      revealed: 0,
-      bars: 0,
-      seats: 0,
-      details: 0,
-      encourage: false,
-      closing: false,
-      skipTicks: 0,
-      farewell: false,
-      farewellTicks: 0,
-      blinkTicks: 0,
-    });
-    // 4 行 → 3 拍点亮完
-    p = monthlyPlaybackTick(p, 4)!;
-    expect(p.revealed).toBe(1);
-    p = monthlyPlaybackTick(p, 4)!;
-    expect(p.revealed).toBe(2);
-    p = monthlyPlaybackTick(p, 4)!;
-    expect(p.revealed).toBe(3);
-    // 全亮后 tick 也**不推进状态**（原版 `[0x48c42a]` 不变），
-    // ★ 但会推进**待机眨眼**计数（`[0x48c42c] & 0x30`）—— 见下一个 describe。
-    const idle = monthlyPlaybackTick(p, 4)!;
-    expect({ ...idle, blinkTicks: 0 }).toEqual(p);
-    expect(idle.phase).toBe('settle');
-    expect(idle.blinkTicks).toBe(1);
-  });
-
-  it('★ 只有 1 个人在场时第 0 拍就已经全亮', () => {
-    const p = monthlyPlaybackStart();
-    expect(monthlyPlaybackTick(p, 1)!.revealed).toBe(0);
-  });
-
-  it('★ 頒獎屏：铺 4 板 → 画 4 列 → 叠 4 条 → 悲情那一拍 → 再一拍才关', () => {
-    let p: MonthlyPlayback = { ...monthlyPlaybackStart(), phase: 'award' };
-    const seen: string[] = [];
-    let guard = 0;
-    while (guard++ < 40) {
-      const next = monthlyPlaybackTick(p, 4);
-      if (next === null) {
-        seen.push('null');
-        break;
-      }
-      p = next;
-      seen.push(
-        `${p.bars}/${p.seats}/${p.details}${p.encourage ? '/sad' : ''}${p.closing ? '/closing' : ''}` +
-          `${p.farewell ? `/farewell${p.farewellTicks}` : ''}`,
-      );
-    }
-    expect(seen).toEqual([
-      '1/0/0',
-      '2/0/0',
-      '3/0/0',
-      '4/0/0',
-      '4/1/0',
-      '4/2/0',
-      '4/3/0',
-      '4/4/0',
-      '4/4/1',
-      '4/4/2',
-      '4/4/3',
-      '4/4/4',
-      // ★ 详情叠完先走「本月悲情人物」那一拍（原版状态 9 的 `別灰心，再加油喔！`）
-      '4/4/4/sad',
-      '4/4/4/sad/closing',
-      // ★ 收尾之后还有**单独的一拍**（原版状态 0x13 开框 + 0x16 倒数 0xa）才关屏
-      '4/4/4/sad/closing/farewell10',
-      '4/4/4/sad/closing/farewell9',
-      '4/4/4/sad/closing/farewell8',
-      '4/4/4/sad/closing/farewell7',
-      '4/4/4/sad/closing/farewell6',
-      '4/4/4/sad/closing/farewell5',
-      '4/4/4/sad/closing/farewell4',
-      '4/4/4/sad/closing/farewell3',
-      '4/4/4/sad/closing/farewell2',
-      '4/4/4/sad/closing/farewell1',
-      'null',
-    ]);
-  });
-
-  it('★★ 最后那一拍点一下就提前关屏（原版 `[0x48c42e]`）', () => {
-    // 见 `advance()`：`farewell` 期间点一下 → 直接关屏；`closing` 期间点一下 → 进 farewell
-    const p: MonthlyPlayback = {
-      ...monthlyPlaybackStart(),
-      phase: 'award',
-      closing: true,
-      farewell: true,
-      farewellTicks: 7,
-    };
-    expect(p.farewell).toBe(true);
-    // 倒数还没走完也能被点掉：`monthlyPlaybackTick` 自己不会提前结束
-    expect(monthlyPlaybackTick(p, 4)).toMatchObject({ farewell: true, farewellTicks: 6 });
-  });
-});
-
-// ============================================================
-//  event / tick 生命周期（真地图）
-// ============================================================
-
-const MAP_PATH = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
-const runMap = existsSync(MAP_PATH) ? it : it.skip;
-
-/** 最小 `UiScreenEnv` —— 只填本屏读得到的几项 */
-function fakeEnv(state: GameState, topo: MapTopology, logs: string[]): UiScreenEnv {
+function fakeEnv(state: GameState, logs: string[], extra: Partial<UiScreenEnv> = {}): UiScreenEnv {
   return {
     screen: 'game',
     state,
-    topo,
-    map: { nodes: [], lands: [] } as never,
+    topo: { nodes: [] },
     now: 0,
-    stage: null as never,
+    animation: true,
     sprite: () => null,
     flic: () => null,
     dispatch: () => undefined,
@@ -1120,711 +401,114 @@ function fakeEnv(state: GameState, topo: MapTopology, logs: string[]): UiScreenE
     log: (m: string) => logs.push(m),
     playEffect: () => undefined,
     stopEffect: () => undefined,
-  };
+    ...extra,
+  } as unknown as UiScreenEnv;
 }
 
-describe('★ event 判据：`totalMonths` 增了才起播', () => {
-  runMap('★★ 起播时**点一首 BGM**（`fcn_004549cf(9)` → midi10.mid）@source rich4.asm:19212', () => {
-    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
-    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
-    const base = newGame({
-      map,
-      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
-    });
+describe('★ 屏幕本体：起播判据 = core 的 `lastMonthlySettle`', () => {
+  it('跨月 + 新写的现场 ⇒ 起播、点 midi10；没有现场（旧状态 / 月中）不起播', () => {
     resetMonthlyScreen();
+    setMonthlyRand(() => 0x7fff);
+    const after = stateWith(HINT_A);
+    const before: GameState = { ...after, totalMonths: 0, lastMonthlySettle: null };
     const logs: string[] = [];
-    const played: string[] = [];
-    const env = { ...fakeEnv(base, topo, logs), music: (f: string) => played.push(f) };
-    const before: GameState = {
-      ...base,
-      players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })),
-    };
-    const after: GameState = {
-      ...before,
-      totalMonths: before.totalMonths + 1,
-      players: before.players.map((p) => ({
-        ...p,
-        moneyInBank: applyMonthlyInterest(p.moneyInBank, p.loan),
-      })),
-    };
-    monthlyScreen.event!(before, after, env);
-    expect(played).toEqual(['midi10.mid']);
-    resetMonthlyScreen();
-  });
-
-  runMap('★ 跨月 → 起播；没跨月 → 一次都不起播', () => {
-    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
-    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
-    const base = newGame({
-      map,
-      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
-    });
-    resetMonthlyScreen();
-    const logs: string[] = [];
-    const env = fakeEnv(base, topo, logs);
-
-    // 没跨月：不起播
-    monthlyScreen.event!(base, { ...base, totalDays: base.totalDays + 1 }, env);
+    const music: string[] = [];
+    const env = fakeEnv(after, logs, { music: (f: string) => music.push(f) });
+    monthlyScreen.event!(before, { ...after, lastMonthlySettle: null }, env);
     expect(monthlyScreenState().playing).toBe(false);
-
-    // 跨月：起播（`totalMonths + 1`，存款也按 1.1 结算过）
-    const before: GameState = {
-      ...base,
-      players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })),
-    };
-    const after: GameState = {
-      ...before,
-      totalMonths: before.totalMonths + 1,
-      players: before.players.map((p) => ({
-        ...p,
-        moneyInBank: applyMonthlyInterest(p.moneyInBank, p.loan),
-      })),
-    };
     monthlyScreen.event!(before, after, env);
     expect(monthlyScreenState().playing).toBe(true);
+    expect(music).toEqual(['midi10.mid']);
     expect(monthlyScreen.active(env)).toBe(true);
-    expect(monthlyScreenState().view?.rows).toHaveLength(
-      after.players.filter((p) => isAlive(p)).length,
-    );
-    expect(monthlyScreenState().view?.rows.every((r) => r.interest === 10000)).toBe(true);
-
-    // tick 到结算屏全亮
-    for (let i = 0; i < 10; i++) monthlyScreen.tick!(env);
-    expect(monthlyScreenState().playback?.phase).toBe('settle');
-    expect(monthlyScreenState().playback?.revealed).toBe(
-      (monthlyScreenState().view?.rows.length ?? 1) - 1,
-    );
-
-    // ★ 确认在**抬手**（`WM_LBUTTONUP` 0x202）：
-    //   原版的分支表里**没有 `0x201`（按下）那一条**，故本屏根本不实现 `down`
-    expect(monthlyScreen.down).toBeUndefined();
-    expect(monthlyScreenState().playback?.phase).toBe('settle');
-    monthlyScreen.up!(0, 0, env);
-    expect(monthlyScreenState().playback?.phase).toBe('award');
-
-    // 頒獎屏叠完之后还得再一拍才关屏（原版「等最后一次确认」那几步）
-    const total = MONTHLY_SLOTS * 2 + MONTHLY_DETAIL_ROWS + 2; // 4 板 + 4 列 + 4 条详情 + closing + 收尾
-    for (let i = 0; i < total - 1; i++) monthlyScreen.tick!(env);
-    expect(monthlyScreenState().playback?.closing).toBe(true);
-    expect(monthlyScreenState().playing).toBe(true);
-    // ★ 2026-09-17：收尾那一拍抬手**不是**直接关屏 —— 原版还有最后那一拍
-    //   （状态 0x13 开 `其他人還要更努力喔！` 那只框 + 0x16 倒数 0xa），抬手先放它出来
-    monthlyScreen.up!(0, 0, env);
-    expect(monthlyScreenState().playback?.farewell).toBe(true);
-    expect(monthlyScreenState().playback?.farewellTicks).toBe(MONTHLY_FAREWELL_TICKS);
-    expect(monthlyScreenState().playing).toBe(true);
-    // 这一拍里再抬手 = 原版状态 0x16 的「点一下就关」（`[0x48c42e]`）
-    monthlyScreen.up!(0, 0, env);
+    // 自己走完（不点）
+    let t = 0;
+    while (monthlyScreenState().playing && t < 200_000) {
+      t += 50;
+      monthlyScreen.tick!(fakeEnv(after, logs, { now: t }));
+    }
     expect(monthlyScreenState().playing).toBe(false);
-    expect(monthlyScreen.active(env)).toBe(false);
-    resetMonthlyScreen();
+    expect(logs).toContain('每月結算：演出结束');
+    setMonthlyRand(null);
   });
 
-  it('★ 在场 0 人时不起播', () => {
-    const dead = fakeState([{ ...playerOf(0, 0), whoPlays: 0 }]);
+  it('★ 演出宿主（与 `main.ts` 同一份 `PresentationHost`）：月结屏在演时挡住回合驱动 / 联机收件箱，**不点也会自己演完放行**', () => {
     resetMonthlyScreen();
-    const env = fakeEnv(dead, { nodes: [], lands: [], facilities: [] }, []);
-    monthlyScreen.event!(dead, { ...dead, totalMonths: 1 }, env);
+    setMonthlyRand(() => 0x7fff);
+    const after = stateWith(HINT_A);
+    let now = 0;
+    const env = (): UiScreenEnv => fakeEnv(after, [], { now });
+    const host = new PresentationHost({
+      screens: [monthlyScreen],
+      env,
+      filmsBusy: () => false,
+      godLine: () => ({ showing: false, pending: false }),
+      speech: () => ({ onStage: 0, held: [] }),
+      cueDone: () => true,
+      deferredScreens: () => 0,
+      magicAwaitingPick: () => false,
+      bailClosing: () => false,
+    });
+    monthlyScreen.event!({ ...after, totalMonths: 0, lastMonthlySettle: null }, after, env());
+    expect(host.screensBlocking()).toBe(true);
+    expect(host.boxShowing()).toBe(true);
+    while (monthlyScreenState().playing && now < 200_000) {
+      now += 16;
+      monthlyScreen.tick!(env());
+    }
     expect(monthlyScreenState().playing).toBe(false);
-    resetMonthlyScreen();
+    expect(host.screensBlocking()).toBe(false);
+    // 影片素材拿不到（`flic` 恒 null）也只多等 4 秒一段 —— 整段一分钟内收场
+    expect(now).toBeLessThan(60_000);
+    setMonthlyRand(null);
   });
 
-  runMap('★★ 「動畫過程」关掉 → 頒獎屏整段不走，停 0x1e 拍就关屏 @source `loc_0043827e`', () => {
-    const map = parseMap(new Uint8Array(readFileSync(MAP_PATH)));
-    const topo: MapTopology = { nodes: map.nodes, lands: map.lands, facilities: map.facilities };
-    const base = newGame({
-      map,
-      players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })),
-    });
+  it('联机旁观：`fastForward` 直接收场', () => {
     resetMonthlyScreen();
-    const logs: string[] = [];
-    const env = { ...fakeEnv(base, topo, logs), animation: false };
-    const before: GameState = {
-      ...base,
-      players: base.players.map((p) => ({ ...p, moneyInBank: 100000 })),
-    };
-    const after: GameState = {
-      ...before,
-      totalMonths: before.totalMonths + 1,
-      players: before.players.map((p) => ({
-        ...p,
-        moneyInBank: applyMonthlyInterest(p.moneyInBank, p.loan),
-      })),
-    };
-    monthlyScreen.event!(before, after, env);
-    expect(monthlyScreenState().playing).toBe(true);
-    // 结算屏照常（原版状态 1/2 那台「月結摘要」是**不受**这个开关管辖的）
-    for (let i = 0; i < 10; i++) monthlyScreen.tick!(env);
-    expect(monthlyScreenState().playback?.phase).toBe('settle');
-
-    // 抬手 → 頒獎屏入口：原版状态 2 在动画关时 `[0x48c42a] = 0x16` + 计数 0x1e
-    monthlyScreen.up!(0, 0, env);
-    const p = monthlyScreenState().playback;
-    expect(p?.phase).toBe('award');
-    expect(p?.skipTicks).toBe(MONTHLY_SKIP_TICKS);
-    expect(MONTHLY_SKIP_TICKS).toBe(0x1e);
-    expect(p?.closing).toBe(true); // 0x16 也是「点一下」能提前关
-
-    // 中途不画任何頒獎屏的东西（板/列/详情/字框全都不动）
-    for (let i = 0; i < MONTHLY_SKIP_TICKS - 2; i++) {
-      monthlyScreen.tick!(env);
-      const q = monthlyScreenState().playback!;
-      expect(q.bars).toBe(0);
-      expect(q.seats).toBe(0);
-      expect(q.details).toBe(0);
-      expect(q.encourage).toBe(false);
-    }
-    expect(monthlyScreenState().playing).toBe(true);
-    // 数到 0 自己关屏（不用抬手）
-    monthlyScreen.tick!(env);
-    expect(monthlyScreenState().playing).toBe(true);
-    monthlyScreen.tick!(env);
+    const after = stateWith(HINT_B);
+    const env = fakeEnv(after, []);
+    monthlyScreen.event!({ ...after, totalMonths: 0, lastMonthlySettle: null }, after, env);
+    expect(monthlyScreen.fastForward!(env)).toBe(true);
     expect(monthlyScreenState().playing).toBe(false);
-    expect(monthlyScreen.active(env)).toBe(false);
+  });
+
+  it('按键被吃掉但不推进（窗口过程不收 `0x100/0x101`）', () => {
     resetMonthlyScreen();
-  });
-});
-
-describe('★ 頒獎屏入口：动画关那条捷径 @source 0x0043827e', () => {
-  it('`monthlyAwardStart(animate)` 的两支', () => {
-    expect(monthlyAwardStart(true)).toEqual({ closing: false, skipTicks: 0 });
-    expect(monthlyAwardStart(false)).toEqual({
-      closing: true,
-      skipTicks: MONTHLY_SKIP_TICKS,
-    });
-  });
-
-  it('`skipTicks > 0` 时每拍只倒数、到 0 返回 `null`（关屏）', () => {
-    let p: MonthlyPlayback = {
-      ...monthlyPlaybackStart(),
-      phase: 'award',
-      closing: true,
-      skipTicks: MONTHLY_SKIP_TICKS,
-    };
-    const seen: number[] = [];
-    for (let i = 0; i < MONTHLY_SKIP_TICKS; i++) {
-      const next = monthlyPlaybackTick(p, 4);
-      if (next === null) break;
-      p = next;
-      seen.push(p.skipTicks);
-    }
-    expect(seen).toEqual(
-      Array.from({ length: MONTHLY_SKIP_TICKS - 1 }, (_, i) => MONTHLY_SKIP_TICKS - 1 - i),
-    );
-    // 最后一拍返回 `null` = 该关屏了
-    expect(monthlyPlaybackTick({ ...p, skipTicks: 1 }, 4)).toBeNull();
-    // 而且这一路上**一个字都没写**（bars/seats/details 全程 0）
-    expect(p.bars).toBe(0);
-    expect(p.details).toBe(0);
-  });
-});
-
-describe('★ 记者小姐的**待机眨眼**（`loc_004391ee` 第 3 帧，2026-09-19 落码）', () => {
-  const blinkPatches = (blits: RecordedBlit[]): RecordedBlit[] =>
-    blits.filter((b) => b.size?.w === MONTHLY_BLINK_PATCH.w && b.size?.h === MONTHLY_BLINK_PATCH.h
-      && b.src?.x === MONTHLY_BLINK_PATCH.srcX);
-
-  it('常量：源 = 图 19 的 (52,50) 起 80×40，落点 = (76,120)', () => {
-    // @source 0x0043924c push 0x28 / 0x50 / 0x32 / 0x34 ; 0x00439269 add eax,0xf0 (图 19)
-    expect(MONTHLY_BLINK_PATCH).toEqual({
-      srcX: 0x34, srcY: 0x32, w: 0x50, h: 0x28, dstX: 0x4c, dstY: 0x78,
-    });
-    expect(MONTHLY_BLINK_TICKS).toBe(4);
-    // 源矩形必须在那张 186×410 的立绘里
-    expect(MONTHLY_BLINK_PATCH.srcX + MONTHLY_BLINK_PATCH.w).toBeLessThanOrEqual(186);
-    expect(MONTHLY_BLINK_PATCH.srcY + MONTHLY_BLINK_PATCH.h).toBeLessThanOrEqual(410);
-    // 落点必须与立绘自己的落点 (24,70) 组成同一块区域（76-24=52 = srcX）
-    expect(MONTHLY_BLINK_PATCH.dstX - MONTHLY_PANEL_AT.x).toBe(MONTHLY_BLINK_PATCH.srcX);
-    expect(MONTHLY_BLINK_PATCH.dstY - MONTHLY_PANEL_AT.y).toBe(MONTHLY_BLINK_PATCH.srcY);
-  });
-
-  it('★ 待机拍数按 4 循环；**只有第 4 拍**画那一笔，且不改 phase', () => {
-    let p = { ...monthlyPlaybackStart(), revealed: 3 };
-    const seen: number[] = [];
-    for (let i = 0; i < 8; i++) {
-      p = monthlyPlaybackTick(p, 4)!;
-      seen.push(p.blinkTicks);
-    }
-    expect(seen).toEqual([1, 2, 3, 0, 1, 2, 3, 0]);
-    expect(p.phase).toBe('settle');
-    expect(p.revealed).toBe(3);
-  });
-
-  it('★ 逐行点亮那几拍**不眨眼**（原版的闸门是 `[0x48c42c] & 0xf == 0`）', () => {
-    let p = monthlyPlaybackStart();
-    for (let i = 0; i < 3; i++) {
-      p = monthlyPlaybackTick(p, 4)!;
-      expect(p.blinkTicks, `第 ${i} 拍`).toBe(0);
-    }
-  });
-
-  it('★★ 第 4 拍那一下真的贴出那一块 80×40（画在立绘之上）', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const { sprite } = fakeSpriteFn();
-    const topo = { nodes: [], lands: [], facilities: [] };
-    const at = (blinkTicks: number) => {
-      const { ctx, blits } = fakeCanvas();
-      drawMonthlyScreen(ctx, sprite, state, topo, view, null, {
-        ...monthlyPlaybackStart(), revealed: 3, blinkTicks,
-      });
-      return blinkPatches(blits);
-    };
-    expect(at(0)).toHaveLength(0);
-    expect(at(2)).toHaveLength(0);
-    const patch = at(MONTHLY_BLINK_TICKS - 1);
-    expect(patch).toHaveLength(1);
-    expect(patch[0]!.index).toBe(MONTHLY_CHUNK.panel);
-    expect(patch[0]!.keyed).toBe(false);
-    expect(patch[0]!.x).toBe(76);
-    expect(patch[0]!.y).toBe(120);
-  });
-
-  it('★ 頒獎屏（phase = award）不再眨眼 —— 状态那时已经不是 0', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
-    const { sprite } = fakeSpriteFn();
-    const { ctx, blits } = fakeCanvas();
-    drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, {
-      ...monthlyPlaybackStart(), phase: 'award', blinkTicks: MONTHLY_BLINK_TICKS - 1,
-    });
-    expect(blinkPatches(blits)).toHaveLength(0);
-  });
-});
-
-describe('★ 頒獎屏那两张 4 行表底下那块锦缎板（图 2 @ (440,405)，2026-09-17 定案）', () => {
-  it('★ 表一出来就贴图 2 在 (440,405)、**不抠黑**（原版走 `fcn_004563f5`）', () => {
-    // @source 状态 7 VA 0x0043866f / 状态 0x12 VA 0x00438deb：
-    //   push 0x195 / push 0x1b8 / add eax, 0x24（= 图 2）/ call fcn_004563f5
-    expect(MONTHLY_TABLE_PLATE).toEqual({ chunk: 2, x: 0x1b8, y: 0x195 });
-    expect(MONTHLY_TABLE_PLATE.x).toBe(440);
-    expect(MONTHLY_TABLE_PLATE.y).toBe(405);
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
-    const { sprite } = fakeSpriteFn();
-    const sites: { beat: string; plate: RecordedBlit | undefined }[] = [];
-    for (const [beat, p] of [
-      ['还没有表', { ...monthlyPlaybackStart(), phase: 'award' as const, seats: MONTHLY_SLOTS }],
-      [
-        '第一行详情',
-        {
-          ...monthlyPlaybackStart(),
-          phase: 'award' as const,
-          bars: MONTHLY_SLOTS,
-          seats: MONTHLY_SLOTS,
-          details: 1,
-        },
-      ],
-      [
-        '收尾（冠军表）',
-        {
-          ...monthlyPlaybackStart(),
-          phase: 'award' as const,
-          bars: MONTHLY_SLOTS,
-          seats: MONTHLY_SLOTS,
-          details: MONTHLY_DETAIL_ROWS,
-          closing: true,
-        },
-      ],
-    ] as const) {
-      const { ctx, blits } = fakeCanvas();
-      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
-      sites.push({ beat, plate: blits.find((b) => b.index === 2 && b.resource === MONTHLY_RESOURCE) });
-    }
-    // 表还没出来时**不该**有这块板……
-    expect(sites[0]!.plate).toBeUndefined();
-    // ……详情一出现就贴上，位置就是锚点 (440,405)，且不抠黑
-    expect(sites[1]!.plate?.x).toBe(440);
-    expect(sites[1]!.plate?.y).toBe(405);
-    expect(sites[1]!.plate?.keyed).toBe(false);
-    // 收尾切冠军那张表时，同一块板还在
-    expect(sites[2]!.plate?.x).toBe(440);
-    expect(sites[2]!.plate?.y).toBe(405);
-  });
-
-  it('★★ 最后那只框（图 4）只在**最后那一拍**画：`closing` 时不画、`farewell` 时才画', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
-    const { sprite } = fakeSpriteFn();
-    const boxOf = (p: MonthlyPlayback): number => {
-      const { ctx, blits } = fakeCanvas();
-      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
-      return blits.filter((b) => b.index === MONTHLY_FAREWELL_BOX.chunk).length;
-    };
-    const base: MonthlyPlayback = {
-      ...monthlyPlaybackStart(),
-      phase: 'award',
-      bars: MONTHLY_SLOTS,
-      seats: MONTHLY_SLOTS,
-      details: MONTHLY_DETAIL_ROWS,
-      encourage: true,
-    };
-    // 收尾那一拍（状态 0x12）**不该**出现那只框 —— 它是下一拍（0x13）才开的
-    expect(boxOf({ ...base, closing: true })).toBe(0);
-    // 最后那一拍（0x13/0x16）才画
-    expect(boxOf({ ...base, closing: true, farewell: true, farewellTicks: 0xa })).toBe(1);
-    // 动画关那条捷径（`skipTicks > 0`）两拍都不画
-    expect(boxOf({ ...base, closing: true, skipTicks: MONTHLY_SKIP_TICKS })).toBe(0);
-    expect(
-      boxOf({ ...base, closing: true, farewell: true, skipTicks: MONTHLY_SKIP_TICKS }),
-    ).toBe(0);
-  });
-
-  it('★★ 冠军奖座**定格**（图 45，210×420）在最后那一拍贴 (6, 0x3c) —— 状态 0x12 的尾巴', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
-    const { sprite } = fakeSpriteFn();
-    const plateOf = (p: MonthlyPlayback): { x: number; y: number } | undefined => {
-      const { ctx, blits } = fakeCanvas();
-      drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, p);
-      return blits.find((b) => b.index === MONTHLY_TROPHY_PLATE.chunk);
-    };
-    const base: MonthlyPlayback = {
-      ...monthlyPlaybackStart(),
-      phase: 'award',
-      bars: MONTHLY_SLOTS,
-      seats: MONTHLY_SLOTS,
-      details: MONTHLY_DETAIL_ROWS,
-      closing: true,
-    };
-    // 收尾那一拍（FLIC 还在演）**不贴**定格
-    expect(plateOf(base)).toBeUndefined();
-    // 最后那一拍贴，位置照 exe (6, 0x3c)
-    const plate = plateOf({ ...base, farewell: true, farewellTicks: 0xa });
-    expect(plate).toMatchObject({ x: 6, y: 0x3c });
-    expect(MONTHLY_TROPHY_PLATE).toEqual({ chunk: 45, x: 0x06, y: 0x3c });
-    // 动画关那条捷径不贴
-    expect(plateOf({ ...base, farewell: true, skipTicks: MONTHLY_SKIP_TICKS })).toBeUndefined();
-  });
-
-  it('★ 「動畫過程」关掉那条捷径里**连这块板也不贴**（原版状态 2 → 0x16 只倒数）', () => {
-    const state = fakeState([playerOf(0, 0), playerOf(1, 1), playerOf(2, 2), playerOf(3, 3)]);
-    const view = monthlySummary(state, state);
-    const award = monthlyAward(state, state, { nodes: [], lands: [], facilities: [] });
-    const { ctx, blits } = fakeCanvas();
-    const { sprite } = fakeSpriteFn();
-    drawMonthlyScreen(ctx, sprite, state, { nodes: [], lands: [], facilities: [] }, view, award, {
-      ...monthlyPlaybackStart(),
-      phase: 'award',
-      closing: true,
-      skipTicks: MONTHLY_SKIP_TICKS,
-    });
-    expect(blits.some((b) => b.index === 2)).toBe(false);
-  });
-});
-
-describe('★ 頒獎屏的角色 FLIC（D-MONTHLY-6，2026-09-16 接线）', () => {
-  it('★★ 资源号 = `Data.mkf` `0x1a1 + 2×角色` @source rich4.asm:17360-17364', () => {
-    // 原版：玩家 +0x13（角色号）→ `add eax, eax`（×2）→ `add eax, 0x1a1`
-    expect(monthlyAwardFlicResource(0)).toBe(0x1a1);
-    expect(monthlyAwardFlicResource(1)).toBe(0x1a3);
-    expect(monthlyAwardFlicResource(4)).toBe(0x1a9);
-    // 12 个角色都得落在 Data.mkf 的这段资源里（0x1a1..0x1b8）
-    for (let c = 0; c < 12; c++) {
-      const r = monthlyAwardFlicResource(c);
-      expect(r).toBeGreaterThanOrEqual(0x1a1);
-      expect(r).toBeLessThanOrEqual(0x1b8);
-      expect(r % 2).toBe(1); // 角色那一支全是奇数号
-    }
-    // 负角色号不许算出越界资源（防御性）
-    expect(monthlyAwardFlicResource(-3)).toBe(0x1a1);
-  });
-
-  it('★ 只有「有人获奖 + 台上铺满」才播；没人获奖或还没铺满都不画', () => {
-    // 四个玩家、0 号角色 0（角色号 = `player.character`）
-    const baseState = fakeState([0, 1, 2, 3].map((i) => playerOf(i, i)));
-    const baseView: MonthlyView = { rows: [0, 1, 2, 3].map((i) => ({
-      index: i, character: i, name: `P${i}`, cash: 0, bank: 0, interest: 0, loan: 0,
-      monthlyPaid: 0, monthlyReceived: 0,
-    })) };
-    const baseAward: MonthlyAward = {
-      winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS,
-    };
-    const seatsFull: MonthlyPlayback = {
-      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
-      blinkTicks: 0,
-    };
-    const calls: string[] = [];
-    const fakeFlic = (archive: string, resource: number) => {
-      calls.push(`${archive}:${resource}`);
-      return { frames: [{} as unknown as ImageBitmap], width: 156, height: 156, frameMs: 71, close: () => {} };
-    };
-    const fakeCtx = { drawImage: () => undefined } as unknown as CanvasRenderingContext2D;
-    // 没人获奖 → 不画、也不问影片
-    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, { ...baseAward, winner: -1 }, seatsFull, 0)).toBe(false);
-    expect(calls).toHaveLength(0);
-    // 还没铺满 → 不画
-    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, baseAward, { ...seatsFull, seats: 1 }, 0)).toBe(false);
-    expect(calls).toHaveLength(0);
-    // 铺满 + 有获奖 → 问影片并画
-    expect(drawMonthlyAwardFlic(fakeCtx, fakeFlic, baseState, baseView, baseAward, seatsFull, 142)).toBe(true);
-    expect(calls).toEqual(['Data.mkf:417']); // 0x1a1 = 417，角色 0
-    // 影片取不到（异步还没解好）→ 不画、不炸
-    expect(drawMonthlyAwardFlic(fakeCtx, () => null, baseState, baseView, baseAward, seatsFull, 0)).toBe(false);
-  });
-
-  it('★★ 每角色落点表 = 12×24 字节，值逐条照 exe dump @source 0x4759f7', () => {
-    expect(MONTHLY_FLIC_OFFSETS).toHaveLength(12);
-    // 第 1 行（角色 0 約翰喬）与最后一行（角色 11 大老千）逐字对
-    expect(MONTHLY_FLIC_OFFSETS[0]).toEqual([-50, -94, 1539, -77, -148, 3]);
-    expect(MONTHLY_FLIC_OFFSETS[1]).toEqual([-48, -97, 1027, -48, -90, 1539]);
-    expect(MONTHLY_FLIC_OFFSETS[11]).toEqual([-40, -75, 1027, -40, -75, 1027]);
-    // 每行 6 个 dword，前三个是冠军奖座、后三个是悲情立绘
-    for (const row of MONTHLY_FLIC_OFFSETS) expect(row).toHaveLength(6);
-  });
-
-  it('★ trophy 取第 1 组、sad 取第 2 组；角色越界夹到 0..11', () => {
-    // @source 状态 0x12 用 `0x4759f7/0x4759fb/0x4759ff`（第 1 组）
-    expect(monthlyAwardFlicOffset(0, 'trophy')).toEqual({ x: -50, y: -94, delay: 1539 });
-    // @source 状态 7 用 `0x475a03/0x475a07/0x475a0b`（第 2 组）
-    expect(monthlyAwardFlicOffset(0, 'sad')).toEqual({ x: -77, y: -148, delay: 3 });
-    expect(monthlyAwardFlicOffset(-5, 'trophy')).toEqual(monthlyAwardFlicOffset(0, 'trophy'));
-    expect(monthlyAwardFlicOffset(99, 'sad')).toEqual(monthlyAwardFlicOffset(11, 'sad'));
-  });
-
-  it('★★ 落点 = 竖栏 x + dx、0x14a + dy（**左上角**，不再是「列心 − 影片一半」）', () => {
-    // @source 0x00438d40（冠军奖座）/ 0x00438570（悲情立绘）：
-    //   `x = 0x475930[在榜人数][槽] + dx[角色]`、`y = 0x14a + dy[角色]`
-    const baseState = fakeState([0, 1, 2, 3].map((i) => playerOf(i, i)));
-    const baseView: MonthlyView = { rows: [0, 1, 2, 3].map((i) => ({
-      index: i, character: i, name: `P${i}`, cash: 0, bank: 0, interest: 0, loan: 0,
-      monthlyPaid: 0, monthlyReceived: 0,
-    })) };
-    const baseAward: MonthlyAward = { winner: 0, score: 0, second: 0, richest: 0, bars: MONTHLY_BARS };
-    const seatsFull: MonthlyPlayback = {
-      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS, details: 0,
-      encourage: false, closing: false, skipTicks: 0, farewell: false, farewellTicks: 0,
-      blinkTicks: 0,
-    };
-    const drawn: { x: number; y: number }[] = [];
-    const ctx = {
-      drawImage: (_b: unknown, x: number, y: number) => drawn.push({ x, y }),
-    } as unknown as CanvasRenderingContext2D;
-    const flic = () => ({
-      frames: [{} as unknown as ImageBitmap], width: 156, height: 156, frameMs: 71, close: () => {},
-    });
-
-    // 收尾那一拍 → 冠军的奖座（第 1 组）：冠军 = richest = 0 → 角色 0
-    drawMonthlyAwardFlic(ctx, flic, baseState, baseView, baseAward, { ...seatsFull, closing: true }, 0);
-    expect(drawn[0]).toEqual({
-      x: MONTHLY_AWARD_SEAT_X[4]![0]! + monthlyAwardFlicOffset(0, 'trophy').x,
-      y: MONTHLY_AWARD_FLIC_DX + monthlyAwardFlicOffset(0, 'trophy').y,
-    });
-
-    // 頒獎屏那一拍 → 悲情人物的立绘（第 2 组）：winner = 1 → 角色 1
-    drawn.length = 0;
-    drawMonthlyAwardFlic(ctx, flic, baseState, baseView, { ...baseAward, winner: 1 }, seatsFull, 0);
-    expect(drawn[0]).toEqual({
-      x: MONTHLY_AWARD_SEAT_X[4]![1]! + monthlyAwardFlicOffset(1, 'sad').x,
-      y: MONTHLY_AWARD_FLIC_DX + monthlyAwardFlicOffset(1, 'sad').y,
-    });
-  });
-});
-
-describe('★ 月結／頒獎屏的音效（D-MONTHLY-5，2026-09-16 接线）', () => {
-  it('★★ 三个号是 27 / 60 / 28，不是旧条目写的「0」', () => {
-    // @source `rich4.asm:41210-41230` 的三个 sound_info 结构首字节：
-    //   `0x475b17 = 0x1b`(27)、`0x475b27 = 0x3c`(60)、`0x475b1f = 0x1c`(28)
-    expect(MONTHLY_SOUND_STEP).toBe(27);
-    expect(MONTHLY_SOUND_DETAIL).toBe(60);
-    expect(MONTHLY_SOUND_CLOSE).toBe(28);
-    expect(new Set([MONTHLY_SOUND_STEP, MONTHLY_SOUND_DETAIL, MONTHLY_SOUND_CLOSE]).size).toBe(3);
-  });
-
-  it('★ 结构断言：tick 里在**铺板/铺列/铺详情/收尾**四个转折点各响一声', () => {
-    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
-    // 不能每帧都响 —— 只在「比上一拍多」时响
-    expect(src).toContain('next.bars > p.bars || next.seats > p.seats');
-    expect(src).toContain('next.details > p.details');
-    expect(src).toContain('next.closing && !p.closing');
-    // 三个号都真的被用上
-    for (const n of ['MONTHLY_SOUND_STEP', 'MONTHLY_SOUND_DETAIL', 'MONTHLY_SOUND_CLOSE']) {
-      expect(src).toContain(`env.playEffect(${n})`);
-    }
-  });
-});
-
-describe('★ WM_KEYDOWN（0x101）也能推进結算/頒獎屏', () => {
-  /*
-   * @source 頒獎屏窗口过程 `fcn_00437e61`（VA 0x00437e61）的分支表：
-   *   `0x202`（`WM_LBUTTONUP`）与 `0x205`（`WM_RBUTTONUP`）落到 `loc_00439b62`，
-   *   `0x101`（`WM_KEYDOWN`）也**同族**（`Wait_0402_Message` 那几处一律只看消息号）。
-   * ⚠️ 文档先前写「`0x101` 落到 `loc_00439b85`」—— 复核发现 `loc_00439b85`
-   *   其实是 **`WM_PAINT` 那段**（`BeginPaint`/`EndPaint`），已订正。
-   */
-  it('★ `key` 与 `up` 走同一个出口（抬手能推进，按键也能）', () => {
-    const src = readFileSync(new URL('./monthly-screen.ts', import.meta.url), 'utf8');
-    const upAt = src.indexOf('  up(_x: number, _y: number, env: UiScreenEnv): void {');
-    const keyAt = src.indexOf('  key(_key: UiKeyEvent, env: UiScreenEnv): boolean {');
-    expect(upAt).toBeGreaterThan(0);
-    expect(keyAt).toBeGreaterThan(upAt);
-    const upBody = src.slice(upAt, upAt + 200);
-    const keyBody = src.slice(keyAt, keyAt + 200);
-    expect(upBody).toContain('advance(env);');
-    expect(keyBody).toContain('advance(env);');
-    // 按键必须**消费**这一拍，否则会漏到别的熱鍵上
-    expect(keyBody).toContain('return true;');
-  });
-
-  it('★ 声明了 `key` 的屏会在 main.ts 的 keydown 里**排在填数窗之前**收到', () => {
-    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
-    const keyAt = src.indexOf('overlay?.key !== undefined');
-    const amountAt = src.indexOf("if (amountPage !== null && (screen === 'game' || screen === 'stock')) {");
-    expect(keyAt).toBeGreaterThan(0);
-    expect(amountAt).toBeGreaterThan(keyAt);
+    const after = stateWith(HINT_A);
+    const env = fakeEnv(after, []);
+    monthlyScreen.event!({ ...after, totalMonths: 0, lastMonthlySettle: null }, after, env);
+    const st = monthlyScreenState().run!.st;
+    expect(monthlyScreen.key!({ vk: 13, code: 'Enter' } as never, env)).toBe(true);
+    expect(monthlyScreenState().run!.st).toBe(st);
+    expect(monthlyScreenState().run!.skip).toBe(false);
+    resetMonthlyScreen();
   });
 });
 
 // ============================================================
-//  「本月冠軍」是首富、「本月悲情人物」才是悲情分最高者（D-MONTHLY-13）
+//  串 / 名字表逐字节对 exe
 // ============================================================
 
-describe('★ 收尾那一句说的是**谁** @source 0x00438d04 / 0x004383a6 / 0x00438a31', () => {
-  const award: MonthlyAward = {
-    winner: 1, score: 900, second: 100, richest: 3, bars: MONTHLY_BARS,
-  };
-
-  it('★ 冠军 = 首富（`[0x48c430]` = `calculate_player_wealth` 最大者），不是悲情分得主', () => {
-    // 先前把 `award.winner`（悲情分最高者）当成冠军写进收尾那一行 —— 两个函数弄反了
-    expect(monthlyChampionOf(award)).toBe(3);
-    expect(monthlyChampionOf(award)).not.toBe(award.winner);
-  });
-
-  it('★ 要安慰的是悲情分最高者（`[0x48c42f]`）；没人得悲情分则没有这一拍', () => {
-    expect(monthlyConsolationWho(award)).toBe(1);
-    expect(monthlyConsolationWho({ ...award, winner: -1 })).toBeNull();
-  });
-
-  it('★ 没有悲情人物时，頒獎屏不走那一拍（原版状态 2 直接跳收尾）', () => {
-    let p: MonthlyPlayback = { ...monthlyPlaybackStart(), phase: 'award' };
-    const seen: string[] = [];
-    let guard = 0;
-    while (guard++ < 40) {
-      // `console = false` = 没有悲情人物
-      const next = monthlyPlaybackTick(p, 4, false);
-      if (next === null) break;
-      p = next;
-      // 只看「悲情」与「收尾」两拍（`farewell` 那一拍是收尾之后的事，另有专门用例）
-      if (p.encourage) seen.push('sad');
-      if (p.closing && !p.farewell) seen.push('closing');
-    }
-    expect(seen).toEqual(['closing']);
-  });
-
-  it('★ 画面上：悲情那一拍写「本月悲情人物是…」+「別灰心，再加油喔！」，收尾写「本月冠軍是…」', () => {
-    const texts: string[] = [];
-    const ctx = {
-      drawImage: () => undefined,
-      save: () => undefined,
-      restore: () => undefined,
-      fillRect: () => undefined,
-      strokeRect: () => undefined,
-      fillText: (t: string) => texts.push(t),
-      strokeText: () => undefined,
-      beginPath: () => undefined,
-      closePath: () => undefined,
-      clip: () => undefined,
-      rect: () => undefined,
-      translate: () => undefined,
-      setTransform: () => undefined,
-      scale: () => undefined,
-      set font(_v: string) {}, set textAlign(_v: string) {}, set textBaseline(_v: string) {},
-      set lineWidth(_v: number) {}, set strokeStyle(_v: string) {}, set fillStyle(_v: string) {},
-      set filter(_v: string) {},
-    } as unknown as CanvasRenderingContext2D;
-    const st = { players: [{ character: 0 }, { character: 5 }] } as never;
-    const view: MonthlyView = { rows: [] } as never;
-    const p: MonthlyPlayback = {
-      phase: 'award', revealed: 0, bars: MONTHLY_SLOTS, seats: MONTHLY_SLOTS,
-      details: MONTHLY_DETAIL_ROWS, encourage: true, closing: false, skipTicks: 0,
-      farewell: false, farewellTicks: 0, blinkTicks: 0,
-    };
-    drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, p);
-    const sadText = texts.find((t) => t.startsWith(MONTHLY_TRAGIC));
-    expect(sadText, '悲情那一拍要写「本月悲情人物是…」').toBeDefined();
-    expect(texts).toContain(MONTHLY_NO_AWARD);
-    // 悲情那张表（状态 8）—— 第 1 行只有标签、没有值
-    expect(texts).toContain(MONTHLY_DETAIL_LABELS.reason);
-    expect(texts).toContain(MONTHLY_DETAIL_LABELS.unluckyDays);
-
-    texts.length = 0;
-    drawMonthlyScreen(ctx, () => null, st, {} as never, view, award, { ...p, encourage: false, closing: true });
-    const champText = texts.find((t) => t.startsWith(MONTHLY_CHAMPION));
-    expect(champText, '收尾要写「本月冠軍是…」').toBeDefined();
-    // 冠军是首富（下标 3）—— 本夹具只放两位玩家，故姓名取不到，这里只钉**不是**悲情那句
-    expect(texts.some((t) => t.startsWith(MONTHLY_TRAGIC))).toBe(false);
-    // ★ 收尾那一拍原版走状态 0x12：同一坐标**换成冠军那张表**（整表覆盖）
-    expect(texts).toContain(MONTHLY_CHAMPION_LABELS.assets);
-    expect(texts).not.toContain(MONTHLY_DETAIL_LABELS.unexpectedLoss);
-  });
-});
-
-describe('★★ 四处「裁切滑动」逐条核实：**都是同坐标还原**（`fcn_0045643d`）@source rich4.asm', () => {
+describe('★ 台词串与名字表对 exe', () => {
   const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
-  const exeBuf = existsSync(EXE) ? readFileSync(EXE) : Buffer.alloc(0);
-
-  /**
-   * 四处 `fcn_0045643d` 的六个立即数，逐条 dump 自 `rich4.asm`：
-   * 参数序 `(dst, img, x, y, srcX, srcY, w, h)`，压栈序 ⇒ 立即数次序是
-   * **`h, w, srcY, srcX, y, x`**（每条都以 `图 0` = `[0x48c41c]+0xc` 为源）。
-   */
-  const RESTORES = [
-    { at: '状态 5 尾（`loc_0043829c`）', h: 0x19d, w: 0xad, srcY: 0x43, srcX: 0x23, y: 0x43, x: 0x23 },
-    { at: '状态 8（`0x00438a1a` 附近）', h: 0x19a, w: 0xba, srcY: 0x46, srcX: 0x18, y: 0x46, x: 0x18 },
-    { at: '状态 0xf→0x10（`loc_00438ab8` 尾）', h: 0x19a, w: 0xba, srcY: 0x46, srcX: 0x18, y: 0x46, x: 0x18 },
-    { at: '状态 0x12 尾（`loc_00438ff5` 尾）', h: 0x1a0, w: 0xc3, srcY: 0x40, srcX: 0x1b, y: 0x40, x: 0x1b },
-  ] as const;
-
-  /**
-   * 一串 `push imm` 的机器码 —— **Watcom 对小立即数用 `6a ib`、大的用 `68 id`**：
-   * `0..0x7f` → `6a xx`；否则 `68 xx xx xx xx`。先按这条规则拼，找不到再退回全 `68`。
-   */
-  const pushPattern = (vals: readonly number[]): Buffer =>
-    Buffer.concat(
-      vals.map((v) => {
-        if (v >= 0 && v <= 0x7f) return Buffer.from([0x6a, v]);
-        const b = Buffer.alloc(5);
-        b[0] = 0x68;
-        b.writeUInt32LE(v >>> 0, 1);
-        return b;
-      }),
-    );
-
-  it('★★ 四条的 `srcX/srcY` 与 `x/y` **完全相等** ⇒ 本引擎每帧整屏重画，这一步天然等价、无需实现', () => {
-    for (const r of RESTORES) {
-      expect([r.srcX, r.srcY], r.at).toEqual([r.x, r.y]);
-    }
+  const runExe = existsSync(EXE) ? it : it.skip;
+  const cstr = (buf: Buffer, va: number): string => {
+    const off = 398848 + (va - 0x463000); // .data 那一节的 VA → 文件偏移（同旧测试）
+    return new TextDecoder('big5').decode(buf.subarray(off, buf.indexOf(0, off)));
+  };
+  runExe('六句台词逐字节（含 `#NNNN` 语音号与换行）', () => {
+    const buf = readFileSync(EXE);
+    expect(cstr(buf, 0x464d60)).toBe(MONTHLY_LINES.intro);
+    expect(cstr(buf, 0x464d92)).toBe(MONTHLY_LINES.interest);
+    expect(cstr(buf, 0x464dca)).toBe(MONTHLY_LINES.sad);
+    expect(cstr(buf, 0x464e21)).toBe(MONTHLY_LINES.courage);
+    expect(cstr(buf, 0x464e39)).toBe(MONTHLY_LINES.champion);
+    expect(cstr(buf, 0x464e66)).toBe(MONTHLY_LINES.farewell);
   });
-
-  it.skipIf(exeBuf.length === 0)('★★ 这四串立即数在 exe 里**逐字节找得到**（不是抄错一行）', () => {
-    for (const r of RESTORES) {
-      const pat = pushPattern([r.h, r.w, r.srcY, r.srcX, r.y, r.x]);
-      expect(exeBuf.includes(pat), r.at).toBe(true);
-    }
-    // 反例：把 src 与 dst 换开就找不到（证明上面那串不是「碰巧」）
-    expect(exeBuf.includes(pushPattern([0x19a, 0xba, 0x18, 0x46, 0x46, 0x18]))).toBe(false);
-  });
-
-  it('★ 另有**一处真位移**（`图 19`，不在上面四条里）：源 80×40@(0x34,0x32)、目标是那一支自己的头像局部量', () => {
-    // `loc_004391ee`（`EBX == 1` 那支；`[0x48c42c] & 0x30 >> 4 == 3` 才画）：
-    //   push 0x28(40) / 0x50(80) / 0x32(50) / 0x34(52) / [esp+0xd4] ×2 / 源 / 目标
-    //   → `call 0x45643d`（带透明的 8 参 blit）= 从源图 (52,50) 拷 80×40。
-    expect(exeBuf.length === 0 || exeBuf.includes(pushPattern([0x28, 0x50, 0x32, 0x34]))).toBe(true);
-    // ★★ 2026-09-18 订正：源不是「图 29」，而是 **图 19**。
-    //   `00439264 mov eax, dword ptr [0x48c41c]` / `00439269 add eax, 0xf0`
-    //   `[0x48c41c]` 是 Panel#25 的记录表，**12 字节表头 + 每项 12 字节**
-    //   （同一张表在 0x43886a 是 `base + 0xc + 12×图号`）⇒ `+0xf0` = 第 19 项。
-    //   实测 `assets-clean/Panel/0025_019.png` = **186×410** ⇒ 从 (52,50) 拷
-    //   80×40 完全**在界内**（132 ≤ 186、90 ≤ 410）。
-    //   先前以为它是图 29（那才是 60×25）并据此判「越界读 ⇒ 不接」，那条**作废**。
-    //   ★★ 2026-09-19 **已接**：`MONTHLY_BLINK_PATCH` —— 结算屏等点击时的待机眨眼，
-    //   每 4 拍画一次（原版 `[0x48c42c] & 0x30` 每拍 +0x10，到 0x30 那一拍贴完清 0）。
-    //   行为断言见上面那个 describe。
-    expect(exeBuf.length === 0 || exeBuf.includes(pushPattern([0x28, 0x50, 0x32, 0x34]))).toBe(true);
+  runExe('名字那一句：悲情 `0x464c30` 起（#0096..）、冠軍 `0x464cc2` 起（#0110..），按角色号', () => {
+    const buf = readFileSync(EXE);
+    expect(cstr(buf, 0x464c30)).toBe(monthlyNameLine(0, 'sad'));
+    expect(cstr(buf, 0x464cb6)).toBe(monthlyNameLine(11, 'sad'));
+    expect(cstr(buf, 0x464cc2)).toBe(monthlyNameLine(0, 'champion'));
+    expect(cstr(buf, 0x464d48)).toBe(monthlyNameLine(11, 'champion'));
   });
 });

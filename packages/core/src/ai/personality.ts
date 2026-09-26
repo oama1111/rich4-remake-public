@@ -92,9 +92,13 @@ export function aiCanUseTools(aiFlags: number): boolean {
  * 三个 0 的角色**一辈子不借钱**，三个 100 的一进银行就把身家押满。
  */
 export function autoLoanAmount(wealth: number, loanRatio: number): number {
-  if (loanRatio === 0 || wealth <= 0) return 0;
+  // ★ 2026-09-25 审计（econ 跨区）：原版只拦 **0**（`0x00436902 test eax,eax / je 0x436953`）——
+  //   身家为负时算出来的是负数，照样写进 `+0x24`、加进存款（`0x004368fc` / `0x00436906`）。先前多拦了 `wealth <= 0`。
+  if (loanRatio === 0) return 0;
   // @source imul edx, [0x48c3b0] / mov ebx, 100 / idiv ebx —— 向零取整
-  return Math.trunc((wealth * loanRatio) / 100);
+  // ★ `imul r32, m32` 只留低 32 位（`0x004368e9`）⇒ 比例 × 身家超过 2^31 时原版会绕成负数，
+  //   `test eax,eax / je` 拦不住负数 ⇒ 照写进 `+0x24` / 存款。`Math.imul` 就是这条乘法。
+  return Math.trunc(Math.imul(wealth, loanRatio) / 100);
 }
 
 // ============================================================
@@ -124,8 +128,11 @@ export function stockBudget(
 ): number {
   // @source cmp byte [+0x1a], 0 / je 跳过
   if (stockRatio === 0) return 0;
-  const pool = holdingsValue + moneyInBank + cash;
-  const target = Math.trunc((pool * stockRatio) / 100);
+  // @source 0x0042c002..0x0042c02c：`add` / `imul edx, eax` / `idiv 100` 全是 32 位 ——
+  //   `imul` 只留低 32 位，(可动用总额 × 比例) 超过 2^31 时原版绕成负数 ⇒ 目标为负 ⇒ 不买。
+  //   （后期富翁局：总额 3000 万、比例 80 就会绕。）`Math.imul` 就是这条乘法。
+  const pool = (holdingsValue + moneyInBank + cash) | 0;
+  const target = Math.trunc(Math.imul(pool, stockRatio) / 100);
   // @source cmp eax, ebp / jge 不买
   if (holdingsValue >= target) return 0;
   const want = target - holdingsValue;
@@ -197,5 +204,21 @@ export function personalityAllows(f7: number, personality: number, roll: number)
   const gap = f7 - personality;
   if (gap >= 2) return false;
   if (gap === 1) return roll === 0;
+  return true;
+}
+
+/**
+ * 同一条闸门，但 `rand() % 3` **懒求值**。
+ *
+ * ★★ FU-2（2026-09-25 审计）：原版只在**差一档**那一条才 `call 0x456f2d`
+ *   （`0x0041e6c1 cmp edx,2 / jl 0x41e6c9` → `0x0041e6c9 cmp edx,1 / jne 0x41e6e6`），
+ *   差两档直接 `xor eax,eax; ret`、差 ≤0 档直接去调判定函数 —— 两条都**不掷**。
+ *   先前调用方把 `gateRoll(state, cardId)` 当**实参**求值（替身没有副作用，看不出来）；
+ *   换成真随机流之后，急切求值会多掷、与原版错位，故这里把随机数收进 thunk。
+ */
+export function personalityAllowsLazy(f7: number, personality: number, roll: () => number): boolean {
+  const gap = f7 - personality;
+  if (gap >= 2) return false;
+  if (gap === 1) return personalityAllows(f7, personality, roll() % 3);
   return true;
 }

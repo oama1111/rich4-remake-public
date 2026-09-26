@@ -78,12 +78,18 @@ describe('★ 樂透', () => {
     expect(r.pending.owned).toBe(0);
   });
 
-  run('★ 真人现金 < 1000 连屏都不开', () => {
-    // @source VA 0x0042f8ba `cmp .., 0x3e8 / jge`：不满足则那个窗口一闪即关
+  run('★ 审计订正（LOT-09）：真人现金 < 1000 也开屏（0x004315e7 先开窗、0x0042f8d7 窗里才判钱），但买不成、关屏 = 不买', () => {
     const { map, topo: t } = topo();
     const s = standOn(newGame({ map, players: humans() }), map, SPECIAL_KIND.LOTTERY);
     if (s === null) return;
-    expect(reduce(withCash(s, 999), { type: 'settle' }, t).pending).toBeNull();
+    const opened = reduce(withCash(s, 999), { type: 'settle' }, t);
+    expect(opened.pending?.kind).toBe('lottery');
+    if (opened.pending?.kind !== 'lottery') return;
+    const n = opened.pending.available[0]!;
+    expect(reduce(opened, { type: 'lottery', number: n }, t).lottery).toEqual(opened.lottery);
+    const closed = reduce(opened, { type: 'declineDecision' }, t);
+    expect(closed.pending).toBeNull();
+    expect(closed.players[closed.currentPlayer]!.cash).toBe(999);
   });
 
   run('★ 买完就收摊 —— 一次落点只买一注', () => {
@@ -175,12 +181,27 @@ describe('★ 未实现的场所会明确报出来', () => {
     }
   });
 
-  run('★ 百貨公司已实现 —— 给出的是商店交互', () => {
+  run('★ 百貨公司已实现 —— 真人（恰好 who_plays == 1）给出的是商店交互', () => {
     const { map, topo: t } = topo();
-    const s = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
-    if (s === null) return;
+    const s0 = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
+    if (s0 === null) return;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, whoPlays: 1 } : p)) };
     const r = reduce(s, { type: 'settle' }, t);
     expect(r.pending?.kind).toBe('shop');
+  });
+
+  run('★★ 第二十六份：电脑进百貨当场买卖完就走 —— 不留交互（`0x0042ea2b … jne 0x42ed8d`）', () => {
+    const { map, topo: t } = topo();
+    const s0 = standOn(newGame({ map, players: players() }), map, SPECIAL_KIND.DEPARTMENT_STORE);
+    if (s0 === null) return;
+    const s = { ...s0, players: s0.players.map((p, i) => (i === s0.currentPlayer ? { ...p, whoPlays: 2, points: 500 } : p)) };
+    const r = reduce(s, { type: 'settle' }, t);
+    expect(r.pending).toBeNull();
+    expect(r.phase).toBe('turnEnd');
+    // 500 點 ⇒ 道具预算 250：先買機車（80 < 250），剩 170 买得起汽車（150 < 170）
+    expect(r.tools[s.currentPlayer * 15 + 5]).toBe(1);
+    expect(r.tools[s.currentPlayer * 15 + 6]).toBe(1);
+    expect(r.players[s.currentPlayer]!.points).toBeLessThan(500);
   });
 });
 

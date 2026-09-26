@@ -24,7 +24,8 @@
  *   uint8_t  day;             // +8   ← 当前游戏日期（`fcn_00452117(&CFG+8)` 逐日推进）
  *   uint8_t  month;           // +9
  *   uint16_t year;            // +10..11
- *   uint8_t  dummy2[4];       // +12..15
+ *   uint8_t  calendar;        // +12  ★ 日曆 0 / 月曆 1（`[0x497164]`，原头文件记作 dummy2[0]）
+ *   uint8_t  dummy2[3];       // +13..15
  *   rich4_key_t hotkeys[28];  // +16..71   28 × {key, mod}
  * } rich4_cfg;                // sizeof = 72 = 0x48
  * ```
@@ -33,6 +34,12 @@
  *   `[8..11] = 0e 04 d2 07` ⇒ 2002-04-14；`[16..71]` 的 28 条键位与
  *   `hotkeys.ts` 的 `DEFAULT_BINDINGS` **逐字节相同**（末条是 `51 11` = Q + Ctrl）。
  *   `config-file.test.ts` 拿这个文件当二进制真值逐字节比对。
+ *
+ * ★ `+12` 不是 dummy（W-PT22 #12）：全 exe 引用 `0x497164` 的 6 处里，写入 3 处 ——
+ *   出厂 `0x00411f04 mov [0x497164], ch(0)`（与 +0..+5 的出厂值同一段）、点太阳
+ *   `0x004183c6 mov [0x497164], bl(0)`、点月亮 `0x0041840c mov [0x497164], 1`；读 3 处
+ *   （`0x004169fd` 画哪个版式、`0x004183ac` / `0x004183f0` 已是这一面就不理）。
+ *   它就在 `rich4_cfg` 的 72 字节里，`rich4_write_config()` 整份 `fwrite` ⇒ 跟着存盘。
  *
  * ⚠️ 这里**不做范围夹取**：原版 `fread` 进来什么就是什么（`game_speed` 越界也照用）。
  *   夹取属改良（C-FID-1）。解码时只把「读不出来」的情况退回默认值。
@@ -60,6 +67,11 @@ export interface Rich4Config {
   autoSave: boolean;
   /** 右下角显示哪一块 0/1/2 */
   view: number;
+  /**
+   * 日曆那一面画哪个版式：0 日曆 / 非 0 月曆（`+12` = `[0x497164]`）。
+   * 可省略 = 0（出厂 `0x00411f04`）。
+   */
+  calendar?: number;
   /** 当前游戏日期 */
   year: number;
   month: number;
@@ -76,6 +88,8 @@ export const CONFIG_HOTKEY_OFFSET = 0x10;
 export const CONFIG_HOTKEY_COUNT = 28;
 /** 日期三个字节的偏移 @source `day` / `month` / `year` */
 export const CONFIG_DATE_OFFSET = 8;
+/** 日曆 / 月曆那一格的偏移 @source `[0x497164]` − `[0x497158]`（cfg 基址，+5 = `[0x49715d]` 視窗）*/
+export const CONFIG_CALENDAR_OFFSET = 12;
 
 /** Ctrl 修饰位 @source `rich4_cfg.txt` 的 `0x11`；与 `hotkeys.ts` 的 `MOD_CTRL` 同值 */
 export const CONFIG_MOD_CTRL = 0x11;
@@ -99,6 +113,8 @@ export function encodeConfig(cfg: Rich4Config): Uint8Array {
   out[CONFIG_DATE_OFFSET + 1] = cfg.month & 0xff;
   out[CONFIG_DATE_OFFSET + 2] = cfg.year & 0xff;
   out[CONFIG_DATE_OFFSET + 3] = (cfg.year >> 8) & 0xff;
+  out[CONFIG_CALENDAR_OFFSET] = (cfg.calendar ?? 0) & 0xff;
+  // +13..15 仍是 dummy：原版不写（保持 0）
   for (let i = 0; i < CONFIG_HOTKEY_COUNT; i++) {
     const k = cfg.hotkeys[i];
     const at = CONFIG_HOTKEY_OFFSET + i * 2;
@@ -129,6 +145,7 @@ export function decodeConfig(bytes: Uint8Array | null | undefined): Rich4Config 
     sound: bytes[3]!,
     autoSave: bytes[4] !== 0,
     view: bytes[5]!,
+    calendar: bytes[CONFIG_CALENDAR_OFFSET]!,
     day: bytes[CONFIG_DATE_OFFSET]!,
     month: bytes[CONFIG_DATE_OFFSET + 1]!,
     year: bytes[CONFIG_DATE_OFFSET + 2]! | (bytes[CONFIG_DATE_OFFSET + 3]! << 8),

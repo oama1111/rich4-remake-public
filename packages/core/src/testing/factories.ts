@@ -15,6 +15,7 @@ import { initialSpecialActors } from '../rules/special-actors.ts';
 import { newStockMarket } from '../places/stock-market.ts';
 import { makeObjects } from '../cards/summon.ts';
 import { OBJECT_COUNT } from '../rules/objects.ts';
+import { landUnplacedPlayer } from '../rules/start-placement.ts';
 
 export function makePlayer(over: Partial<Player> = {}): Player {
   return {
@@ -65,6 +66,15 @@ export function makePlayer(over: Partial<Player> = {}): Player {
     monthlyReceived: 0,
     ...over,
   };
+}
+
+/**
+ * 测试用行情：今日可成交量 `f10` 先铺成流通股数。
+ * 真局里开局 `0x407dfe` / 每回合 `0x41c868` 会跑 `refreshTradableShares` 把它填上；夹具直接跳过那一步。
+ * （2026-09-24 审计起柜台买入按 `f10` 夹上限 —— `0x0042af43`。）
+ */
+export function tradableMarket<M extends { stocks: readonly { shares: number }[] }>(m: M): M {
+  return { ...m, stocks: m.stocks.map((s) => ({ ...s, f10: s.shares })) };
 }
 
 export function makeGameState(over: Partial<GameState> = {}): GameState {
@@ -132,8 +142,11 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     // 纯表现提示：还没人走过（见 types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：还没闪过往过路费的地块（见 types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
+    // 纯表现提示：还没开过奖（见 types.ts 的 GameState.lastLotteryDraw）
+    lastLotteryDraw: null,
     // 纯表现提示：还没弹过付费框（见 types.ts 的 GameState.notices）
     notices: [],
     lastViewTarget: null,
@@ -144,7 +157,7 @@ export function makeGameState(over: Partial<GameState> = {}): GameState {
     pendingQueue: [],
     tools: new Array<number>(4 * 15).fill(0),
     toolStock: new Array<number>(14).fill(99),
-    market: newStockMarket(0),
+    market: tradableMarket(newStockMarket(0)),
     holdings: [0, 1, 2, 3].map(() => Array.from({ length: 12 }, () => ({ amount: 0, avgCost: 0 }))),
     commercialShares: [],
     commercialOwners: [],
@@ -220,4 +233,17 @@ export function topoOf(map: Rich4Map): {
     // ★ 首次关押的屏幕坐标取自景观表（`rules/confinement.ts`）
     landscapes: map.landscapes,
   };
+}
+
+/**
+ * 「第一輪已经过去」的局面：还没上盘的人**按下标顺序**当场落地（`rules/start-placement.ts`）。
+ *
+ * ★ 给**不是测开局**的测试当夹具用：`newGame` 之后只有第 1 位在盘上（原版的惰性摆人），
+ *   而破产 / 事件 / 神明…这些用例要的是「大家都已经在盘上」。每人仍是两次 `rand()`、
+ *   同一条候选筛选，只是把原版分散在各人第一回合开头的抽签挤到一起。
+ */
+export function landAll(state: GameState, nodes: readonly MapNode[]): GameState {
+  let s = state;
+  for (let i = 0; i < s.players.length; i++) s = landUnplacedPlayer(s, nodes, i);
+  return s;
 }

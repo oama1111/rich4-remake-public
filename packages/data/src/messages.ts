@@ -32,6 +32,11 @@ export const PROMPT = {
   buyShares: t('%s\n\n每股售價%d\n\n是否認購股份？', 0x463b75),
   /** 嫁祸卡选人：%s 对象名 */
   frameUp: t('是否嫁禍給%s？', 0x46534e),
+  /**
+   * ★ 第十四份：免費卡（真人）那一问 —— `%s` = 付款方名字。
+   * @source `fcn_00444a60` 真人支：`0x00444adf push 0x465388` → `0x00444af4 call 0x440ba8`（YES/NO 框）
+   */
+  freeCard: t('%s\n\n是否使用免費卡？', 0x465388),
 } as const;
 
 /** 提示与失败 */
@@ -76,8 +81,50 @@ export const RENT = {
   freeSleepwalk: t('%s夢遊中\n\n免收%s！', 0x463c54),
   /** 小财神减半 */
   halfLuckyGod: t('小財神顯靈\n\n%s減免一半！', 0x463c67),
+  /**
+   * ★ 第十四份（2026-09-23）：`fcn_0041d709`（过路费的神明调整）其余三支的框。
+   * @source 跳表 `0x0041d6f1`：大財神 `0x0041d759 push 0x463c80`、小窮神 `0x0041d770 push 0x463c95`、
+   *   大窮神 `0x0041d789 push 0x463cae`；`%s` = 費名（第 2 实参 `edx`）。金额真变了才弹
+   *   （`0x0041d79e cmp ebx,esi / je`），`0x0041d7a2 push 0x5dc`。
+   */
+  freeBigLuckyGod: t('大財神顯靈\n\n免付%s！', 0x463c80),
+  plusHalfSmallPoorGod: t('小窮神顯靈\n\n%s加付50％！', 0x463c95),
+  doubleBigPoorGod: t('大窮神顯靈\n\n加倍付%s！', 0x463cae),
   /** 死神显灵，由 %s 赔偿 %s */
   reaperPays: t('死神顯靈\n\n由%s賠償%s', 0x4639cc),
+} as const;
+
+/**
+ * 回合开始时「被阻碍」的訊息框 —— 住宿／消失／坐牢／住院／冬眠 五句。
+ *
+ * ★ 原版在回合开始判定函数 `fcn_0040c912`（VA 0x0040c912）里**对当前玩家无条件弹**
+ *   （`rich4.asm:6561`）—— 不分真人与电脑。那里的 `test byte [player+0x15], 0x30`
+ *   闸门（`0x0040c969`）是「走回棋盘 0x10 / 被外力挪过 0x20」，**不是电脑位**
+ *   （电脑 `who_plays = 2`，`2 & 0x30 == 0`），命中的那一支不弹框。
+ *
+ * @source 五条模板在 DGROUP 里的地址（`rich4.asm:27908-27952` 那一段
+ *   `ref_004631e0` / `ref_004631f5` / `ref_0046320a` / `ref_0046321f` / `ref_00463234`），
+ *   天数口径照抄：
+ * ```text
+ * 0x4631e0  %s住宿中   天数 = (v & 0x7f) + 1
+ * 0x4631f5  %s消失中   天数 = (v & 0x3f) + 1
+ * 0x46320a  %s坐牢中   天数 = (v & 0x7f) + 1
+ * 0x46321f  %s住院中   天数 = (v & 0x7f) + 1
+ * 0x463234  %s冬眠中   天数 = (v & 0x7f) + 1
+ * ```
+ *   框时长与其余通用訊息框一致 = `push 0x5dc`（1500 ms）。
+ */
+export const CONFINEMENT = {
+  /** %s 玩家名、%d 剩余天数 @source 0x4631e0 */
+  hotel: t('%s住宿中\n\n還剩%d天！', 0x4631e0),
+  /** %s 玩家名、%d 剩余天数 @source 0x4631f5 —— ★ 天数用 `& 0x3f` */
+  disappearing: t('%s消失中\n\n還剩%d天！', 0x4631f5),
+  /** %s 玩家名、%d 剩余天数 @source 0x46320a */
+  prison: t('%s坐牢中\n\n還剩%d天！', 0x46320a),
+  /** %s 玩家名、%d 剩余天数 @source 0x46321f */
+  hospital: t('%s住院中\n\n還剩%d天！', 0x46321f),
+  /** %s 玩家名、%d 剩余天数 @source 0x463234 */
+  sleeping: t('%s冬眠中\n\n還剩%d天！', 0x463234),
 } as const;
 
 /**
@@ -124,6 +171,14 @@ export const MESSAGE_BOX = {
   pointsMinigame: t('得點券%d點', 0x463797),
   /** %s 卡片名 / 道具名 —— 抽卡格与禮物**共用同一个串地址** @source 0x0041b35d / 0x0041b956 */
   got: t('得到%s！', 0x463aa8),
+  /**
+   * 節日送卡（節日表旗标 & 8，每位在场玩家抽一张）—— 框文按**地图**选（`0x004526c5` 起：
+   * 地图 4 / 5 / 6 各一句，其余一律「聖誕節」），`%s` = 玩家名、卡名。@source 0x004526e7 / 0x004526fd / 0x00452713 / 0x0045272a
+   */
+  holidayCardGalaxy: t('銀河系和平日\n\n%s得到%s！', 0x4661c4),
+  holidayCardDino: t('恐龍蛋節\n\n%s得到%s！', 0x4661dd),
+  holidayCardNewYearEve: t('除夕\n\n%s得到%s！', 0x4661f2),
+  holidayCardXmas: t('聖誕節\n\n%s得到%s！', 0x466203),
   /** 寶箱：无占位符，500 是写死在串里的 @source 0x0041bb4e `push 0x463ad3` */
   got500Points: t('得到５００點券！', 0x463ad3),
   /** %d 施捨金额 @source 0x0041b656 `push 0x463ab1` */
@@ -172,6 +227,8 @@ export const FIELD = {
 export const BANK = {
   /** ATM 入口 `fcn_004379c9`：拒絕往來期内 @source `0x004379ef push 0x464bed`（框停 `0x3e8` = 1000 ms）*/
   rejected: t('銀行拒絕往來\n\n還剩%d天！', 0x464bed),
+  /** ATM 窗 `0x408` 那一支：銀行暫停放款期内开 ATM @source `0x00437123 push 0x464bd4`（框停 `0x5dc` = 1500 ms）*/
+  frozen: t('銀行暫停放款\n\n還剩%d天！', 0x464bd4),
   applyLoan: t('申請貸款', 0x464a81),
   repayLoan: t('償還貸款', 0x464a8a),
   specialFinance: t('特別融資', 0x464a93),
@@ -182,8 +239,12 @@ export const BANK = {
   creditLeft: t('尚可融資金額', 0x464ac8),
   /** %d 天 */
   daysToDue: t('距還款日%d天', 0x464a74),
-  /** %s 玩家名 */
+  /** %s 玩家名 —— 还款提醒窗 `0x436034` 的第一句（`0x00436195 push 0x464aee`）*/
   greeting: t('%s您好', 0x464aee),
+  /** 还款提醒窗第二句（`[0x475878]`，`0x00436211`）*/
+  loanDueSoon: t('您向銀行借貸的\n貸款即將到期。', 0x464a2d),
+  /** 还款提醒窗第三句（`[0x47587c]`，`0x00436226`）*/
+  dontForget: t('請不要忘記喔！', 0x464a4b),
 } as const;
 
 /** 探監/探病 */
@@ -209,37 +270,46 @@ export const BAIL = {
  * @source 指针表 `0x004755f8`（投注屏，6 项）与 `0x00475610` 起（開獎屏，逐条一个）
  */
 export const LOTTERY = {
+  /*
+   * ★★ 2026-09-22（第十一份試玩回報 #14「进入乐透购买模块没有…猫女台词语音」）：
+   *   这 14 条串在移植时**把 `#NNNN` 语音码弄丢了**（只留在注释里），
+   *   而客户端的语音只认**字面前缀**（`voice-sink.ts` 的 `parseVoiceCode` 要求 `#` + 4 位）⇒ 整屏静音。
+   *
+   *   修法：`va` 从前缀**后一格**改指**前缀起点**（原值 − 5），`text` 补回 `#NNNN`。
+   *   这样 `messages.test.ts` 的逐字节对 exe 守卫仍然成立 —— 我逐条核过 `va-5` 处的 5 个字节，
+   *   14 条全部是 `#NNNN` 且与注释的语音号一致（例：`0x464394` = `#0011`、`0x464440` = `#0017`）。
+   */
   // ── 投注屏（0x0042f7fc 的各状态）──
   /** 开屏第一句 —— 语音 11 */
-  counterHello: t('哈囉！\n一券在手，\n希望無窮！', 0x464399),
+  counterHello: t('#0011哈囉！\n一券在手，\n希望無窮！', 0x464394),
   /** 状态 1→2 —— 语音 12 */
-  counterPrice: t('只要一千元，\n就有獲得大獎\n的機會！', 0x4643bb),
+  counterPrice: t('#0012只要一千元，\n就有獲得大獎\n的機會！', 0x4643b6),
   /** 状态 2→3：可以点号了 —— 语音 13 */
-  counterPick: t('請圈選您的\n幸運號碼～', 0x4643e3),
+  counterPick: t('#0013請圈選您的\n幸運號碼～', 0x4643de),
   /** 买中之后（0x0042f974 的 0x406 处理）—— 语音 14 */
-  counterBye: t('拜拜！祝您中獎！', 0x4643fe),
+  counterBye: t('#0014拜拜！祝您中獎！', 0x4643f9),
   /** 现金 < 1000，屏一闪即关 —— 语音 15 */
-  counterNoCash: t('太可惜了！\n您的現金不足～', 0x464414),
+  counterNoCash: t('#0015太可惜了！\n您的現金不足～', 0x46440f),
   /** 紧接上一条 —— 语音 16 */
-  counterComeAgain: t('下次再來吧！', 0x464433),
+  counterComeAgain: t('#0016下次再來吧！', 0x46442e),
 
   // ── 開獎屏（0x0043010c 的各状态）──
   /** 状态 1 —— 语音 17 */
-  drawIntro: t('嗨！\n又到了每月\n十五號樂透\n開獎時間～', 0x464445),
+  drawIntro: t('#0017嗨！\n又到了每月\n十五號樂透\n開獎時間～', 0x464440),
   /** 状态 1→2 —— 语音 18 */
-  drawRolling: t('現在馬上為您\n開出這一期的\n號碼．．。', 0x464470),
+  drawRolling: t('#0018現在馬上為您\n開出這一期的\n號碼．．。', 0x46446b),
   /** 状态 4：开出的号有人买 —— 语音 19 */
-  drawWinnerIs: t('本月份的得主\n是．．．。', 0x46449a),
+  drawWinnerIs: t('#0019本月份的得主\n是．．．。', 0x464495),
   /** 状态 5→6 —— 语音 32 */
-  drawWinAll: t('恭喜您獨得\n所有獎金！', 0x4644b7),
+  drawWinAll: t('#0032恭喜您獨得\n所有獎金！', 0x4644b2),
   /** 状态 7：开出的号没人买 —— 语音 33 */
-  drawNoWinner: t('SORRY！\n本月份沒有人\n得獎～', 0x4644d2),
+  drawNoWinner: t('#0033SORRY！\n本月份沒有人\n得獎～', 0x4644cd),
   /** 状态 7→8 —— 语音 34 */
-  drawCarryOver: t('獎金將累積\n到下個月．\n．．．。', 0x4644f3),
+  drawCarryOver: t('#0034獎金將累積\n到下個月．\n．．．。', 0x4644ee),
   /** 状态 8→9 —— 语音 35 */
-  drawHopeNext: t('希望下次\n得獎者就\n是您！', 0x464517),
+  drawHopeNext: t('#0035希望下次\n得獎者就\n是您！', 0x464512),
   /** 状态 9→10 —— 语音 36 */
-  drawHurryUp: t('行動要快喔！', 0x464535),
+  drawHurryUp: t('#0036行動要快喔！', 0x464530),
   /** 開獎屏上的标签，后面紧跟公库金额 —— 这一条**没有**语音前缀 */
   poolLabel: t('累積獎金', 0x4645d9),
 } as const;
@@ -338,10 +408,100 @@ export const GOD_MANIFEST = {
   demolish: t('小惡魔顯靈\n\n拆毀一層房屋！', 0x4634d7),
   /** 土地公 */
   seize: t('土地公顯靈\n\n強佔土地！', 0x4634f2),
-  /** 衰神/死神拦下消费（`fcn_0040fa61`）。⚠️「拘資」是原版的错字（应为「投資」），1:1 照抄 */
-  blockPurchase: t('%s顯靈\n\n拘資失敗！', 0x463514),
+  /**
+   * 衰神/死神拦下消费（`fcn_0040fa61`）。
+   *
+   * ★★ 2026-09-22 订正：先前这里写「『拘資』是原版错字、1:1 照抄」—— **那句注释是错的**。
+   *   逐字节复核 exe（`0x463514`，fileOff 400148，len 18）：
+   *   `2573c5e3c6460a0aa7ebb8eaa5a2b1d1a149` = `%s顯靈\n\n投資失敗！`；
+   *   整个 DGROUP（158720 字节）里「拘資」出现 **0** 次、「投資失敗」出现 **1** 次。
+   *   ⇒ 当初从 asm/注释转写时写错了字，现在改回 exe 上的原文。
+   */
+  blockPurchase: t('%s顯靈\n\n投資失敗！', 0x463514),
   /** 福神附身得卡（`0x0040ee13`）：`%s` = 神明名、卡名 */
   gotCard: t('%s附身\n\n得到%s！', 0x4632fd),
+  /**
+   * 大福神附身得**两张**卡（`fcn_0040ee50`，`0x0040eed7 push 0x463353`，`0x0040eee9 push 0x5dc`）。
+   *
+   * ⚠️ `%s` × 2 = **两张卡名**（先抽到的那张在前）—— 这一条里**没有**神明名，
+   *   格式串自己写着「大福神」，与 `gotCard` 的 `[神明名, 卡名]` 形状不同。
+   */
+  gotCardTwo: t('大福神附身\n\n得到%s及%s！', 0x463353),
+  /**
+   * **小衰神**附身丢掉一张卡（`0x0040f12c push 0x4633ab` / `0x0040f13e push 0x5dc` /
+   * `0x0040f148 call 0x440cac`）：`%s` = 丢掉那张的卡名（`[eax*8 + 0x47fdea]`，eax = `0x441e77` 的返回值）；
+   * 手里没卡（`0x0040f11c test eax,eax / je`）就不弹。格式串自己写着「小衰神」，不含神明名。
+   */
+  lostCard: t('小衰神附身\n\n遺失%s！', 0x4633ab),
+  /**
+   * **大衰神**附身丢掉一半手牌（`0x0040f1e6 call 0x441ece` → `0x0040f1ee test eax,eax / je`（没丢就不弹）→
+   * `0x0040f1f6 push 0x5dc` / `0x0040f1fb push 0x4633d5` → `jmp 0x40f148 call 0x440cac`）。无 `%s`。
+   */
+  lostHalf: t('大衰神附身\n\n遺失一半卡片！', 0x4633d5),
+} as const;
+
+/**
+ * 魔法屋效果派发 `0x431caa` 与电脑那一支（`0x0043380a`）的訊息框 / 台词串（2026-09-23）。
+ *
+ * @source
+ * - `nameHead`：`0x00431cee push 0x46482a`（十二支都是它）→ `sprintf(buf, "%s\n\n", [player+0] 名字)`，
+ *   随后 `strcat(buf, [0x475724 + 16*效果] 效果名)` → `0x440cac(buf, 0x5dc)`；
+ * - `gotCard`：「得一張卡片」那一支 `0x00432122 push 0x464839`（发卡 `0x004320ee call 0x441e12` 之后） → `sprintf("得到%s！", 卡名)` 再 strcat；
+ * - `spin`：电脑那一支 `0x004339a1 push 0x464842` → `sprintf("%s\n\n%s", 条件名, 效果名)` → `0x440cac(…, 0x5dc)`；
+ * - `ponder`：加蓋 / 拆除 / 拍賣三支收尾 `0x00432094 push 0x46482f / push 0 / push 中签者 / 0x004320a2 call player_say`。
+ */
+export const MAGIC_HOUSE_TEXT = {
+  nameHead: t('%s\n\n', 0x46482a),
+  gotCard: t('得到%s！', 0x464839),
+  spin: t('%s\n\n%s', 0x464842),
+  ponder: t('？？？...', 0x46482f),
+} as const;
+
+/**
+ * ★ 第十四份（2026-09-23）：命運的**神明加持**那六扇框（`fcn_0044b896` 写进 `[0x48c5b8]`，
+ * 调用方 `push 0x5dc / push 0x48c5b8 / call 0x440cac`）—— `%s` = `[0x47ed76 + god_info*4]`。
+ *
+ * @source `fcn_0044b896` 的三个域（`[esp+0x14]` / `[esp+0x18]` 两个实参）：
+ *   `(0,0)` 獎金：2 → `0x0044b914 push 0x465888`、1 → `0x0044b941 push 0x46589b`；
+ *   `(0,1)` 罰金：2 → `0x0044b99c push 0x4658ae`、1 → `0x0044b9c9 push 0x4658c1`；
+ *   `(1,*)` 劫难：2 → `0x0044ba24 push 0x4658d4`、1 → `0x0044ba4a push 0x4658e7`。
+ */
+export const BLESSING = {
+  rewardDouble: t('%s保佑\n\n獎金加倍！', 0x465888),
+  rewardVoid: t('%s作祟\n\n獎金作廢！', 0x46589b),
+  penaltyDouble: t('%s作祟\n\n罰金加倍！', 0x4658ae),
+  penaltyVoid: t('%s保佑\n\n免付罰金！', 0x4658c1),
+  misfortuneDouble: t('%s作祟\n\n倒霉加倍！', 0x4658d4),
+  misfortuneVoid: t('%s保佑\n\n逃過此劫！', 0x4658e7),
+} as const;
+
+/**
+ * ★ 第十四份：被动卡（免費卡 / 嫁禍卡）那几句 —— 亮牌（`fcn_00441f73(卡号, 文字)`）与訊息框。
+ * @source `fcn_00444a60`（免費卡）`0x00444b0e push 0x465305`；`fcn_0044476a`（嫁禍卡）
+ *   `0x004447ea` / `0x00444874` / `0x00444982 push 0x46533d`、`0x00444893 push 0x46535d`（选人窗标题）、
+ *   `0x004449c3 push 0x46536f`（电脑那一支的訊息框，1500 ms）。
+ */
+export const PASSIVE_CARD_TEXT = {
+  /** 亮牌：「使用%s」（`%s` = 卡名）*/
+  use: t('使用%s', 0x465305),
+  /** 嫁禍卡亮牌：`%s` = 出牌者名 */
+  scapegoatOn: t('%s\n\n嫁禍卡生效！', 0x46533d),
+  /** 选人窗那一句（`fcn_00440e1a` 第 3 实参）*/
+  scapegoatPick: t('請選擇嫁禍對象...', 0x46535d),
+  /** 电脑嫁禍之后那一扇：`%s` = 替死鬼名 */
+  scapegoatTo: t('嫁禍給%s！', 0x46536f),
+  /** 免罪卡亮牌（夢遊 / 陷害卡命中持卡人，`0x444bb2` 里 `0x00444be8 push 0x46539d`）：`%s` = 持卡人 */
+  absolved: t('%s\n\n免罪卡生效！', 0x46539d),
+  /** 復仇卡亮牌（`0x444691` 里 `0x004446c7 push 0x46532c`）：`%s` = 持卡人 */
+  revenge: t('%s\n\n復仇卡生效！', 0x46532c),
+} as const;
+
+/**
+ * ★ 第十四份：保險理賠那一扇 @source `fcn_0044ba63`：`0x0044baa5 push 0x4658fa` →
+ *   `0x0044baaf sprintf(…, 損失)` → `0x0044bab7 push 0x7d0`（**2000 ms**）`call 0x440cac`。
+ */
+export const INSURANCE = {
+  payout: t('保險期間\n\n得到理賠金\n\n%d元', 0x4658fa),
 } as const;
 
 /**
@@ -400,6 +560,104 @@ export function objectNameOf(type: number): string {
   return OBJECT_NAMES[type - 13]?.text ?? '';
 }
 
+/**
+ * ★ 2026-09-23 框模板反查补齐的訊息框（`0x440cac` 的 104 个调用点里先前一扇都没弹的那些）。
+ * 每条的 VA = 推串点压的那个串；调用点 / 时长见 `@rich4/core` 的 `NoticeKey` 各条。
+ */
+export const NOTICE_BOX = {
+  /** 小偷偷點券：`%s` 受害者、`%d` 點數（0x0041c239，1000 ms）*/
+  stealPoints: t('偷取%s\n\n%d點點券！', 0x463ae4),
+  /** 惡人奪卡：`%s` 受害者、`%s` 卡名（0x0041c2ce，1000 ms）*/
+  stealCard: t('奪取%s%s！', 0x463af7),
+  /** 強盜搶銀行：`%d` 总得款、`%s` 主人（0x0041c3f9，2000 ms）*/
+  robBank: t('強盜搶奪銀行\n\n得款%d元\n\n給%s！', 0x463b02),
+  /** 流氓勒索：`%s` 地主、`%d` 保護費（0x0041c552 / 0x0041c676）*/
+  protection: t('勒索%s\n\n%d元保護費！', 0x463b21),
+  /** 間諜取走過路費：`%d`（0x0041c5b9 / 0x0041c6d2）*/
+  spyToll: t('取走過路費\n\n%d元！', 0x463b36),
+  /** 間諜取走盈餘：`%d`（0x0041c75c）*/
+  spySurplus: t('取走盈餘\n\n%d元！', 0x463b49),
+  /** 航空公司轉盤轉到 0（0x0041abeb）*/
+  noTravel: t('不用出國！', 0x463a5f),
+  /** 研究所研發完成：`%s` 道具名（0x0041cdf2）*/
+  researchDone: t('%s開發完成！', 0x463b68),
+  /** 認購后成为門派幫主（0x0041d299）*/
+  becameBoss: t('恭喜您成為幫主！', 0x463b94),
+  /** 認購后获得经营权（0x0041d2a5）*/
+  becameChairman: t('恭喜您獲得經營權！', 0x463ba5),
+  /** 电脑买股：`%s` 玩家、`%s` 股名、`%d` 张数（0x0042c770）*/
+  aiBuyStock: t('%s\n\n買進%s%d張', 0x464186),
+  /** 电脑卖股（0x0042d076）*/
+  aiSellStock: t('%s\n\n賣出%s%d張', 0x4641cc),
+  /** 股市柜台：漲停不能买（0x0042af1d，`0x800003e8` = 右移 100、1000 ms）*/
+  limitUpNoBuy: t('漲停無法買進！', 0x464088),
+  /** 股市柜台：跌停不能卖（0x0042b050，同上）*/
+  limitDownNoSell: t('跌停無法賣出！', 0x464097),
+  /** 貸款屏进门时正暫停放款（0x004351dc，`0x800005dc` = 右移 100）*/
+  loanFrozen: t('銀行暫停放款\n\n還剩%d天！', 0x464ad5),
+  /** 电脑还贷（0x0043685b）*/
+  aiRepayLoan: t('%s\n\n償還銀行貸款\n\n%d元', 0x464af5),
+  /** 电脑贷款（0x0043692f）*/
+  aiBorrow: t('%s\n\n向銀行貸款\n\n%d元', 0x464b0c),
+  /** 贷款到期（0x00436aa0）*/
+  loanDueForced: t('貸款到期日\n\n強制執行！', 0x464b2c),
+  /** 距到期 1 天（0x00436ae4）*/
+  loanDueOneDay: t('距貸款到期日\n\n還剩１天！', 0x464b43),
+  /** 距到期 2 天（0x00436afa）*/
+  loanDueTwoDays: t('距貸款到期日\n\n還剩２天！', 0x464b5c),
+  /** 銀行準備金不足、董事長垫付：`%d` 缺口、`%s` 董事長（0x00436c03，2500 ms）*/
+  reserveShortfall: t('銀行資金準備\n\n不足%d元\n\n由經營者%s墊付！', 0x464b75),
+  /** 特別融資收回之前那一句（0x00436cc6）*/
+  bankChairmanChanged: t('銀行經營權易主！', 0x464b9e),
+  /** 特別融資强制收回：`%s` 玩家、`%d` 金额（0x00436ce1）*/
+  forcedSpecialRepay: t('%s\n\n強制償還%d元\n\n銀行特別融資！', 0x464baf),
+  /** 醫院那一处「保釋%s」（監獄那一处是 `BAIL.bailWho` 0x465169）（0x0043ebe0）*/
+  bailWhoHospital: t('保釋%s', 0x465207),
+  /** 搶奪卡（电脑）：`%s` 受害者、`%s` 卡名（0x00441a95）*/
+  robbed: t('搶得%s的\n\n%s', 0x4652f8),
+  /** 購地卡现金不够（0x004425f6）*/
+  cardCashShort: t('您的現金不足！', 0x46530c),
+  /** 紅卡 / 黑卡（电脑）：`%s` 股名、`%s` 卡名（0x00444fbf / 0x00445138）*/
+  useOnStock: t('對%s使用%s！', 0x4653ae),
+  /** 查稅卡：`%s` 被查的人、`%d` 税金（0x004453d3）*/
+  taxed: t('抽取%s\n\n%d元稅金！', 0x4653c0),
+  /** 电脑用道具：`%s` 道具名（0x00448054）*/
+  aiUseTool: t('使用%s', 0x4653e5),
+} as const;
+
+/**
+ * ★ 2026-09-23：監獄 / 醫院保釋屏里那位**柜台人员**的字框台词（`fcn_0044ec30` 开框 + `fcn_0044ecb6` 写字）。
+ * 串头 `#NNNN` 是语音号（`voice-code.ts`）。
+ */
+export const BAIL_CLERK_TEXT = {
+  /** 監獄：点了付不起的那一格（`0x0043cfbd push 0x46514e`）*/
+  lowPoints: t('#0002抱歉！\n你的點數不足！', 0x46514e),
+  /** 醫院：开屏那一拍（`0x0043db48 mov edx,[0x475cc4]` → 0x465170）*/
+  hospitalHello: t('#0127您好！請問您要替誰\n辦理出院手續？', 0x465170),
+  /** 醫院：YES 之后（状态 4，`0x0043e7a4 mov edx,[0x475ccc]` → 0x4651a5）*/
+  hospitalOk: t('#0129ＯＫ！您的朋友已經\n可以出院了！', 0x4651a5),
+  /** 醫院：右键离开（状态 7，`0x0043e924 mov edx,[0x475cd0]` → 0x4651ca）*/
+  hospitalBye: t('#0130要保重身體喔！', 0x4651ca),
+  /** 醫院：付不起（状态 5，`0x0043e7bf mov eax,[0x475cd4]` → 0x4651de）*/
+  hospitalLowPoints: t('#0002抱歉！\n你的點數不足！', 0x4651de),
+  /**
+   * ★ 表里还有一句 `#0128請稍後！`（`[0x475cc8]` → 0x465197），但全 exe **没有一处读** `0x475cc8` ——
+   *   原版从来不说这一句（`tools/disasm.py xref 0x475cc8` = 0 处）。收在这里只为逐字节对 exe，别拿去用。
+   */
+  hospitalWaitUnused: t('#0128請稍後！', 0x465197),
+} as const;
+
+/**
+ * 被保出来的**犯人**那一句道谢 —— 表 `0x475be4[槽]`（槽 4..7 = 小偷 / 強盜 / 流氓 / 間諜）。
+ * @source 監獄 `0x0043d242 mov edx,[esi + 0x475be4]`、醫院 `0x0043de34 mov ebx,[eax*4 + 0x475be4]`
+ */
+export const INMATE_THANKS: readonly OriginalText[] = [
+  t('#0124謝謝你！你真是\n我的再生父母！', 0x4650b4),
+  t('#0125我先走了！大恩\n大德來日再報！', 0x4650d7),
+  t('#0123太感激了！我一\n定會報答你的！', 0x4650fa),
+  t('#0126受人點水之恩，\n必當湧泉已報！', 0x46511d),
+];
+
 /** 把 `%s` / `%d` 依次替换掉 —— 原版用的是 C 的 sprintf，这里只做它用到的那两种 */
 export function formatOriginal(fmt: string, ...args: (string | number)[]): string {
   let i = 0;
@@ -411,6 +669,7 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PROMPT),
   ...Object.values(NOTICE),
   ...Object.values(RENT),
+  ...Object.values(CONFINEMENT),
   ...Object.values(FACILITY_TOLL),
   ...Object.values(MESSAGE_BOX),
   ...Object.values(BUTTON),
@@ -421,6 +680,18 @@ export const ALL_TEXTS: readonly OriginalText[] = [
   ...Object.values(PLACE),
   ...Object.values(TOOLBAR_TIPS),
   ...Object.values(GOD_ATTACH),
+  // ★★ 2026-09-22：`GOD_MANIFEST` 整块进来了（先前只放 `gotCardTwo`）。
+  //   挡了它一阵子的那条 —— `blockPurchase` 的「拘資」——已经订正成 exe 上的「投資失敗」
+  //   （那是当初转写写错的字，不是原版错字；见该条自己的注释），
+  //   所以现在可以整块交给下面那条逐字比对守着，四条都有了护栏。
+  ...Object.values(GOD_MANIFEST),
+  ...Object.values(MAGIC_HOUSE_TEXT),
+  ...Object.values(BLESSING),
+  ...Object.values(PASSIVE_CARD_TEXT),
+  ...Object.values(INSURANCE),
+  ...Object.values(NOTICE_BOX),
+  ...Object.values(BAIL_CLERK_TEXT),
+  ...INMATE_THANKS,
   ...GOD_NAMES,
   ...OBJECT_NAMES,
 ];

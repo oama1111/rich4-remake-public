@@ -63,9 +63,11 @@ export type Action =
   | { type: 'buyFacility' }
   /**
    * 在自己的空地設施上选一种建筑蓋第一级。
-   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所
+   * @param facilityType 0 公園 / 1 旅館 / 2 購物中心 / 3 加油站 / 4 研究所；
+   *   `null` = 按**电脑那一支**定种类（付费首建 `0x0041a23e` / 神明代蓋 `0x0040b1c5` 都是 `rand()%4+1`，
+   *   随机数只能在 reducer 里掷）—— 只收电脑 / 託管座位的（开着窗被托管的真人由 AI 代答）
    */
-  | { type: 'buildFacility'; facilityType: number }
+  | { type: 'buildFacility'; facilityType: number | null }
   /** 给自己的設施加蓋一级 @source 0x0041a2b3 */
   | { type: 'upgradeFacility' }
   /**
@@ -161,9 +163,31 @@ export type Action =
     }
   | { type: 'noticeBoard'; op: 'withdraw'; slot: number }
   | { type: 'noticeBoard'; op: 'buy'; seller: number; slot: number }
+  /**
+   * 打开 / 关上公佈欄（真人从工具列 / 熱鍵，`0x00417dee call 0x4284be`）。
+   * - `open`：进门清理 —— 撤掉挂着却已不归挂牌人的东西（`0x004284c5 call 0x42483e`）；
+   * - `close`：收尾收回特別融資（`0x0042885c push 0 / call 0x436b0a`）。
+   * 没有可做的就原样返回（客户端只在会生效时才发，联机不会被当成非法）。
+   */
+  | { type: 'noticeBoard'; op: 'open' }
+  | { type: 'noticeBoard'; op: 'close' }
+  /**
+   * ★ 2026-09-25 审计补：真人关上**股市屏**（工具列 `0x00417df7`、紅卡 `0x00444ffa`、黑卡 `0x004450be` 三种模式，
+   *   出口都经 `0x0042ba86 push 0 / 0x0042ba88 call 0x436b0a`）⇒ 强制收回特別融資（模式 0）。
+   *   没有可做的就原样返回（客户端只在会生效时才发，同 `noticeBoard` 的 open / close）。
+   */
+  | { type: 'stockScreen'; op: 'close' }
 
-  | { type: 'shop'; op: 'buyCard' | 'sellCard'; id: number }
-  | { type: 'shop'; op: 'buyTool' | 'sellTool'; id: number; count?: number }
+  /**
+   * 百貨公司买卖。买的两种可带 `row` = **货架第几行**（`pending.cards` / `pending.tools` 的下标）：
+   * 原版买的是**点中的那一行**（`[0x48c31c + 行]` / `[0x48c2f8 + 行]`），买完那一行变灰、清 0
+   * （@source 0x0042e236..0x0042e379 / 0x0042e4ba..0x0042e5f6）。卡片货架可以有同号的两行，
+   * 所以只给 `id` 分不清变灰的是哪一行。不带 `row`（电脑 / 旧回报的轨迹）= 同号里第一行还没卖掉的。
+   */
+  | { type: 'shop'; op: 'buyCard'; id: number; row?: number }
+  | { type: 'shop'; op: 'sellCard'; id: number }
+  | { type: 'shop'; op: 'buyTool'; id: number; row?: number }
+  | { type: 'shop'; op: 'sellTool'; id: number; count?: number }
 
   /** 结束当前玩家回合，轮转到下一位 */
   /**
@@ -189,7 +213,11 @@ export type Action =
    */
   | {
       type: 'bank';
-      op: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay';
+      /**
+       * ★ `'auto'`（`amount` 不看）= 貸款屏开着时座位被**托管** ⇒ 按电脑那一支（`0x004367ab`：提前还贷 /
+       *   `rand()%10` 放款）替他办完并关屏。只认「不是恰好 `who_plays == 1`」的当前玩家（托管 = 1|4）。
+       */
+      op: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'financeBorrow' | 'financeRepay' | 'auto';
       amount: number;
     }
   /** 保釋監獄/醫院里的某个槽位（0..3 玩家、4..7 NPC） */
@@ -304,6 +332,30 @@ export type Action =
    * ⚠️ 只认 `pending.kind === 'birthdayCard'` 且 `seat === seats[0]` 的那一拍；
    *   其余一律原样返回（陈旧/乱序的答复不该动状态）。
    */
-  | { type: 'birthdayCard'; seat: number; cardId: number };
+  | { type: 'birthdayCard'; seat: number; cardId: number }
+  /**
+   * ★ 第十四份：真人答「是否使用免費卡？」（`pending.kind === 'freeCard'`）。NO / 右键 = `use: false`
+   *   （`declineDecision` 同义）。@source `0x00444afc cmp eax,1 / jne 不用`
+   *   `null` = 託管：按电脑那一支判（`0x00444a9b` 起的 `rand()` 走同一个发生器，与魔法屋 `option: null` 同一口径）。
+   */
+  | { type: 'answerFreeCard'; use: boolean | null }
+  /**
+   * ★ 第十四份：真人嫁禍给谁（`pending.kind === 'scapegoat'`）—— 玩家下标，−1 = 不嫁禍（卡留着）。
+   *   @source 一位候选 `0x00444851 cmp eax,esi`（YES）/ 多位 `0x004448a9 mov ebx,eax`（选人窗返回值）
+   *   `null` = 託管：按电脑那一支挑（`0x004448b0` 起，含它的亮牌与「嫁禍給%s！」那一扇）。
+   */
+  | { type: 'answerScapegoat'; target: number | null }
+  /**
+   * 魔法屋（真人）：在女巫窗口里点定的**效果号**。
+   *
+   * @source `0x004338b7 mov esi, eax`（窗口返回值 = 点的格号 − 1）→ `0x004339c6 call 0x431caa`。
+   *   `0x004320cf cmp esi, 0xb / ja` ⇒ 合法值 **0..11**（12 项全部点得到）。
+   *
+   * ★ `option = null` = **託管**（真人被电脑接管）：借电脑那一支的效果转盘
+   *   （名单有自己 → 6；否则 `rand() % 11`、6 改 7，@source 0x00433934..0x0043397e）。
+   *
+   * ⚠️ 只认 `pending.kind === 'magicHouse'`；其余一律原样返回。
+   */
+  | { type: 'magicHouse'; option: number | null };
 
 export type ActionType = Action['type'];

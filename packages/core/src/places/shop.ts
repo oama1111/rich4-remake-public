@@ -145,7 +145,8 @@ export function buyTool(
   return {
     ok: true,
     error: null,
-    player: { ...player, points: player.points - price },
+    // @source `0x0042d25c sub word [player+0x30], bx` —— 16 位
+    player: { ...player, points: addPoints(player.points, -price) },
     tools: r.tools,
     stock: r.stock,
     spent: price,
@@ -223,7 +224,8 @@ export function sellTool(
   return {
     ok: true,
     error: null,
-    player: { ...player, points: player.points + gain },
+    // @source `0x0042d204 mov word [+0x30], ax` —— 16 位写回（与卖卡同一个 `addPoints`）
+    player: { ...player, points: addPoints(player.points, gain) },
     tools: nextTools,
     stock: nextStock,
     spent: -gain,

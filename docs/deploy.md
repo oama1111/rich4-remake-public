@@ -40,11 +40,30 @@ systemd 单元原样可用；外网实测门 / 白名单 / WebSocket 升级口 /
 
 **实际采用的做法与下文第 2–4 步不同（更省事，推荐）**：服务器上**不 clone 仓库**（不用往服务器放 GitHub 凭据，
 服务器上也就不会出现完整的原版素材目录），而是在自己电脑上构建好再 `rsync` 上去：
-① 本机 `pnpm --filter @rich4/client build` 与 `pnpm precompress --from assets/game --out <本机临时目录>`；
+① 本机 `pnpm --filter @rich4/client build` + `pnpm board`（生成 `dist-web/board.json`，见 §3）与 `pnpm precompress --from assets/game --out <本机临时目录>`；
 ② `rsync` 三样：服务器要用的源码（`packages/{core,data,assets-pipeline,server}` + 根上的 `package.json` / `pnpm-lock.yaml` /
 `pnpm-workspace.yaml` / `tsconfig*.json` + `deploy/`）、`packages/client/dist-web/`、素材（7 个 `.mkf` 原件 + `.br/.gz` + 清单 + `*.mid`）；
 ③ 服务器上只装运行期依赖：`pnpm install --frozen-lockfile --prod --filter "@rich4/server..."`（1 GB 内存十秒装完）。
 更新时重做 ①②（素材没变就不用传素材）再 `systemctl restart rich4`。
+
+> ⚠️ **`rsync` 必须落到 `rich4` 名下，否则服务起不来**（2026-09-22 真机踩到）。
+>
+> 服务是 `User=rich4` 跑的。用 `root` 直接 `rsync` 会把新文件写成 root（或你本机的 uid），
+> `node --experimental-transform-types` 读源码时当场
+> `EACCES: permission denied, open '/srv/rich4/rich4-remake/packages/core/src/rules/victory.ts'`，
+> systemd 进入 restart 循环（`systemctl is-active` 在重启间隙还可能显示 `active`，别被骗）。
+>
+> 两种正确做法，任选其一：
+> ```bash
+> # ① 以 rich4 身份推（最稳）
+> sudo -u rich4 rsync -a ... root@<主机>:/srv/rich4/rich4-remake/
+> # ② 推完立刻改属主
+> rsync -a ... && ssh root@<主机> 'chown -R rich4:rich4 /srv/rich4/rich4-remake'
+> ```
+> 落地后**务必**核对三件事：`systemctl is-active rich4` = `active`；
+> `journalctl -u rich4 -n 20` 里能看到那条「rich4 聯機伺服器…」横幅；
+> `dist-web/index.html` 里引用的 `assets/index-*.js` 就是刚构建出来的那一个。
+> 顺手把上一版的 `index-*.js` 删掉（不然旧包一直躺在服务器上）。
 
 **密码由需求方本人设**（谁也不代输）：服务器上放了 `/usr/local/sbin/rich4-set-password` ——
 静默读两遍、校验字符集（systemd 的 `EnvironmentFile` 对引号 / `$` / `#` 敏感，所以只放行字母数字与 `._-@+=!?`）、
@@ -92,7 +111,12 @@ sudo -u rich4 -H git -C /srv/rich4 clone https://github.com/oama1111/rich4-remak
 cd /srv/rich4/rich4-remake
 sudo -u rich4 -H pnpm install --frozen-lockfile
 sudo -u rich4 -H pnpm --filter @rich4/client build
+# ★ 佈告欄（左侧公告 + 更新日誌）：**每次构建之后**都要跑 —— `dist-web/` 是 `rsync --delete`
+#   同步的，手放进去的 board.json 下次部署就没了。要改公告 / 亮点就改
+#   `docs/board/announcement.md` 与 `docs/board/highlights.md`，再重跑这一条。
+sudo -u rich4 -H pnpm board
 ls packages/client/dist-web/index.html   # 期望：文件在
+ls packages/client/dist-web/board.json   # 期望：文件在
 ```
 
 ## 4. 摆素材（原件 + 预压缩 + 清单）
@@ -119,6 +143,41 @@ ls /srv/rich4/deploy/assets/game | head        # 期望：7 个 .mkf + 各 .br/.
 
 > ★ 脚本**只压不复制**，也**只压白名单里的 7 个 `.mkf`**（`rich4.exe` / 存档 / `.avi`
 > 一个都不会进部署目录）。它还会拒绝 `--out` 落在素材目录里。
+
+### 4b. 高清素材（W-80 §8）
+
+> ★ **2026-09-25 改判：高清开关默认关**（需求方：高清是 AI 重繪、部分角色動畫一致性尚有問題，手机也发烫）。
+> 门厅勾一次「高清畫面」即开（`localStorage['rich4.hd'] = '1'`），`?hd=1` 强制开、`?hd=0` 强制关。
+> 素材照旧要传（勾了才会拉），下面这段不变。
+
+高清舞台本身（文字 / 界面清晰）**不需要任何素材**，发前端就有。另外两样已验证的超分素材
+（钱夫人整套重绘 136 帧 PNG + 全屏过场 1,086 帧 WebP，网页 2× 档，共 1,225 个文件 17.7 MB）走单独的目录，**与 `/assets/game/` 同级**：
+
+```
+/srv/rich4/deploy/assets/
+├── game/                      原版素材（第 4 步）
+├── hd-2x/                     Data/19{1,2,3}-*.png、jump/{47..70}-*.webp、Panel/{20,78}-*.webp
+├── hd-2x-manifest.json        瘦清单（只列上面这些）
+├── hd-2x-manifest.json.br
+└── hd-2x-manifest.json.gz
+```
+
+在**自己电脑上**出暂存（仓库外；源是 W-80 的超分产物根，含 `hd-2x/` 与 `hd-2x-manifest.json`；要 `cwebp`：`brew install webp`），再推上去：
+
+```bash
+node --experimental-strip-types tools/hd-deploy.ts --src <超分产物根> --out <仓库外暂存>
+rsync -a --delete <暂存>/assets/hd-2x/ root@<主机>:/srv/rich4/deploy/assets/hd-2x/
+rsync -a <暂存>/assets/hd-2x-manifest.json* root@<主机>:/srv/rich4/deploy/assets/
+ssh root@<主机> 'chown -R rich4:rich4 /srv/rich4/deploy/assets'
+```
+
+- 服务器缺省就从 `--assets` 的上一级找 `hd-2x/`（`cli.ts --hd` 可改），**同一道访问密码**、白名单
+  （5 个档案名 + 数字 + `.png`）、缺图 404 ⇒ 客户端**按图**退回原图；目录整个不在 ⇒ 全走原图，不报错。
+- 缓存：图的 URL 带 `?v=<内容哈希>` ⇒ 一年不可变；清单 `no-cache`（brotli 后约 17 KB）。
+  想让清单也长期缓存：重跑 `pnpm precompress … --hd <暂存>/assets`，`assets-manifest.json` 会登记它（可选）。
+- 以后验证了新的一类（界面 / 建筑 / 其他角色…），把它加进 `tools/hd-deploy.ts` 的 `VERIFIED` 再出一次暂存。
+- 玩家端：门厅「高清畫面」勾选框 / `?hd=0` 关（每台设备各记各的）；手机平板倍率封顶 2、不拉超分过场。
+  一局额外流量实测：桌面约 6 MB、手机约 1.5 MB（W-80 §8.3）。
 
 ## 5. 两个密钥
 
@@ -155,6 +214,7 @@ sudo journalctl -u rich4 -n 30 --no-pager
 rich4 聯機伺服器：http://127.0.0.1:8787/  ws ws://127.0.0.1:8787/ws  …  回合 60s
 回合計時：60s 不動就由電腦代打（連續兩回合 ⇒ 託管）
 素材目錄：/srv/rich4/deploy/assets/game
+聯機存檔：/srv/rich4/saves（現有 N 份，最多 30 份）
 訪問密碼：開著（RICH4_PASSWORD / RICH4_COOKIE_SECRET 從環境變數來）
 ```
 
@@ -198,8 +258,13 @@ sudo ufw status
 
 1. 让朋友打开 `https://rich4.example.com/`；
 2. 看到登录页 → 输 `RICH4_PASSWORD`；
-3. 进**门厅** → 输名字 → **建立房間** → 把大厅底部那颗「複製邀請連結」的链接发给他们；
-4. 朋友点开链接 → 房间里自动填好房间码 → **加入房間** → 房主按 **開始**。
+3. 进**门厅** → 输暱稱 → **在線聯機** → 房间列表里按 **建立房間**（进大厅，自己是房主）；
+4. 朋友同样 **在線聯機** → 列表里就有「<你的暱稱> 的房間」（人數 / 狀態 / 地圖）→ **加入** → 房主按 **開始**。
+   不用再传房间码或邀请链接；旧的 `/?room=<码>` 链接仍然有效（打开直接进那一间）。
+   刷新 / 掉线后回列表，自己那一桌会显示 **重新連線**（凭本机的 `clientId` 认回原座）。
+
+> 房间列表走的是已有的 WebSocket（`/ws`，同一道访问密码），**服务器没有新参数、没有新端口**。
+> 协议版本升到 **6**（房间列表 5、联机存档 + 开局日期 6）：部署后还开着旧页面的人会看到「协议版本不符」，刷新一下即可。
 
 首次打开要下 ≈130 MB（服务器发的是预压缩后的 `.br`），**之后会缓存在他们本机**，
 第二次打开 0 流量。
@@ -220,6 +285,30 @@ bash tools/pull-feedback.sh            # rsync 到 ./feedback/（已 .gitignore�
 bash tools/pull-feedback.sh --replay   # 再逐份重放验指纹（tools/replay-report.ts）
 node --experimental-transform-types tools/replay-report.ts feedback/<某一份>.json --shot out.png   # 单份细看
 ```
+
+## 联机存档（`--saves`，协议 v6 起）
+
+服务器把联机局存在 `--saves` 指的目录（生产：`/srv/rich4/saves/`，systemd 模板里已经带上）：
+
+- **自动存档**：每一桌**每过一个游戏日**覆盖一次它自己的那一份（`auto-<房间码>.json`）；
+- **手动存档**：房主在游戏里按「儲存進度」（工具列 / 热键 S）取个名字存一份（`m-<时刻>-<房间码>.json`）；
+- 最多 30 份，超了**只删最旧的自动存档**；手动存档**从不自动删**——全是手动存档还满了，
+  房主再存会看到「存檔已滿，請先刪除舊存檔」。存档列表里，**存档里坐过的人**（按 `clientId`）
+  那一行有「刪除」（要再按一次「確定刪除」）。
+
+服务器重启 / 部署之后，房间都没了，但存档还在：房间列表 → **建立房間 → 從存檔繼續** → 选一份。
+原来的人凭各自浏览器里的 `clientId` 自动坐回原座（改了暱稱也认得）；换了浏览器的人在大厅点 **這是我**；
+开局时没人坐的真人座位由电脑代打，之后原主人回来（或别人从列表「認領座位」）就接回去。
+
+目录权限（里面有各人的 `clientId`，**不对外**）：
+
+```bash
+sudo install -d -o rich4 -g rich4 -m 0750 /srv/rich4/saves
+# 进程自己也会建（0750），单个文件 0640；systemd 的 ReadWritePaths=/srv/rich4 已经覆盖它
+```
+
+备份就是把这个目录拷走；恢复就是拷回来再重启（开机时整个目录读进内存）。
+坏掉的 / 不认识的文件会被跳过，不影响开机。
 
 ## 怎么更新
 
@@ -260,6 +349,6 @@ sudo systemctl restart rich4
 
 ## 这台机器上**不该**出现的东西
 
-- 仓库之外的第二份素材副本（除了 `/srv/rich4/deploy/`）；
+- 仓库之外的第二份素材副本（除了 `/srv/rich4/deploy/`；`deploy/assets/hd-2x/` 的超分 PNG 同属衍生素材）；
 - 任何 `.mkf` / `.br` / `.gz` 被推到公开的地方；
 - `--no-gate` 出现在 systemd 单元里（那等于把门拆了）。

@@ -228,7 +228,9 @@ remake 只在取款后调 `settleBankReserve`（`reduce.ts:1380`）；`rebalance
 
 #### 19–23. 银行表现层与未决（轻微）
 
-提示文案（`0x464bed`/`0x464bd4`）在 core 无产出、client 也没有；`bank.ts:282` 主动避开
+提示文案（`0x464bed`/`0x464bd4`）在 core 无产出、client 也没有（**2026-09-23 第十三份试玩回报已补**：
+ATM 入口 `0x4379c9` 的拒絕往來框（路过与落点共用，天数 = `(+0x3b&0x7f)+1`）与 ATM 窗 `0x408` 的暫停放款框
+`bank.frozen` 都由 core 交出，见 `bank-landing.test.ts`）；`bank.ts:282` 主动避开
 原版 `total=0` 的 INT_MIN 事故（代码注释声称登记在 Q-BANK-3，实际 KD 里没有——见 §三·勘误 F）；
 ATM 的「输入即夹取」与 remake 的「执行时夹取」金额一致、仅显示不同；月息的 BigInt 实现与
 x87 在极端输入下可能差 1（`monthly.ts:56-58` 自认）；月结只结算存活玩家与规格的玩家列表

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
 import { WHO_PLAYS_COMPUTER, WHO_PLAYS_HUMAN } from '../state/types.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
-import { TOOL_TIME_MACHINE, restoreSnapshot, snapshotOnTurnStart } from './time-machine.ts';
+import { TOOL_TIME_MACHINE, restoreSnapshot, snapshotForTimeMachine as snapshotOnTurnStart } from './time-machine.ts';
 import { UNIMPLEMENTED_TOOLS } from './tool-effects.ts';
 import { emptyTools, giveTool, initialToolStock, toolCount } from './tools.ts';
 
@@ -49,27 +49,46 @@ describe('時光機', () => {
     expect(snapshotOnTurnStart(ai).snapshots[0]).toBeNull();
   });
 
-  it('startTurn 会拍快照', () => {
+  it('★ 审计 2026-09-24：startTurn 不拍；按 GO（`rollDice`）才拍 —— `0x0040dd53 call 0x44808a`', () => {
     const s = reduce(withTool(), { type: 'startTurn' }, ring);
     expect(s.phase).toBe('awaitingRoll');
-    expect(s.snapshots[0]).toBeTypeOf('string');
+    expect(s.snapshots[0]).toBeNull();
+    const rolled = reduce(s, { type: 'rollDice' }, ring);
+    expect(rolled.snapshots[0]).toBeTypeOf('string');
+    // 拍的是**掷骰之前**那一刻
+    expect(restoreSnapshot(rolled)?.phase).toBe('awaitingRoll');
   });
 
-  it('★ 用掉之后回到回合开始的局面，而且道具被扣掉', () => {
+  it('★ 审计 2026-09-24：被挡的真人在回合开头也拍一张（`0x0040c97c`），走回棋盘 / 电脑不拍', () => {
+    const jailed = withTool();
+    const s0 = { ...jailed, players: jailed.players.map((p, i) => (i === 0 ? { ...p, blocking: { ...p.blocking, inPrison: 3 } } : p)) };
+    const s = reduce(s0, { type: 'startTurn' }, ring);
+    expect(s.phase).toBe('turnEnd');
+    expect(s.snapshots[0]).toBeTypeOf('string');
+    // 还原之后人还在自己的回合里、能按 GO（原版还原不动回合游标与走子态）
+    expect(restoreSnapshot(s)?.phase).toBe('awaitingRoll');
+  });
+
+  it('★ 用掉之后退回**上一次起步之前**的局面（上一掷之前），而且道具被扣掉', () => {
     let s = reduce(withTool(), { type: 'startTurn' }, ring);
     const before = s.players[0]!.cash;
-    // 造点既成事实：花掉一笔钱、走到别的格子
+    s = reduce(s, { type: 'rollDice' }, ring);
+    // 造点既成事实：花掉一笔钱、走到别的格子、过了几天 —— 然后又轮到他（按 GO 之前）
     s = {
       ...s,
       players: s.players.map((p, i) => (i === 0 ? { ...p, cash: p.cash - 50_000, nodeId: 3 } : p)),
       day: s.day + 5,
+      phase: 'awaitingRoll',
+      stepsRemaining: 0,
     };
     expect(toolCount(s.tools, 0, TOOL_TIME_MACHINE)).toBe(1);
 
-    const back = reduce(s, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    const back = reduce({ ...s, phase: 'awaitingRoll' }, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(back.players[0]!.cash).toBe(before);
     expect(back.players[0]!.nodeId).toBe(1);
+    expect(back.phase).toBe('awaitingRoll');
     expect(back.day).toBe(withTool().day);
+    expect(back.phase).toBe('awaitingRoll');
     // ★ 道具要扣 —— 否则可以无限后悔
     expect(toolCount(back.tools, 0, TOOL_TIME_MACHINE)).toBe(0);
   });
@@ -87,18 +106,19 @@ describe('時光機', () => {
     const first = reduce(s, { type: 'rollDice' }, ring);
     // 掷过之后 rng 已经推进
     expect(first.rngState).not.toBe(s.rngState);
-    const back = reduce(first, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    const back = reduce({ ...first, phase: 'awaitingRoll' }, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(back.rngState).toBe(first.rngState); // ★ 没有回滚
-    // 快照是在 startTurn **处理之前**拍的，所以退回去是「回合还没开始」
-    expect(back.phase).toBe('turnStart');
-    const second = reduce(reduce(back, { type: 'startTurn' }, ring), { type: 'rollDice' }, ring);
+    // 快照是在起步（掷骰）之前拍的，所以退回去是「还没掷」
+    expect(back.phase).toBe('awaitingRoll');
+    const second = reduce(back, { type: 'rollDice' }, ring);
     expect(second.dice).not.toEqual(first.dice);
   });
 
   it('★ 快照本身不回滚 —— 否则「用掉一个時光機」这件事也会被撤销', () => {
-    let s = reduce(withTool(), { type: 'startTurn' }, ring);
-    s = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, cash: 1 } : p)) };
+    let s = reduce(reduce(withTool(), { type: 'startTurn' }, ring), { type: 'rollDice' }, ring);
+    s = { ...s, phase: 'awaitingRoll', players: s.players.map((p, i) => (i === 0 ? { ...p, cash: 1 } : p)) };
     const back = reduce(s, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
+    expect(back).not.toBe(s);
     // 再用一次：道具已经没了，用不动
     const again = reduce(back, { type: 'useTool', toolId: TOOL_TIME_MACHINE }, ring);
     expect(again).toBe(back);

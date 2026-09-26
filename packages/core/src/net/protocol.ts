@@ -36,7 +36,175 @@ import type { Action } from '../state/actions.ts';
  *   这不是「纯增量、语义没变」（Q-NET-1 那种），必须 +1 把老客户端挡在门外。
  *   任务书 W-74 末尾也明写「与 W-73 分两次加，各自的 PR 各自加」。
  */
-export const PROTOCOL_VERSION = 3;
+/**
+ * ★ 2026-09-23（第十一份試玩回報 #1：大廳設置）→ **4**。
+ *
+ * 為什麼必須 +1：`start` 消息多带了 `options`（總人數/起始資金/載具/地產期限/時間/勝利條件），
+ * 而老客戶端不認識它們 ⇒ 會**靜默吃下一局規則不同的對局**（分紅、勝負條件、初始資金都不同）。
+ * 這與 W-73（門廳）/ W-74（回合计时）两次 +1 同一性质。
+ */
+/**
+ * ★ 2026-09-23（需求方：「改成單人模式 / 在線聯機兩個入口、在線聯機展示房間列表」）→ **5**。
+ *
+ * 為什麼 +1：多了 `listRooms` / `rooms` 一對消息，`join` 多了 `mode`（建房 / 加入要求房間
+ * 「不存在 / 存在」）。老客戶端沒有房間列表、只會拿房間碼硬闖 —— 在新服務器上它會把一個
+ * **已經解散**的房間碼重新建出來、自己當房主，朋友們在列表裡看到的就是一間莫名其妙的空房。
+ * 版本號一變，老頁面（瀏覽器裡沒刷新的那個分頁）進門就拿到一句清楚的「協議版本不符」。
+ */
+/**
+ * ★ 2026-09-23（需求方批准的「聯機存檔」設計）→ **6**。
+ *
+ * 為什麼 +1：`start` / `replay` 可能帶 `snapshot`（從存檔繼續的局，起點是**存下來的局面**
+ * 而不是 `newGame`）—— 老客戶端不認識它，會拿種子 `newGame` 出一局**完全不同**的棋盤，
+ * 第一條校驗和就失步。另有 `listSaves`/`saves`、`claim`/`unclaim`、`save`/`saved`，
+ * `join` 多了 `fromSave` / `claimSeat`，`joined.seat` 可以是 `-1`（在房裡、還沒入座）。
+ */
+/**
+ * ★ 2026-09-24（第十八份試玩回報一批）→ **7**。
+ *
+ * 為什麼 +1：這一批改了**核心規則與局面形狀**，新老客戶端對同一串 action 會算出不同局面：
+ * 商店貨架「買過的留在原位標 sold」（`buyCard`/`buyTool` 帶 `row`）、玩家 2..N **延後落地**
+ * （`landingWhoPlays`，第一回合才抽出生格）、每位玩家回合開始重算可成交量、開局走一次行情、
+ * 拍賣的出價資格與結果提示、放置禁令擴到「格上有人／物」。老頁面（沒刷新的分頁）若照舊連進來，
+ * 第一次落地或第一次購物就失步 —— 版本號一變，它進門就拿到清楚的「協議版本不符」。
+ */
+/**
+ * ★ 2026-09-24（gap-audit #7「联机用卡/道具：旁观端看不到亮牌，或看得晚」）→ **8**。
+ *
+ * 為什麼 +1：多了一對**純演出**消息 `present`（客户端 → 服务器 → 其餘各端）：真人在卡片欄選定一張卡的那一刻
+ * 亮牌（`_rich4_ui_use_card_entry` `0x00441cbc call 0x441f73`，在選目標**之前**）、卡片函數返回 0 的失敗
+ * （`0x00441cd9` 失敗音 3 → `0x00441ce3` 卡片欄重開）、選定道具時先說的那一句（`0x00446bcc` 等）與選格取消
+ * （`0x4466b8` 音效 4）。老客戶端不認識它，照舊只在 `useCard` 到達時亮牌 —— 規則沒變，但同一桌裡新老頁面
+ * 的演出時序不同、而且老頁面不會**發**這條 ⇒ 新頁面上看它用卡又退回「亮得晚」。與 v5 同一個理由：
+ * 版本號一變，沒刷新的舊分頁進門就拿到一句清楚的「協議版本不符」。
+ * ⚠️ `present` **不進** action 日誌、不進 `replay`、不進 `stateFingerprint` —— 它不改局面。
+ */
+/**
+ * ★ 2026-09-24（第二十六份試玩回報「约翰乔的汽车哪里来的」，pt26-car）→ **9**。
+ *
+ * 為什麼 +1：**核心規則**改了 —— 電腦（與託管）進百貨公司不再掛 `pending{shop}` 等 AI 答，而是按原版那一支
+ * （`0x0042ea2b cmp byte [player+0x15], 1 / jne 0x42ed8d`）在 `settle` 裡當場買賣完就走（`places/ai-shop.ts`），
+ * 而且**不抽貨架**（少耗隨機數）。老客戶端對同一條 `settle` 會算出「店還開著」的局面，下一條 `endTurn` 起就失步。
+ */
+/**
+ * ★ 2026-09-25（pt27 回报「忍太郎怎么一下就买了3000股保险公司？」，pt27-stock）→ **10**。
+ *
+ * 為什麼 +1：電腦踩上市企業的認購股數改照原版（`0x0041d267 push esi / call 0x41d839`：上限
+ * `min(1000, 現金÷單價, 餘量)`、再扣 trunc(開局×0.30)×物價 的安全墊），而且 reducer 的 `buyShares`
+ * 現在拒收**超過 `pending.max`** 的股數（先前只比餘量）。老客戶端照舊收 `buyShares 3000` 的局面、
+ * 新的拒收 ⇒ 同一串 action 算出不同局面；版本號一變，沒刷新的舊分頁進門就拿到「協議版本不符」。
+ */
+/**
+ * ★ 2026-09-25（**六区出处审计**：ai-move / ai-econ / cards / econ / events / loop，协调方一次性 +1）→ **11**。
+ *
+ * 為什麼 +1：這次審計把六個區的規則逐條重讀 `rich4.exe` 後按原版改，**幾乎每一項修復都改變對局狀態
+ * 或全局隨機數的消耗次序** —— 新老客戶端對同一串 action 會算出不同局面（`rngState` 進指紋，故一旦
+ * 某一步少擲 / 多擲一次 `rand()`，之後每一步都不同）。老頁面照舊連進來，會在第一次分歧的 action 上失步；
+ * 版本號一變，它進門就拿到清楚的「協議版本不符」。六大類：
+ *
+ * 1. **隨機流次序（最大的一類）**：台詞階梯那 13 處 `rand()` 從「客戶端按狀態哈希擲硬幣、不推進 RNG」
+ *    改成 **core 在 exe 擲的那一刻擲**（`rules/speech-rand.ts` 的 `SPEECH_SITE` / `NEWS_OWNER_SITE`，
+ *    原值記進純表現瞬態 `lastSpeechRolls`）；神明老虎機自動轉 4 輪、新聞開拍接著同一條流、稅類 / 神明 /
+ *    施捨破產的拍賣、首次關押台詞、小偷禮物台詞、惡犬咬惡人後搭檔登場、新聞 4 物件放回（events）；
+ *    電腦買股 / 賣股挪進 reducer 按原版擲全局 `rand()`、買卡候選與選股排名照 Watcom `qsort` 的真實次序
+ *    （ai-econ）；嫁禍卡無人可嫁時照樣擲門檻數、漲價卡 / 拆除卡的清單次序（ai-move）；天使卡打 0 級設施
+ *    的電腦支新增一次 `rand()`（cards）。
+ * 2. **局面形狀多了字段**：`pending{auction}.resumePhase`（拍賣卡在掷骰前打出 ⇒ 落槌後回原相位，不再
+ *    一律 `turnEnd`；econ）、`pending{auction}.keepOwnerOnPass`（魔法屋流拍不清地主，events）、
+ *    `pending.birthdayCard` 的 `receiver` / `magicResume`（魔法屋抽命運三張遇真人壽星續演，events）、
+ *    `SpecialActor.home`（老家 +11，存檔讀寫，events）。
+ * 3. **校驗和口徑變了**：`stateFingerprint` 納入 `toolStock` / `cardAmount`（`5290899`，cards）——
+ *    同一個局面在舊版算出的校驗和與新版不同，這一條本身就必須全端同版。
+ * 4. **新增 action / 消息**：`stockScreen`（真人關股市屏 ⇒ 強制收回特別融資，econ）、`noticeBoard` 的
+ *    `open` / `close`（開窗先撤失效掛牌、關窗後收回特別融資，ai-econ）。
+ * 5. **工具 / 道具的請求語義變了**：傳送機改成原版兩段拾取（先選來源：地塊 / 設施 / 玩家 / 惡人 / 物件，
+ *    再選目標），`useTool` 帶的節點 / 值改成原版的精靈碼；新增道具第 14 項「下車」（`traffic → 0`、
+ *    骰子 → 1）（cards）。同一條 action 新老客戶端會解釋成不同的搬遷。
+ * 6. **純規則修正（單機 / 聯機同一個 reducer）**：過路費記敵意、設施收費與旅館、被嫁禍 / 死神點到的人
+ *    出獄住店、破產按在場**真人**數判終局、破產清別人對他的敵意、分紅、拍賣首拍席位與加價檔位、
+ *    建設公司真人選地窗、樂透投注屏、龜行只走一步、保險 / 研究所倒數挪回 `0x41c84f`、時光機快照時機、
+ *    真人開局資金按角色減半、跨月重擺禮物 / 寶箱、工程車到期、`startTurn` 相位閘、伺服器拒收客戶端
+ *    自帶點數的 `rollDice`。逐條出處見 `docs/audit/provenance-*.md` 六份台賬（每行都附 exe VA 與提交號）。
+ *
+ * ⚠️ 這次 +1 是協調方對**整批審計**一次性升的；六個區的分支各自都沒有動版本號。
+ */
+/**
+ * ★ 2026-09-25（**审计 follow-up 收尾**：把六份台账里剩下的 follow-up 逐条做完，协调方一次性 +1）→ **12**。
+ *
+ * 為什麼 +1：這一輪同樣**改局面與隨機流**（`rngState` 進指紋 ⇒ 一次多擲 / 少擲之後每一步都不同），
+ * 而且**改了校驗和口徑本身**。四類：
+ *
+ * 1. **校驗和口徑（最硬的一條）**：`stateFingerprint` 補上先前漏掉的規則狀態 ——
+ *    玩家的 `xpos/ypos/direction/lastNodeId`、`specialActors` 整張表、`landTenure/landType/landLastToll`、
+ *    上市企業的 `companyFunds/companyProfit/commercialShares/commercialOwners`。
+ *    同一個局面在 v11 與 v12 算出的校驗和不同。補的理由：補鏡像用例時實測到
+ *    「伺服器 `xpos` 1385 vs 鏡像 1248，兩邊指紋都是 `d2243728`」—— 指紋相等當時證明不了位置沒分叉。
+ *    （`viewRotation` **刻意不進**：那是每個客戶端各自的鏡頭。）
+ * 2. **伺服器局面與客戶端對齊**：`Room` 的 topo 補上 `landscapes`（先前漏了，註釋卻自稱與客戶端逐項一致）
+ *    ⇒ 入監 / 入院時伺服器把人留在**格心**、客戶端擺到**景觀**座標，兩端座標不一致；
+ *    與第 1 條合起來會直接報失步，所以兩條必須同時發。
+ * 3. **排隊事項的形狀**：`pendingQueue` 的項從 `AuctionRequest[]` 擴成 `QueuedStep[]`
+ *    （新增 `bankruptcyDraw` / `credit` / `dayRolloverTail`）—— 它本來就經 `canonicalJson` 進指紋
+ *    ⇒ 同一串 action 新老客戶端算出的隊列不同。破產清算的抽籤與開拍改成原版的交錯次序（AUC-43）、
+ *    收款方入賬挪到清算之後（PAY-05）、分紅破產當場清算（STK-57）、身家按 32 位回繞（WLT-02）。
+ * 4. **隨機流次序**：電腦 / 託管的每一次決策 `rand()` 改吃全局序列（出牌起點、個性闸门改懶求值、
+ *    道具環形起點、判定裡的 `%n`、前瞻岔路、骰子數 —— 先前用 `aiRoll` 替身、不推進 `rngState`）；
+ *    惡人把人搶破產改到 `pay_money` 裡**當場**發生（先前整趟走完才收口 ⇒ 後面幾步還看得見已出局的人，
+ *    清算的那幾擲也排在後面幾步之後）；百貨公司營業額記進企業帳；同一格多件物件的反向索引按**位或**取
+ *    （不再是「最大槽號」—— 死神槽壓路障槽 = 31 ⇒ 槽 30 的地雷，原版那一格會炸人住院）。
+ *
+ * ⚠️ 這是協調方對這一輪收尾**一次性**升的；各修復分支都沒有動版本號。
+ */
+/**
+ * ★ 2026-09-25（董事長空袋那一支照原版掷台词随机数）→ **13**。
+ *
+ * 為什麼 +1：踩到百貨公司、而自己正是那家企業的董事長時，原版**無條件**彈「送您%s！」框並
+ * `0x0042ea23 call 0x44f230(玩家, 價)` 擲一次台詞隨機數（`0x0044f280`）—— 道具袋 1..8 全空時
+ * 抽到的 id = 0，名 / 價別名到緊鄰的卡片名表末項（`dump 0x47feda` = 卡 30 烏龜卡、價 70），
+ * 於是原版彈「送您烏龜卡！」、一件不給、但**照樣擲那一次**。本引擎先前在 id === 0 這一支
+ * 框與那一擲都跳過 ⇒ 少擲一次 `rand()`，此後每一步的隨機流都與原版錯開一格。
+ * `rngState` 進指紋 ⇒ 新老客戶端對同一串 action 算出的局面不同，必須擋在門外。
+ * （回報裡「為什麼直接沒讓我進商店」與本條無關，那是另一處已修的表現層問題。）
+ */
+/**
+ * ★ 2026-09-25（**Q-TOOL-1**：爆炸范围与电脑视野改用原版 440×440 id 图的**屏幕方窗**，
+ *   并用屏幕行序收 AI 的道具候选表）→ **14**。
+ *
+ * 為什麼 +1：這一輪**同時改局面與隨機流**。窗口口徑從「地圖（節點）座標方窗」換成原版那一套
+ * ——`0x40a45c(size)` 在一張 440×440 的 **id 圖**上取 `[220−size, 220+size)²`
+ * （`0x40a472 sub ebp,edi` / `0x40a479..0x40a48f` 的 441q / `0x40a492 add edi,edi`；
+ * 邊長 −1 那一檔 `0x40a469 mov edi,0x1b8` = 整幅），圖由 `0x409de7` 按**當前鏡頭**重建、
+ * 每件實例只寫**錨點那一粒**（`0x409ede or word [map+(440y+x)*2],ax`，y 已 `−0x28`）——
+ * 等距投影下「畫面」在世界空間裡是**斜的**，與座標方窗不等價。四類：
+ *
+ * 1. **爆炸範圍**（窗心 = `0x41d476` 挪鏡頭的那一點）：飛彈 `0x00447065`（半徑 `0x64`）、
+ *    核子飛彈 `0x00447b77`（半徑 −1）、新聞 4 外星人 `0x0044921d`、新聞 20 颱風 `0x0044ac33`
+ *    —— 挨炸的地塊 / 設施 / 棋子換了一批（`state/reduce.ts` 的 `fireMissile` /
+ *    `alienBlastActorsAndObjects`、`events/news-effects.ts` 的颱風 / 外星人）。
+ *    ★ 視角口徑：**恆用視角 0**（需求方 2026-09-25「聯機時的爆炸範圍統一按視角0取值」）——
+ *    原版取窗用當時的旋轉，但旋轉是每個客戶端各自的鏡頭、不進 `stateFingerprint`，
+ *    跟它走會讓同一串 action 在兩個轉過視角的客戶端算出不同局面。
+ * 2. **id 圖的成員篩子**：地塊 / 設施「沒房子又沒主」根本不進圖（`0x4091df..0x409240` /
+ *    `0x4093f3..0x409488` ⇒ `0x409e3d je` 跳過貼圖指針）、企業要 `spriteIndex != 0`
+ *    （`0x409559 cmp word [ebp+0x20],0`）⇒ 這些格子先前會「照樣放人」，現在掃不到。
+ * 3. **電腦的取景 / 中止判據**：`0x40a0b1(x,y,r)` 是同一個窗的另一份實現 —— AI 的飛彈自檢
+ *    （中心 = 目標玩家的世界座標）與核彈候選窗（`0x40a27f..0x40a2c4` 的建圖回收，真實邊界
+ *    是行 ±8 / 列 ±6 格，不是先前近似的「格距 ±14」）都用它；候選集一變，`rand()%n`
+ *    的擲法與後續每一步都不同。
+ * 4. **AI 道具候選表的收集次序**（同一批已併入的 `ds/oi-visible`）：`0x409ef9` 填 440×440 格表
+ *    （`0x409fde imul eax,[0x499088],0xd24` 取視角檔位 / `0x40a046 mov word [buf+…],di`）、
+ *    `0x40a050` 行優先掃出（`0x40a073` 內層列 / `0x40a064` 外層行）；路障階段二 `0x4212b5` /
+ *    地雷 `0x4213e8` / 定時炸彈 `0x421597` / 傳送機 `0x421cc1` 四個消費點並列取**先到者**
+ *    （`cmp best,this / jge 跳過`）。先前按世界 (y,x) 排 ⇒ AI 選到另一格。
+ *
+ * 四條都改 AI 的取捨 / 爆炸的落點 ⇒ 同一串 action 在 v13 與 v14 上算出的局面與隨機流不同，
+ * 必須擋在門外。逐條出處：`docs/known-deviations.md` 的 Q-TOOL-1、D-005，
+ * `docs/audit/provenance-ai-move.md` 的 V-1 / V-1a。
+ * ⚠️ 這是協調方對這一件（Q-TOOL-1 與可見次序合併）**一次性**升的；各分支都沒有動版本號。
+ */
+export const PROTOCOL_VERSION = 14;
+// ★ v6 同一次 +1 裡還有：`start` / `replay` 帶 `startDate`（服務器的今天）—— 聯機開局日期與單機同一個規則。
+//   老客戶端不認識它，會照 core 缺省日期（2010-01-01）開局 ⇒ 日期不同，第一次過日子就失步。
 
 // ============================================================
 //  客户端 → 服务器
@@ -62,7 +230,64 @@ export type ClientMessage =
       clientId: string;
       /** 重连时：本地已施加到第几号 action（含），服务器从下一号补发；不带 = 全量补发 */
       since?: number;
+      /**
+       * ★ 房間列表（v5）：這次 `join` 的意圖。
+       *
+       * · `'create'` —— 「建立房間」：房間碼**必須還沒人用**（撞上了回 error，客戶端換一個碼再建）；
+       * · `'join'`   —— 從列表點「加入 / 重新連線」：房間**必須還在**（列表與點擊之間它可能剛被回收，
+       *   這時若照舊「沒有就建一間」，點的人會莫名其妙變成一間空房的房主）；
+       * · 不帶 —— 舊語義（有就進、沒有就建）：`?room=` 舊連結與 `tools/net-e2e.js` 走這條。
+       */
+      mode?: JoinMode;
+      /**
+       * ★ 聯機存檔（v6）：與 `mode: 'create'` 一起用 —— 這間新房**從這份存檔繼續**。
+       *   座位、地圖、開局設定都照存檔（鎖定），起點是存檔裡的局面。
+       */
+      fromSave?: string;
+      /**
+       * ★ 聯機存檔（v6）：與 `mode: 'join'` 一起用 —— 已經開局的存檔房裡，**認領**一個
+       *   沒人坐、由電腦代打的存檔座位（房間列表上的「認領座位」）。
+       */
+      claimSeat?: number;
     }
+  /**
+   * ★ 房間列表（v5）：**訂閱**房間列表。
+   *
+   * 服務器立刻回一條 `rooms`，之後列表每變一次（有人進出、開局、終局、回收）就再推一條，
+   * 直到這條連接 `join` 了某個房間或斷開。
+   *
+   * `clientId` 只用來算每一行的 `rejoin`（「你在這桌有一個斷線中的座位」）——
+   * 服務器**不回**任何人的 `clientId`（見 `RoomSummary`）。
+   */
+  | { t: 'listRooms'; version: number; clientId: string }
+  /**
+   * ★ 聯機存檔（v6）：要一份服務器上的存檔列表（一次性，不訂閱）。
+   * `clientId` 只用來標出「哪個座位是你」（`SaveSummary.seats[].mine`）—— 同樣**不回**任何人的 `clientId`。
+   */
+  | { t: 'listSaves'; version: number; clientId: string }
+  /**
+   * ★ 聯機存檔（v6）：存檔房開局前，「這是我」—— 認領一個還沒人坐的存檔真人座位。
+   * 只有**還沒入座**的連接能發（`joined.seat === -1`）。
+   */
+  | { t: 'claim'; seat: number }
+  /**
+   * ★ 聯機存檔（v6）：存檔房開局前，把一個座位**放回**「沒人坐」。
+   * 房主可以放任何人的（認錯人了），其他人只能放自己的。被放掉的連接退回「還沒入座」。
+   */
+  | { t: 'unclaim'; seat: number }
+  /** ★ 聯機存檔（v6）：房主手動存檔（開局後任何時候）。成功回 `saved`，失敗回 `error` */
+  | { t: 'save'; name: string }
+  /**
+   * ★ 聯機存檔（v6）：刪一份存檔 —— 只有**存檔裡坐過**的人（按 `clientId`）能刪。
+   * 服務器回一份新的 `saves`（刪不了另外先回 `error`）。
+   */
+  | { t: 'deleteSave'; version: number; clientId: string; id: string }
+  /**
+   * ★ 房主交接（v6）：大廳裡主動「離開」。開局前 ⇒ 當場讓出座位（一般房間後面的人往前挪、
+   * 各收到新的 `joined`；存檔房那一座放回「沒人坐」）；走的是房主 ⇒ 房主交給下一位在線真人，
+   * 一個都沒有就關房。開局後等同斷線（照舊走掉線代打）。
+   */
+  | { t: 'leave' }
   /** 房主（0 号座）开局：空座由电脑补位，服务器广播 start */
   | { t: 'start' }
   /**
@@ -111,6 +336,17 @@ export type ClientMessage =
    */
   | { t: 'setMap'; globalMapId: number }
   /**
+   * ★★ 大厅设置（第十一份試玩回報 #1）：开局选项 —— 房间人数 + 单机那五项。
+   *
+   * 需求方 2026-09-23：「房间人数是指总人数，比如设置总人数4，然后只有2个真人玩家，
+   * 点击开局后就自动补2个NPC玩家凑齐4个人数开局」⇒ `seatCount` 是**总人数**（2..4），
+   * 不足的座位开局时补电脑 —— 与单机开局设定屏的语义一致。
+   *
+   * ⚠️ 与 `setCharacter`/`setMap` 同一套权限：只有房主（0 号座）、且**未开局**才允许；
+   *   `Partial` 只带要改的那几项（服务器逐项校验，任何一项不合法就整条拒）。
+   */
+  | { t: 'setOptions'; options: Partial<LobbyOptions> }
+  /**
    * ★ W-74：**本机座位已经演完动画、停在等输入上了**。
    *
    * 为什么需要这一条：各客户端要把掷骰、走子、影片那一串演完，玩家才点得了 ——
@@ -135,7 +371,55 @@ export type ClientMessage =
    * 服务器收到 ⇒ `strikes` 清零、镜像里改回 `HUMAN`、广播。
    * 回合中途收回也允许（与「掉线重连归还」走同一段代码）。
    */
-  | { t: 'resume' };
+  | { t: 'resume' }
+  /**
+   * ★ v8（gap-audit #7）：**纯演出**提示 —— 本机真人此刻在自己的 UI 里做了一件原版全桌都看得见的事
+   *   （亮牌 / 用卡失败 / 道具台词 / 选格取消），请服务器转给其余各端（见 `PresentCue`）。
+   *
+   * ⚠️ 服务器**必须**校验：只收**轮到的那一座**（`actingSeat`，且不是服务器在代打）、手里真有那张卡 / 那件道具；
+   *   限速（`PRESENT_RATE`）；**不进** action 日志 / 重放 / 指纹 —— 它不改局面。
+   *   座位号由服务器从连接上认（消息里没有 `seat`）。
+   */
+  | { t: 'present'; cue: PresentCue };
+
+/**
+ * ★ v8（gap-audit #7）：一条纯演出提示的内容。
+ *
+ * | kind | 行动方那一刻 | 原版 | 旁观端演什么 |
+ * |---|---|---|---|
+ * | `cardReveal` | 卡片欄选定一张卡 | `0x00441cbc call 0x441f73`（亮牌，在卡片函数 / 选目标之前）| 同一扇亮牌（卡面 + 「使用X卡」+ 音效）；随后那条 `useCard` 不再亮第二遍 |
+ * | `cardFailed` | 卡片函数返回 0（目标取消 / 用不成）| `0x00441cd9` 失败音 3 → `0x00441ce3` 卡片欄重开 | 失败音 3（卡片欄是行动方自己的 UI）；忘掉「已亮过」—— 再用一张会再亮一次 |
+ * | `toolLine` | 选定要选目标的道具 | 道具函数第一个 `player_say`（路障 `0x00446bcc` 等，在选格 `0x446ae8` 之前）| 同一句道具台词；随后那条 `useTool` 不再说第二遍 |
+ * | `toolCancel` | 选格 / 骰面盘右键取消 | `0x4466b8` / `loc_00446a68` 音效 4 | 音效 4 |
+ */
+export type PresentCue =
+  | { kind: 'cardReveal'; cardId: number }
+  | { kind: 'cardFailed'; cardId: number }
+  | { kind: 'toolLine'; toolId: number }
+  | { kind: 'toolCancel'; toolId: number };
+
+/**
+ * ★ v8：`present` 的限速 —— 每座每 `windowMs` 最多 `max` 条（超出的静默丢弃）。
+ *   原版一次用卡最多「亮牌 → 失败」两件事，人手点卡片欄再快也到不了这个数；只防刷屏。
+ */
+export const PRESENT_RATE = { max: 8, windowMs: 4000 } as const;
+
+/** 网络来的 `present.cue` 形状对不对（卡号 / 道具号只查是正整数且不离谱，**持有与否**由服务器对镜像查）*/
+export function isPresentCue(v: unknown): v is PresentCue {
+  if (typeof v !== 'object' || v === null) return false;
+  const c = v as Record<string, unknown>;
+  const id = (x: unknown): boolean => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 255;
+  switch (c.kind) {
+    case 'cardReveal':
+    case 'cardFailed':
+      return id(c.cardId);
+    case 'toolLine':
+    case 'toolCancel':
+      return id(c.toolId);
+    default:
+      return false;
+  }
+}
 
 // ============================================================
 //  服务器 → 客户端
@@ -146,7 +430,10 @@ export type ServerMessage =
   | {
       t: 'joined';
       version: number;
-      /** 本客户端控制的玩家下标 */
+      /**
+       * 本客户端控制的玩家下标。
+       * ★ 聯機存檔（v6）：`-1` = 在存檔房的大廳裡、**還沒入座**（等著點「這是我」）。
+       */
       seat: number;
       room: RoomInfo;
     }
@@ -158,7 +445,37 @@ export type ServerMessage =
    * ★ `seed` 由**服务器**下发——这是联机确定性的关键：
    *   各客户端不得自行取随机数种子。
    */
-  | { t: 'start'; seed: number; globalMapId: number; seats: SeatInfo[] }
+  | {
+      t: 'start';
+      seed: number;
+      globalMapId: number;
+      seats: SeatInfo[];
+      options: LobbyOptions;
+      /**
+       * ★ v6（單機 / 聯機一致）：開局日期 = **服務器的今天**（與單機 `defaultStartDate(new Date())`
+       *   同一個函數、同一段鉗位）。由服務器定、隨 `start` 下發 —— 各客戶端各看各的時鐘，
+       *   跨午夜 / 跨時區就會開出不同日期的兩局。從存檔繼續的局不帶（快照裡有自己的日期）。
+       */
+      startDate?: { year: number; month: number; day: number };
+      /**
+       * ★ 聯機存檔（v6）：這一局的**起點局面**（`serializeGame` 的文本）。
+       *   有它 ⇒ 客戶端 `deserializeGame(snapshot)`，**不** `newGame`；之後的 action 從 0 號接著施加。
+       *   沒有 ⇒ 照舊用 `seed` + `options` `newGame`。
+       */
+      snapshot?: string;
+      /**
+       * ★★ 第十二份試玩回報（「斷線重連後莫名其妙又進入魔法屋」「所有文本提示又重新觸發了一輪」）：
+       *   **进房那一刻日志已经排到第几号**（含；日志为空则 -1）。只在「局已开、有人进房/重连」
+       *   那条补发里带；开局广播不带（那时日志是空的）。
+       *
+       *   紧跟着的补发 action 里，`seq <= through` 的都是**这个人进房之前就已经发生的事**
+       *   —— 客户端据此把它们**静默追上**（只 reduce、不起演出），只有之后的实时广播才照常演。
+       *   先前客户端分不出「补发」与「实时」，刷新页面后把整局的訊息框 / 魔法屋 / 台词重演一遍。
+       *
+       *   可选字段：旧服务器不带 ⇒ 客户端退回旧行为（逐条照常施加）。
+       */
+      through?: number;
+    }
   /**
    * 定序后的 action。
    *
@@ -186,6 +503,15 @@ export type ServerMessage =
       seed: number;
       globalMapId: number;
       seats: SeatInfo[];
+      /**
+       * ★ 第十一份試玩回報 #1：**开局选项** —— 客户端 `onResync` 用它 `newGame`，
+       *   少了它重建出来的局面与服务器镜像就不是同一局（初始资金/胜负条件都不同）。
+       */
+      options: LobbyOptions;
+      /** ★ v6：開局日期；見 `start.startDate` */
+      startDate?: { year: number; month: number; day: number };
+      /** ★ 聯機存檔（v6）：起點局面；見 `start.snapshot` */
+      snapshot?: string;
       through: number;
       actions: { seq: number; action: Action }[];
     }
@@ -198,7 +524,110 @@ export type ServerMessage =
    * 发三回：**开始数**、被 `alive` **延长**、以及**作废**（`remainingMs: -1`）。
    */
   | { t: 'clock'; seat: number; remainingMs: number; hardRemainingMs: number }
+  /**
+   * ★ 房間列表（v5）：對 `listRooms` 的答覆，以及之後每一次變化的推送（**整份**替換，不發增量）。
+   *
+   * 只含**可以出現在列表上**的房間（終局的、沒人在的不列，見 `hub.ts` 的 `#summaries`）。
+   */
+  | { t: 'rooms'; rooms: RoomSummary[] }
+  /** ★ 聯機存檔（v6）：對 `listSaves` 的答覆 */
+  | { t: 'saves'; saves: SaveSummary[] }
+  /** ★ 聯機存檔（v6）：手動存檔成功（廣播給全桌：大家都知道存了一份） */
+  | { t: 'saved'; name: string }
+  /**
+   * ★ v8（gap-audit #7）：别的座位转来的纯演出提示（**不发回**发起者本人）。
+   *
+   * `after` = 服务器转发那一刻日志排到第几号（含；空 = -1）—— 行动方做这件事时已经演完了
+   * 这之前的全部 action，旁观端据此把它排进收件箱里**同一个位置**（第 `after` 号之后、下一号之前）。
+   */
+  | { t: 'present'; seat: number; after: number; cue: PresentCue }
   | { t: 'error'; message: string };
+
+/** `join.mode`（v5）—— 見 `ClientMessage` 裡 `join` 的注釋 */
+export type JoinMode = 'create' | 'join';
+
+/** 是不是合法的 `join.mode`（不帶 = 舊語義，另算） */
+export function isJoinMode(v: unknown): v is JoinMode {
+  return v === 'create' || v === 'join';
+}
+
+/**
+ * 房間列表的一行（v5）。
+ *
+ * ⚠️ **沒有 `clientId`、沒有座位明細**：列表是發給**還沒進房**的人看的，
+ *   別人的身份令牌一個字都不能出去（拿到它就能在斷線時冒名頂替那個座位）。
+ */
+export interface RoomSummary {
+  /** 房間碼（內部 id；介面上只小字顯示，給除錯用） */
+  id: string;
+  /** 房主（0 號座）的暱稱 */
+  host: string;
+  /** 已經入座的**真人**數 */
+  humans: number;
+  /** 總人數（開局時不足的座位補電腦）*/
+  seatCount: number;
+  /** 已開局 */
+  started: boolean;
+  globalMapId: number;
+  /** 房間建立了多久（毫秒，服務器發出這一條的那一刻算的；客戶端自己往上加）*/
+  ageMs: number;
+  /** 發 `listRooms` 的那個 `clientId` 在這桌有一個**斷線中**的座位 ⇒ 點了就是「重新連線」 */
+  rejoin: boolean;
+  /** ★ 聯機存檔（v6）：從存檔繼續的房間（顯示用）*/
+  fromSave?: boolean;
+  /**
+   * ★ 聯機存檔（v6）：**已開局**的存檔房裡、由電腦代打的空座 —— 可以從列表「認領座位」。
+   * （開局前的存檔房直接「加入」，進大廳再點「這是我」。）
+   */
+  vacant?: { seat: number; name: string; character: number }[];
+}
+
+/**
+ * 服務器上的一份聯機存檔（v6）—— 列表那一行。
+ *
+ * ⚠️ 同 `RoomSummary`：**沒有 `clientId`**，只給看的人一個 `mine`。
+ */
+export interface SaveSummary {
+  id: string;
+  /** 手動存檔的名字；自動存檔是「<房主> 的房間」 */
+  name: string;
+  kind: 'auto' | 'manual';
+  /** 存了多久了（毫秒，服務器發出那一刻算的）*/
+  ageMs: number;
+  globalMapId: number;
+  /** 局面裡的日期與回合 */
+  year: number;
+  month: number;
+  day: number;
+  turnCount: number;
+  seats: { seat: number; name: string; character: number; kind: 'human' | 'computer'; mine: boolean; alive: boolean }[];
+}
+
+/**
+ * 列表上這一行的按鈕該是什麼（v5）—— 服務器與客戶端**同一個判據**。
+ *
+ * · `rejoin`  —— 你在這桌有斷線中的座位：永遠可點（開局了、滿了都一樣，`clientId` 認回原座）；
+ * · `playing` —— 已開局、你不在裡面：不可點；
+ * · `full`    —— 還沒開局但人滿了：不可點；
+ * · `join`    —— 可以加入。
+ *
+ * ★ 順序是有意的：`rejoin` 先判 —— 滿了 / 開局了的那一桌，對「原來坐在裡面的人」仍然是能回去的。
+ */
+export type RoomJoinability = 'join' | 'rejoin' | 'claim' | 'full' | 'playing';
+
+/**
+ * ★ 聯機存檔（v6）多一種：`claim` —— 已開局的存檔房裡還有電腦代打的空座，可以「認領座位」。
+ *   順序：`rejoin` > `claim` > `playing` > `full` > `join`。
+ */
+export function roomJoinability(
+  r: Pick<RoomSummary, 'rejoin' | 'started' | 'humans' | 'seatCount'> & { vacant?: readonly unknown[] },
+): RoomJoinability {
+  if (r.rejoin) return 'rejoin';
+  if (r.started && (r.vacant?.length ?? 0) > 0) return 'claim';
+  if (r.started) return 'playing';
+  if (r.humans >= r.seatCount) return 'full';
+  return 'join';
+}
 
 export interface SeatInfo {
   seat: number;
@@ -217,6 +646,11 @@ export interface SeatInfo {
    * 缺省（`undefined`）＝ 玩家自己拿着。它随 `room` 消息广播给所有人。
    */
   autopilot?: 'offline' | 'idle';
+  /**
+   * ★ 聯機存檔（v6）：存檔房裡**沒人坐**的真人座位。
+   * 開局前 = 可以點「這是我」；開局後 = 由電腦代打，原來的人（或從列表「認領座位」的人）可以接回去。
+   */
+  vacant?: boolean;
 }
 
 export interface RoomInfo {
@@ -232,6 +666,100 @@ export interface RoomInfo {
    *   缺省按 `0` 读（`roomMapId`）。
    */
   globalMapId?: number;
+  /**
+   * 房间开局选项（第十一份試玩回報 #1）。与 `globalMapId` 同样是**可选**的
+   * （`RoomInfo` 是通用快照形状，旧测试/监控不必被迫填）——缺省按 `LOBBY_DEFAULT_OPTIONS` 读。
+   */
+  options?: LobbyOptions;
+  /**
+   * ★ 聯機存檔（v6）：這間房是**從存檔繼續**的 —— 地圖 / 角色 / 開局設定都鎖定成存檔的。
+   */
+  fromSave?: { name: string };
+  /**
+   * ★ 聯機存檔（v6）：房主坐在幾號座（`-1` = 房主還沒入座）。
+   * 缺省按 0 讀（一般房間的房主就是 0 號座）。存檔房的房主是**建房的那個人**，他可能坐在任何一座。
+   */
+  hostSeat?: number;
+}
+
+/** 房主坐在幾號座；舊快照沒帶 ⇒ 0 */
+export function roomHostSeat(room: RoomInfo | null | undefined): number {
+  return room?.hostSeat ?? 0;
+}
+
+/**
+ * 大厅的**开局选项** —— 房间人数 + 单机开局设定屏那五项（角色/地图已另有通道）。
+ *
+ * 语义逐个对齐 `client/setup.ts` 的 `SetupState`（也就是原版 `0x46cb88..0x46cc00` 那几张表）：
+ * | 字段 | 范围 | 来源表 |
+ * |---|---|---|
+ * | `seatCount` | 2..4 | `PLAYER_COUNT_LABELS`（原版 `0x46cb88`，值 = 人数 − 2）|
+ * | `fundIndex` | 0..5 | `GAME_INITIAL_FUNDS`（`0x46cb94`，300000/…/10000）|
+ * | `vehicle` | 0..2 | `VEHICLE_LABELS`（`0x46cbac`，步行/機車/汽車）|
+ * | `landTenure` | 0..5 | `TENURE_LABELS`（`0x46cbb8`/`0x46cbd0`，無限期/二年/…/一個月）|
+ * | `timeIndex` | 0..5 | `GAME_TIME_DAYS`（`0x46cbe8`）|
+ * | `victoryIndex` | 0..5 | `VICTORY_FACTORS`（`0x46cc00`，0 = 無限）|
+ *
+ * ★ 放在 core 是**有意**的：这是**服务器校验**的判据，两端必须同一份数字
+ *   （与 `LOBBY_CHARACTER_COUNT` / `LOBBY_MAP_COUNT` 同一个理由）。
+ */
+export interface LobbyOptions {
+  /** **总**人数 2..4（不足的座位开局时补电脑）*/
+  seatCount: number;
+  /** 初始资金档 0..5（下标进 `GAME_INITIAL_FUNDS`）*/
+  fundIndex: number;
+  /** 起始载具 0..2 */
+  vehicle: number;
+  /** 地产有效期档 0..5 */
+  landTenure: number;
+  /** 游戏时间档 0..5 */
+  timeIndex: number;
+  /** 胜利条件档 0..5 */
+  victoryIndex: number;
+}
+
+/** 大厅开局选项的缺省值 —— 与单机开局设定屏的初值一致（四人 / 30 万 / 步行 / 無限期 / 不限時 / 無限）*/
+export const LOBBY_DEFAULT_OPTIONS: LobbyOptions = {
+  seatCount: 4,
+  fundIndex: 0,
+  vehicle: 0,
+  landTenure: 0,
+  timeIndex: 0,
+  victoryIndex: 0,
+};
+
+/** 总人数的合法范围 @source 原版开局设定屏「遊戲人數」只有 二人/三人/四人 */
+export const LOBBY_MIN_SEATS = 2;
+export const LOBBY_MAX_SEATS = 4;
+/** 六档表（资金/地产/时间/胜利）的项数 */
+export const LOBBY_OPTION_STEPS = 6;
+/** 起始载具的项数（步行/機車/汽車）*/
+export const LOBBY_VEHICLE_STEPS = 3;
+
+const isIndex = (v: unknown, steps: number): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < steps;
+
+/** 这一项是不是合法的总人数 */
+export function isLobbySeatCount(v: unknown): v is number {
+  return isIndex(v, LOBBY_MAX_SEATS + 1) && v >= LOBBY_MIN_SEATS;
+}
+
+/** 逐项校验一份（可能是部分的）大厅选项；返回 null = 全部合法 */
+export function lobbyOptionsError(o: Partial<LobbyOptions>): string | null {
+  if (o.seatCount !== undefined && !isLobbySeatCount(o.seatCount)) {
+    return `房間人數要是 ${LOBBY_MIN_SEATS}..${LOBBY_MAX_SEATS} 的整數`;
+  }
+  if (o.fundIndex !== undefined && !isIndex(o.fundIndex, LOBBY_OPTION_STEPS)) return '總資金檔位不合法';
+  if (o.vehicle !== undefined && !isIndex(o.vehicle, LOBBY_VEHICLE_STEPS)) return '行進方式不合法';
+  if (o.landTenure !== undefined && !isIndex(o.landTenure, LOBBY_OPTION_STEPS)) return '土地權限檔位不合法';
+  if (o.timeIndex !== undefined && !isIndex(o.timeIndex, LOBBY_OPTION_STEPS)) return '遊戲時間檔位不合法';
+  if (o.victoryIndex !== undefined && !isIndex(o.victoryIndex, LOBBY_OPTION_STEPS)) return '勝利條件檔位不合法';
+  return null;
+}
+
+/** 把一份（可能是部分的）选项补全到缺省值 */
+export function withLobbyDefaults(o: Partial<LobbyOptions> | undefined): LobbyOptions {
+  return { ...LOBBY_DEFAULT_OPTIONS, ...(o ?? {}) };
 }
 
 /**
@@ -282,6 +810,16 @@ export function characterTaken(
 /** 房间快照里的地图号；服务器没给就按 0 读（旧快照兼容） */
 export function roomMapId(room: RoomInfo | null | undefined): number {
   return room?.globalMapId ?? 0;
+}
+
+/**
+ * 房间快照里的开局选项；服务器没给就补缺省（旧快照兼容）。
+ *
+ * ⚠️ **一定能补全**，不返回 `undefined`：大厅那一栏要照着当前值画，
+ *   拿到半份（或没有）就得自己兜底 —— 那种兜底写两遍迟早漂。
+ */
+export function roomOptions(room: RoomInfo | null | undefined): LobbyOptions {
+  return withLobbyDefaults(room?.options);
 }
 
 // ============================================================
@@ -339,6 +877,18 @@ export function sanitizeName(raw: unknown): string | null {
   return stripped;
 }
 
+/** ★ 聯機存檔（v6）：存檔名最多幾個碼點 */
+export const MAX_SAVE_NAME_CODE_POINTS = 24;
+
+/** 存檔名的清洗 —— 與 `sanitizeName` 同一套（去控制字元、去首尾空白），只是上限 24 */
+export function sanitizeSaveName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const stripped = raw.replace(/\p{Cc}/gu, '').trim();
+  const points = [...stripped];
+  if (points.length === 0 || points.length > MAX_SAVE_NAME_CODE_POINTS) return null;
+  return stripped;
+}
+
 // ============================================================
 //  状态校验和
 // ============================================================
@@ -369,6 +919,19 @@ export function stateFingerprint(
     loan: number;
     nodeId: number;
     whoPlays: number;
+    /**
+     * ★ 2026-09-25（六区审计收口）：**坐标 / 朝向 / 来路**也进指纹。
+     *
+     * 先前只覆盖 `nodeId` —— 而傳送機（`0x004477c3` 自己那一段、`0x40fc00` 跟班同格）、
+     * 走子（`xpos/ypos` 逐帧推进）、掉头卡（`lastNodeId`）写的都是这几个。
+     * 补镜像用例时实测过：把服务器的 node 20 挪 137 px（`xpos` 1385 vs 镜像 1248），
+     * 两边指纹**仍然相等**（`d2243728`）⇒ 「指纹相等」当时并不能证明位置没分叉。
+     * 口径同 `toolStock` / `cardAmount`：**缺席 = 不参与**，旧回报里录下的指纹照旧可比。
+     */
+    xpos?: number | undefined;
+    ypos?: number | undefined;
+    direction?: number | undefined;
+    lastNodeId?: number | undefined;
   }[];
   landOwner: readonly number[];
   landLevel: readonly number[];
@@ -378,6 +941,13 @@ export function stateFingerprint(
   lottery: readonly number[];
   /** 道具持有表 */
   tools: readonly number[];
+  /**
+   * 道具库存（`0x49731f + 道具号`）与牌堆（`0x499197 + 卡号`）—— 禮物 / 抽卡格 / 福神 / 董事長 /
+   * 節日 / 货架都按它们**加权抽**，两端不一致就会抽到不同的东西（2026-09-25 审计补入指纹）。
+   * 可选：旧的测试夹具没有这两格 = 不参与。
+   */
+  toolStock?: readonly number[] | undefined;
+  cardAmount?: readonly number[] | undefined;
   /** 股市 —— 只取收盘价与流通量，历史不入指纹（144 天太长且可由价格推出） */
   market: { stocks: readonly { price: number; shares: number }[] };
   /** 各玩家持仓 */
@@ -407,6 +977,38 @@ export function stateFingerprint(
   pending?: unknown;
   /** 排队中的后续拍卖（一次流程里连开多场时用）—— 同上，是规则状态 */
   pendingQueue?: readonly unknown[];
+  /**
+   * 惡人 / 機器娃娃 / 跟班那一张表（位置、朝向、主人、剩几步、各天数、在場与否）。
+   *
+   * ★ 2026-09-25（六区审计收口）补：先前**整张表都不在**指纹里 —— 傳送機搬惡人
+   *   （`0x00447857..0x004478b5`）、惡人走子、保釋 / 关押都写它，两端分叉时校验和照样相等。
+   *   整表走**规范化 JSON**（键排序），与 `pending` 同一口径。
+   *   缺席 = 不参与（旧回报里录下的指纹照旧可比，见 client 的 fixture 测试）。
+   */
+  specialActors?: readonly unknown[] | undefined;
+  /** 地產到期日 —— 傳送機搬地（`0x00447546..0x00447553`）与日推进都写 */
+  landTenure?: readonly number[] | undefined;
+  /** 地產種類（連鎖店 / 設施种类）—— 拆除、首建、天使卡都写 */
+  landType?: readonly number[] | undefined;
+  /** 上次過路費（`land + 0x2c`）—— 过路费与傳送機清源头都写 */
+  landLastToll?: readonly number[] | undefined;
+  /**
+   * 上市企業的**公帳**（`+0x28`）。
+   *
+   * ★ 2026-09-25（ai 区补报，与位置 / 惡人表同一类缺口）：先前也不在指纹里 ——
+   *   而百货公司营业额（`0x0042ed75` / `0x0042ed7e`，电脑支与真人支共用那段收尾）与
+   *   分红都写它，两端分岔时校验和照样相等。是规则状态，进指纹。
+   */
+  companyFunds?: readonly number[] | undefined;
+  /** 上市企業的累計**營業額**（分红公式的分子，`+0x2c`）—— 同上 */
+  companyProfit?: readonly number[] | undefined;
+  /** 商業用地（企業）的持股数 */
+  commercialShares?: readonly number[] | undefined;
+  /** 商業用地（企業）的**經營權与持股排名**（`{owner, ranking}` 整表，规范化 JSON） */
+  commercialOwners?: readonly unknown[] | undefined;
+  // ⚠️ `viewRotation` 刻意**不进**指纹：它是**每个客户端各自的镜头**（原版存在 `0x48c570` / `0x48c574`，
+  //    玩家拖过 / 贴边推过都算），算进校验和会把「两个人转了不同角度」变成假失步。
+  //    将来若要按投影复刻 AI 取景（ai-move 的 FU-1），先得把镜头变成共享状态或换一套对账口径 —— 见台账。
   },
   opts: { rng?: boolean } = {},
 ): string {
@@ -424,22 +1026,46 @@ export function stateFingerprint(
   //   复刻↔复刻（联机）必须保留它：那是 desync 的早期信号。
   //   见 `rich4-spec/docs/verification.md` 通道 3、`docs/deviations/T-052.md`。
   if (opts.rng !== false) parts.push(state.rngState);
+  // ★ 位置组是「整组一起进 / 一起不进」：缺一个就当作旧口径（旧回报里录下的指纹不含这四格）
+  const spatial = state.players.every(
+    (p) => p.xpos !== undefined && p.ypos !== undefined && p.direction !== undefined && p.lastNodeId !== undefined,
+  );
   for (const p of state.players) {
     parts.push(p.index, p.cash, p.moneyInBank, p.loan, p.nodeId, p.whoPlays);
+    if (spatial) parts.push(p.xpos ?? 0, p.ypos ?? 0, p.direction ?? 0, p.lastNodeId ?? 0);
   }
   parts.push('|', ...state.landOwner, '|', ...state.landLevel);
+  // ★ 2026-09-25（六区审计收口）：到期日 / 種類 / 上次過路費 —— 傳送機、拆除卡、首建、日推进都写；
+  //   先前不在指纹里，两端在这三项上分叉时校验和照样相等。缺席 = 不参与（同 toolStock 口径）。
+  if (state.landTenure !== undefined) parts.push('|tenure', ...state.landTenure);
+  if (state.landType !== undefined) parts.push('|ltype', ...state.landType);
+  if (state.landLastToll !== undefined) parts.push('|ltoll', ...state.landLastToll);
+  // ★ 2026-09-25（ai 区补报）：上市企業的公帳 / 營業額 / 持股 / 經營權 —— 分红、百货营业额、
+  //   經營權易主都写这些；先前不在指纹里 ⇒ 两端在「企業帐上有多少钱、誰有經營權」上分岔时
+  //   校验和照样相等。缺席 = 不参与（同 toolStock 口径）。
+  if (state.companyFunds !== undefined) parts.push('|cfund', ...state.companyFunds);
+  if (state.companyProfit !== undefined) parts.push('|cprofit', ...state.companyProfit);
+  if (state.commercialShares !== undefined) parts.push('|cshare', ...state.commercialShares);
+  if (state.commercialOwners !== undefined) parts.push('|cown', canonicalJson(state.commercialOwners));
   // ★ 下面这几项是后来补进引擎的，一度不在指纹里——那意味着
   //   两端在公库、樂透、股市上分歧时**校验和照样相等**，
   //   desync 会一直拖到有人破产才暴露。指纹必须覆盖所有会变的共享状态。
   parts.push('|', state.pool);
   parts.push('|', ...state.lottery);
   parts.push('|', ...state.tools);
+  // 缺席 = 不参与（旧回报里录下的指纹不含这两格，见 client 那两条 fixture 测试）
+  if (state.toolStock !== undefined) parts.push('|stock', ...state.toolStock);
+  if (state.cardAmount !== undefined) parts.push('|deck', ...state.cardAmount);
   parts.push('|');
   for (const st of state.market.stocks) parts.push(st.price, st.shares);
   parts.push('|');
   for (const row of state.holdings) for (const h of row) parts.push(h.amount);
   parts.push('|');
   for (const o of state.objects) parts.push(o.nodeId, o.state, o.attached);
+  // ★ 2026-09-25（六区审计收口）：惡人 / 機器娃娃 / 跟班**整张表** —— 傳送機搬惡人
+  //   （`0x00447857..0x004478b5`）、惡人走子、保釋 / 关押、停留 / 龜行天数都写它；
+  //   先前整张表都不在指纹里 ⇒ 两端在「惡人在哪一格、还剩几步」上分叉时校验和照样相等。
+  if (state.specialActors !== undefined) parts.push('|actors', canonicalJson(state.specialActors));
   // ★ 规则相位的三项（第 50 条补）：游标、待决交互、排队的拍卖
   parts.push('|');
   for (const slot of state.pendingNpcSlots ?? []) parts.push(slot);

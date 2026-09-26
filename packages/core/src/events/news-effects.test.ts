@@ -548,7 +548,7 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
     const facilities = [fac(1, '銀行', 0), fac(2, '醫院', 3)];
     const r = applyNewsEffect(5, ctx({ lands, facilities, rng: { below: () => 1 } }));
     // 候选 = [地2, 設2] ⇒ below(2)=1 → 設施 2 号
-    expect(r.facilityMutations).toEqual([{ id: 2, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 2, level: 0, type: 0, owner: 0, tenure: 0 }]);
   });
 
   it('★★ news[19] 土地流失：候选=全部、模式 1（清归属）', () => {
@@ -557,7 +557,7 @@ describe('★ 新聞 5/15/19/21：随机拆一处建筑 / 土地流失 @source f
       ctx({ lands: [land(1, 'A', 0)], facilities: [], rng: rng0 }),
     );
     // 空地块也能被「流失」（清归属不要求有等级）
-    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
   });
 
   it('★★ news[20] 颱風：以挑中那一处为心、半径 100 内的住宅与設施各拆一级（不打人、无敌意）', () => {
@@ -681,26 +681,50 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     expect(r.unimplemented).toBe(false);
     // 窗内两块**重击**：owner/level/type 全清（連鎖店身份也被抹掉）
     expect(r.landMutations).toEqual([
-      { id: 1, level: 0, type: 0, owner: 0 },
-      { id: 2, level: 0, type: 0, owner: 0 },
+      { id: 1, level: 0, type: 0, owner: 0, tenure: 0 },
+      { id: 2, level: 0, type: 0, owner: 0, tenure: 0 },
     ]);
     // 窗外那两块一个字节都不许动
     expect(r.landMutations?.some((m) => m.id === 3 || m.id === 4)).toBe(false);
     expect(r.amount).toBe(2);
   });
 
-  it('★★★ 半径 100 是**窗**不是全图：heavy=1 不代表打全地图（证伪 `fireMissile` 那个形状）', () => {
-    // 只有两块地，第二块离爆心 0x64 + 1 = 101（刚好出窗）
-    const lands = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 101, 0)];
-    const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
-    expect(r.landMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
-    // 距离恰好 100 的还在窗内（`<=`）
-    const lands2 = [built(1, 2, 0, 1, 0, 0), built(2, 2, 0, 1, 100, 100)];
-    const r2 = applyNewsEffect(4, ctx({ lands: lands2, facilities: [], rng: { below: () => 0 } }));
-    expect(r2.landMutations).toEqual([
-      { id: 1, level: 0, type: 0, owner: 0 },
-      { id: 2, level: 0, type: 0, owner: 0 },
-    ]);
+  it('★★★ 半径 100 是**屏幕窗**：heavy=1 不代表打全地图，也不是世界坐标的方框（Q-TOOL-1 订正）', () => {
+    // ★ 先前这里写的是「离爆心**世界距离** ≤ 100 就在窗里」—— 那是本引擎的近似口径。
+    //   原版取窗在**屏幕空间**（`0x40a45c` 摊平 440×440 的 id 图），等距投影既不保距也不保角：
+    //   视角 0、中心 (1000,1000) 的实测偏移（见 `rules/board-window.test.ts` 的预言机）：
+    //     +x 89 → px 99（在窗里）　+x 90 → px 100（**出窗**，上界取不到）
+    //     +y 126 → py 99（在窗里）　+y 127 → py 100（出窗）
+    //     +x 100 → (110,−33) ⇒ **世界距离 100 却已出窗**；+y 126 ⇒ 世界距离 126 反而在窗里。
+    const hit = (d: number, axis: 'x' | 'y'): number => {
+      const lands = [
+        built(1, 2, 0, 1, 1000, 1000), // 爆心（`below()=0` 选中的唯一/首个候选）
+        built(2, 2, 0, 1, axis === 'x' ? 1000 + d : 1000, axis === 'y' ? 1000 + d : 1000),
+      ];
+      const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
+      return r.landMutations?.length ?? 0;
+    };
+    expect(hit(89, 'x')).toBe(2);
+    expect(hit(90, 'x')).toBe(1);
+    expect(hit(100, 'x')).toBe(1); // ★ 世界距离 100 —— 旧口径会误伤
+    expect(hit(126, 'y')).toBe(2); // ★ 世界距离 126 —— 旧口径会漏掉
+    expect(hit(127, 'y')).toBe(1);
+    // 半径 0x64 仍然远小于「整幅画面」（核彈那一档是 −1，这一发不是）
+    expect(hit(300, 'x')).toBe(1);
+  });
+
+  it('★ id 图里没有实例的地块/設施扫不到：「没盖房又没主」的格子一个字节都不动', () => {
+    // @source 0x4091df..0x409240 / 0x4093f3..0x409488：level == 0 && owner == 0 ⇒
+    //   贴图指针 +4 写 0 ⇒ `0x409e3d cmp dword [eax+0x48a84c],0 / je 跳过` 不填进 id 图。
+    //   先前这一格照样会被「重击」清一遍种类、并且把旅館住客放出来。
+    const lands = [built(1, 2, 0, 1, 1000, 1000), built(2, 0, 1, 0, 1000, 1010)]; // 地 2：0 级、无主、却带着种类
+    const facilities = [fac(1, 0, 1, 0, 1000, 1020)]; // 設施 1：同上
+    const r = applyNewsEffect(
+      4,
+      ctx({ lands, facilities, rng: { below: () => 0 }, players: [] }),
+    );
+    expect(r.landMutations?.some((m) => m.id === 2)).toBe(false);
+    expect(r.facilityMutations?.some((m) => m.id === 1)).toBe(false);
   });
 
   it('★★ 爆心只从「盖了房子」的地块/設施里挑（`level != 0`），空地块不进候选', () => {
@@ -714,8 +738,8 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     const r = applyNewsEffect(4, ctx({ lands, facilities: [], rng: { below: () => 0 } }));
     // 候选 = [地3]（1 个）；空地 1/2 虽然就在 (0,0) 也不受影响
     expect(r.landMutations).toEqual([
-      { id: 3, level: 0, type: 0, owner: 0 },
-      { id: 4, level: 0, type: 0, owner: 0 },
+      { id: 3, level: 0, type: 0, owner: 0, tenure: 0 },
+      { id: 4, level: 0, type: 0, owner: 0, tenure: 0 },
     ]);
   });
 
@@ -730,9 +754,31 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
     // 窗内：地 1（|Δx| = |Δy| = 200 > 100 ⇒ **不在**窗内）
     expect(r.landMutations).toEqual([]);
     // 設施 1 被重击：owner/level/type 全清（`+0x34` 地契由 mutateFacility 清，见补丁说明）
-    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     // 9 号設施远在窗外
     expect(r.facilityMutations?.some((m) => m.id === 2)).toBe(false);
+  });
+
+  it('★★ 第二十一份：爆心坐标交出去（`0x40af12` → `view_to(x, y, 2)` @ 0x0044921d）；窗外的人不住院', () => {
+    // 回报现场的形状：踩上新聞格的人（节点 1，(0,0)）离爆心很远 —— 他不该住院，
+    //   但镜头必须移到爆心，否则整幅盖在棋盘上的飛碟影片看着像射中了他
+    const lands = [built(1, 1, 0, 2, 5000, 5000)];
+    const nodes = [makeNode({ id: 1, x: 0, y: 0 }), makeNode({ id: 2, x: 5050, y: 5000 }), NODES[2]!];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: i === 3 ? 2 : 1 }));
+    const r = applyNewsEffect(4, ctx({ players, lands, facilities: [], nodes, rng: { below: () => 0 } }));
+    expect(r.blastOrigin).toEqual({ x: 5000, y: 5000 });
+    // 只有站在窗内（节点 2）的 3 号住院 3 天；踩新聞格的 0 号不在窗里
+    expect(r.blastedHospital).toEqual([3]);
+    expect(r.players[0]!.blocking.inHospital).toBe(0);
+    expect(r.players[3]!.blocking.inHospital).not.toBe(0);
+    // 設施当爆心同理（候选表「地先、設施后」）
+    const r2 = applyNewsEffect(
+      4,
+      ctx({ lands: [], facilities: [fac(1, 2, 1, 2, 700, 800)], rng: { below: () => 0 } }),
+    );
+    expect(r2.blastOrigin).toEqual({ x: 700, y: 800 });
+    // 候选集为空（原版 idiv 除零）⇒ 不带
+    expect(applyNewsEffect(4, ctx({ lands: [], facilities: [], rng: { below: () => 0 } })).blastOrigin).toBeUndefined();
   });
 
   it('★★ 設施重击无条件 `0x40dffa`：**全场被关押者**挂「下一天释放」', () => {
@@ -747,7 +793,7 @@ describe('★★★ 新聞 4「外星人攻打地球」@source fcn_0044913d（VA
         rng: { below: () => 0 },
       }),
     );
-    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0 }]);
+    expect(r.facilityMutations).toEqual([{ id: 1, level: 0, type: 0, owner: 0, tenure: 0 }]);
     // 0x80 = 待释放（与 news[21] 龍捲風那条同一支）
     expect(r.players[0]!.blocking.inHotel).toBe(0x80);
     expect(r.players[2]!.blocking.inHotel).toBe(0x80);
@@ -1152,7 +1198,8 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
       commercials: [co(1, 0), co(2, 2), co(3, 0), co(4, 4), co(5, 3)],
       rng: { below: (n: number) => { sizes.push(n); return 1; } },
     }));
-    expect(sizes).toEqual([3]);
+    // ★★ 2026-09-25：第二个是首次入獄 5 天的倒霉台词 rand（`0x0043d5f9 call 0x44f2c2`，`below(0x8000)` = `rand()`）
+    expect(sizes).toEqual([3, 0x8000]);
     // 候选表 = [2, 4, 5]，挑下标 1 ⇒ 4 号 ⇒ owner 4 ⇒ 玩家下标 3
     expect(r.chairmanPrison).toEqual({ companyId: 4, chairman: 3, victim: 3, days: 5 });
     expect(r.players[3]!.blocking.inPrison).toBe(5);
@@ -1192,8 +1239,9 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
       rng,
     }));
     expect(r.chairmanPrison?.companyId).toBe(2);
-    expect(rng.getState()).toBe(afterOne);
-    expect(rng.getState()).not.toBe(afterTwo);
+    // ★★ 2026-09-25：抽企業一次 + 首次入獄 5 天的倒霉台词一次（`0x0043d5f9 call 0x44f2c2`）= 两次
+    expect(rng.getState()).toBe(afterTwo);
+    expect(rng.getState()).not.toBe(afterOne);
   });
 
   it('⑥ 无候选企業 ⇒ 不动任何人、**一次随机数都不掷**', () => {
@@ -1266,7 +1314,8 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
     expect(r.players[0]!.blocking.inPrison).toBe(0);
     expect(r.players[0]!.cards).toEqual([]); // ★ 19 被扣
     expect(r.chairmanPrison).toEqual({ companyId: 1, chairman: 0, victim: 2, days: 5 });
-    // 最恨的人那条路**不再掷随机**（mode 0 也没有门槛那一次）⇒ 仍只有抽企業那一步
+    // 最恨的人那条路**不再掷随机**（mode 0 也没有门槛那一次）⇒ 抽企業一步 + 入獄台词一步
+    probe.next();
     expect(rng.getState()).toBe(probe.getState());
   });
 
@@ -1289,7 +1338,10 @@ describe('★★ 新聞 29：隨機挑一家有主企業的經營者关 5 天', 
     expect(r.players[1 + randForPick]!.blocking.inPrison).toBe(5);
     expect(r.players[0]!.blocking.inPrison).toBe(0);
     expect(r.players[0]!.cards).toEqual([]);
-    expect(rng.getState()).toBe(afterTwo);
+    // 再加首次入獄 5 天的倒霉台词那一次
+    const afterThree = new WatcomRng(afterTwo);
+    afterThree.next();
+    expect(rng.getState()).toBe(afterThree.getState());
   });
 
   it('⑤c 持嫁禍卡(19) 但**无人可嫁** ⇒ chairman 自己被关、**19 留着**（原版不掉卡）', () => {

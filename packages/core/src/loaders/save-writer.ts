@@ -99,7 +99,7 @@ export const MODELED_BLOCK_OFFSETS: readonly number[] = [
  * 只能参加"carry=原文时逐字节相等"。这样断言与实现是相符的，不夸大。
  */
 export const PARTIALLY_MODELED_BLOCK_OFFSETS: readonly number[] = [
-  0x0010, // 玩家块 4×0x68：已写 33 个字段，color/name/f27/f74/f100 仍走 carry
+  0x0010, // 玩家块 4×0x68：已写 34 个字段（f100 = landingWhoPlays，有才写），color/name/f27/f74 仍走 carry
   0x2376, // 12 支股票记录 36B/条：每条 `+0x00` 的 4 字节未建模，其余 11 字段已写
   0x01b4, // 特殊角色 5×16：`x/y` 与 `f10/f11` 未建模（状态里没有 x/y）
   0x0204, // 地图物件 46×24：只建模 `type/nodeId/state/attached` 5 字节，其余 19 字节未建模
@@ -183,6 +183,16 @@ function writePlayerBlock(out: Uint8Array, state: GameState, off: number): void 
     out[o + 0x12] = p.ndices & 0xff;
     out[o + 0x13] = p.character & 0xff;
     out[o + 0x15] = p.whoPlays & 0xff;
+    // ★ `+0x64`（落地时抄进 `who_plays` 的那一份，见 `Player.landingWhoPlays`）——
+    //   第一輪里存的档，还没上盘的人全靠它；没有这一格（旧状态）就保持 carry
+    if (p.landingWhoPlays !== undefined) out[o + 0x64] = p.landingWhoPlays & 0xff;
+    // ★ 审计 2026-09-25（loop）：开着工程車时 `+0x64/+0x65` 是開車前的交通方式 / 骰子数（`0x00447a49` / `0x00447a55`）
+    if ((p.trafficMethod & 3) === 3 && p.engineSavedTraffic !== undefined) {
+      out[o + 0x64] = p.engineSavedTraffic & 0xff;
+      out[o + 0x65] = (p.engineSavedDice ?? 0) & 0xff;
+    }
+    // `+0x1b`：朝向后备（`Player.savedFacing`）；旧状态没有这一格就 carry
+    if (p.savedFacing !== undefined) out[o + 0x1b] = p.savedFacing & 0xff;
     u32(out, o + 0x1c, p.cash);
     u32(out, o + 0x20, p.moneyInBank);
     u32(out, o + 0x24, p.loan);
@@ -235,11 +245,11 @@ function writePlayerBlock(out: Uint8Array, state: GameState, off: number): void 
  *
  * | 块内偏移 | `parsePlayer` 的名字 | 实测值（Save0 玩家0 / SAVE1 玩家0）| 为什么没写 |
  * |---|---|---|---|
- * | `+0x1b` | `f27` | 非 0（仅 Save0）| **一次移动内的瞬时量**（移动前的朝向备份），原子移动的引擎里没有对应字段 |
+ * | ~~`+0x1b`~~ | `f27` | 非 0（仅 Save0）| **已写**（审计 2026-09-25）：= `Player.savedFacing`（住店前朝向 / 关押哨兵 0xf，`0x00418f2e` 读）|
  * | `+0x4a` (u16) | `f74` | 非 0（仅 Save0）| 同上（本次移动的目标节点，唯一读者是行走函数 `0x40c05c`）|
  * | `+0x43` | `f67` | 恒 0 | **全 exe 无读无写的死字节**（`0x496bab` 的读写点都为空）|
- * | `+0x64` | `f100` | 非 0（两份都有）| 写者只有 `0x406de7`（新局），但 Save0 的奇数个数与 `[0x499104]` 矛盾 ⇒ **未决** |
- * | `+0x65` | `f101` | 恒 0 | 只有 `0x41c84f` 读、无写者 ⇒ **未决** |
+ * | ~~`+0x64`~~ | `f100` | — | **已写**（2026-09-24）：= `Player.landingWhoPlays`（开局写 1/2 `0x004072f9`、落地时抄进 `+0x15` `0x00418d07`、破产 memset 清 0 ⇒ Save0 的 `0,1,0,0` 正是三人破产后剩一名真人，不再矛盾）；旧状态没有这一格时仍 carry |
+ * | `+0x65` | `f101` | 恒 0 | **已解**（审计 2026-09-25）：工程車開車前的骰子数，`0x00447a55` 写、`0x0041cd26` 读 ⇒ `Player.engineSavedDice`（开着工程車才写）|
  *
  * ★★ **`+0x00` 与 `+0x04` 已解决，且不需要新增状态字段**（2026-09-17 订正）：
  *   先前这张表把它们记成「`GameState.Player` 里没有名字/颜色字段」，那是**看错了方向**。
@@ -414,6 +424,8 @@ export function writeStateBlock(input: WriteStateBlockInput): Uint8Array {
     u16(out, o + 6, a.lastNodeId);
     out[o + 8] = a.owner & 0xff;
     out[o + 9] = a.direction & 0xff;
+    // +11 = 「老家」（`SpecialActor.home`，2026-09-24 起建模）；没有这一项的老状态照旧 carry
+    if (a.home !== undefined) out[o + 11] = a.home & 0xff;
     out[o + 12] = (a.hibernating ?? 0) & 0xff;
     out[o + 13] = (a.sleepwalkDays ?? 0) & 0xff;
     out[o + 14] = a.halted & 0xff;

@@ -6,12 +6,21 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { TOOL_SLOTS_PER_PLAYER, toolCount } from '../rules/tools.ts';
-import { MISSILE_RADIUS } from '../rules/tool-effects.ts';
+import { MISSILE_RADIUS, NUKE_VIEW_HALF } from '../rules/tool-effects.ts';
 import { housingIndexOf, facilityIndexOf } from '../rules/land.ts';
+import { inBoardWindow } from '../rules/board-window.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -33,7 +42,8 @@ function setup(counts: Record<number, number>) {
   });
   const tools = [...base.tools];
   for (const [id, n] of Object.entries(counts)) tools[Number(id)] = n;
-  return { state: { ...base, tools } as GameState, topo, map };
+  // 道具只能在按 GO 之前用（`canUseItemsNow`）
+  return { state: { ...base, tools, phase: 'awaitingRoll' } as GameState, topo, map };
 }
 
 /** 第一个住宅节点 */
@@ -60,7 +70,8 @@ describe('★ 機器工人（9）', () => {
     expect(toolCount(r.tools, 0, 9)).toBe(0);
   });
 
-  run('满级的地盖不上去，道具也不消耗', () => {
+  // ★ 2026-09-24 审计订正：take_tool（`0x004472fb`）在 `0x40b110`（`0x00447345`）之前 ⇒ 盖不上也扣道具
+  run('满级的地盖不上去，但道具照扣', () => {
     const { state, topo } = setup({ 9: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
@@ -68,12 +79,24 @@ describe('★ 機器工人（9）', () => {
     const landLevel = [...state.landLevel];
     landLevel[idx] = 5;
     const s: GameState = { ...state, landLevel };
-    expect(reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo)).toBe(s);
+    const after = reduce(s, { type: 'useTool', toolId: 9, nodeId: node.id }, topo);
+    expect(after.landLevel[idx]).toBe(5);
+    expect(after.tools[9]).toBe(0);
   });
 });
 
 describe('★ 飛彈（7）', () => {
-  run('把半径内的房子各拆一级，范围外的不动', () => {
+  // ★★ Q-TOOL-1（2026-09-25）：范围不再是「节点坐标 ±100 的方框」，而是原版那张
+  //   440×440 id 图里的**屏幕方窗**（`0x40a45c`，镜头由 `0x00447065` 先移到目标格上）。
+  //   判据见 `rules/board-window.ts` 与 `board-window.test.ts`（那边逐点对过投影预言机）。
+  //   ★ 另外：地块的锚点是**地块记录自己的 x/y**，与所在节点差 ~40 像素 —— 这里也用 land 的坐标。
+  const inWindow = (topo: ReturnType<typeof setup>['topo'], targetNode: number, landId: number): boolean => {
+    const t = topo.nodes[targetNode - 1]!;
+    const land = topo.lands!.find((l) => l.id === landId)!;
+    return inBoardWindow({ x: t.x, y: t.y }, land, MISSILE_RADIUS);
+  };
+
+  run('把窗口内的房子各拆一级，窗口外的不动', () => {
     const { state, topo } = setup({ 7: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
@@ -83,19 +106,16 @@ describe('★ 飛彈（7）', () => {
     const s: GameState = { ...state, landLevel, landOwner };
 
     const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
-    const target = topo.nodes[node.id - 1]!;
     let inside = 0;
     let outside = 0;
     for (const n of topo.nodes) {
       const idx = housingIndexOf(n.type);
       if (idx === null) continue;
-      const near =
-        Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS;
-      if (near) {
-        expect(r.landLevel[idx], `节点 ${n.id} 在范围内`).toBe(2);
+      if (inWindow(topo, node.id, idx)) {
+        expect(r.landLevel[idx], `节点 ${n.id} 在窗口里`).toBe(2);
         inside++;
       } else {
-        expect(r.landLevel[idx], `节点 ${n.id} 在范围外`).toBe(3);
+        expect(r.landLevel[idx], `节点 ${n.id} 在窗口外`).toBe(3);
         outside++;
       }
     }
@@ -105,23 +125,55 @@ describe('★ 飛彈（7）', () => {
     expect(toolCount(r.tools, 0, 7)).toBe(0);
   });
 
-  run('★★ 設施也在范围内（`flags = 0x26` 里那一位）—— 掉一级 + 地主同样记仇 30×物價', () => {
+  // ★★ 绝对钉子（不依赖任何 helper）：地图 0001 的第一个住宅节点 = 节点 39 (1463,239)。
+  //   地块 1/2（1463,192）/（1416,192）的投影偏移是 (−23,−38)/(−75,−23) ⇒ 在 ±100 窗里；
+  //   地块 3（1368,192）是 **(−130,−9)** ⇒ 出窗 —— 而「节点 ±100 方框」那条旧近似
+  //   （Δ = (95,47)）会把它算进去。这一条正是 Q-TOOL-1 要纠正的差别。
+  run('★★ 投影后出窗的第 3 块地不挨炸（旧的节点方框会误伤它）', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const target = firstHousingNode(topo);
+    expect(target?.id, '地图 0001 的第一个住宅节点').toBe(39);
+    if (target === undefined) return;
+    const landLevel = state.landLevel.map(() => 3);
+    const landOwner = state.landOwner.map(() => 2);
+    const s: GameState = { ...state, landLevel, landOwner };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: target.id }, topo);
+    expect(r.landLevel[1]).toBe(2); // 窗内
+    expect(r.landLevel[2]).toBe(2); // 窗内
+    expect(r.landLevel[3]).toBe(3); // ★ 出窗 ⇒ 一个字节都不动
+  });
+
+  run('★★ 爆心里的乞丐（出局者）被挪到别处（0x40cd7d call 0x40cc56），不住院、不记仇', () => {
     const { state, topo } = setup({ 7: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
-    const target = topo.nodes[node.id - 1]!;
-    // 找一处落在范围里的設施
-    const fac = topo.facilities?.find(
-      (f) =>
-        Math.abs(f.x - target.x) <= MISSILE_RADIUS && Math.abs(f.y - target.y) <= MISSILE_RADIUS,
-    );
-    if (fac === undefined) return; // 这张图上没炸到設施就跳过
+    const s: GameState = {
+      ...state,
+      players: state.players.map((p, i) => (i === 2 ? { ...p, whoPlays: 0, nodeId: node.id } : p)),
+    };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.players[2]!.nodeId).not.toBe(node.id);
+    expect(r.players[2]!.nodeId).not.toBe(0);
+    expect(r.players[2]!.blocking.inHospital).toBe(0);
+    expect(r.rngState).not.toBe(s.rngState);
+  });
+
+  run('★★ 設施也在窗口里（`flags = 0x26` 里那一位）—— 掉一级 + 地主同样记仇 30×物價', () => {
+    const { state, topo } = setup({ 7: 1 });
+    // ★ 目标选**設施自己那一格**（`facilityIndexOf` 找得到的那种节点）—— 設施的锚点就是
+    //   它自己记录的 x/y（`0x40930e`），从它自己的格心发弹必然落在 ±100 窗里。
+    const facNode = topo.nodes.find((n) => facilityIndexOf(n.type) !== null);
+    expect(facNode, '这张图上必须有設施，否则本用例什么都没验').toBeDefined();
+    if (facNode === undefined) return;
+    const fac = topo.facilities?.find((f) => f.id === facilityIndexOf(facNode.type));
+    expect(fac, '設施记录必须在表里').toBeDefined();
+    if (fac === undefined) return;
     const facilityLevel = [...state.facilityLevel];
     const facilityOwner = [...state.facilityOwner];
     facilityLevel[fac.id] = 3;
     facilityOwner[fac.id] = 2; // 玩家 1 的企業
     const s: GameState = { ...state, facilityLevel, facilityOwner };
-    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: facNode.id }, topo);
     expect(r.facilityLevel[fac.id]).toBe(2);
     expect(r.facilityOwner[fac.id]).toBe(2); // 轻击保留归属
     expect(r.players[1]!.hostility[0]).toBeGreaterThanOrEqual(30 * s.priceIndex);
@@ -143,7 +195,11 @@ describe('★ 飛彈（7）', () => {
 });
 
 describe('★ 核子飛彈（13）', () => {
-  run('★ 全图 —— 而且连地契一起烧掉', () => {
+  // ★★ 2026-09-24 订正（需求方问「核子飛彈会不会炸周围建筑」时对照出来的）：
+  //   先前这条断言「全图」—— 依据是把半径 −1 读成整张地图。机器码是
+  //   `0x0040a469 xor esi,esi / mov edi,0x1b8` + `0x0040a494 call 0x409de7`：收的是**当前镜头**下那张
+  //   440×440 的 id 图（镜头已由 `0x447b77 call 0x41d476` 移到目标上）⇒ 只炸**画面里**的那一片。
+  run('★ 画面范围（±220，镜头在目标上）—— 里面连地契一起烧掉，外面一块都不动', () => {
     const { state, topo } = setup({ 13: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
@@ -152,20 +208,40 @@ describe('★ 核子飛彈（13）', () => {
     const s: GameState = { ...state, landLevel, landOwner };
 
     const r = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
+    const t = topo.nodes[node.id - 1]!;
+    let inside = 0;
+    let outside = 0;
     for (const n of topo.nodes) {
       const idx = housingIndexOf(n.type);
       if (idx === null) continue;
-      expect(r.landLevel[idx], `节点 ${n.id}`).toBe(0);
-      expect(r.landOwner[idx], `节点 ${n.id}`).toBe(0);
+      const land = topo.lands!.find((l) => l.id === idx)!;
+      const near = inBoardWindow({ x: t.x, y: t.y }, land, NUKE_VIEW_HALF);
+      if (near) {
+        expect(r.landLevel[idx], `节点 ${n.id} 在画面里`).toBe(0);
+        expect(r.landOwner[idx], `节点 ${n.id} 在画面里`).toBe(0);
+        inside++;
+      } else {
+        expect(r.landLevel[idx], `节点 ${n.id} 在画面外`).toBe(3);
+        expect(r.landOwner[idx], `节点 ${n.id} 在画面外`).toBe(2);
+        outside++;
+      }
     }
+    // 既炸到东西、又不是全图（否则测的是退化情形）
+    expect(inside).toBeGreaterThan(0);
+    expect(outside).toBeGreaterThan(0);
   });
 
   run('★ 范围里的人住院 3 天、车也没了', () => {
     const { state, topo } = setup({ 13: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
+    // 1 号站在目标格上（画面正中）；0 号（发射者）挪到画面外，免得自己也被算进去
+    const far = topo.nodes.find((n) => {
+      const t = topo.nodes[node.id - 1]!;
+      return !inBoardWindow({ x: t.x, y: t.y }, n, NUKE_VIEW_HALF);
+    })!;
     const players = state.players.map((p, i) =>
-      i === 1 ? { ...p, trafficMethod: 2, ndices: 3 } : p,
+      i === 1 ? { ...p, nodeId: node.id, trafficMethod: 2, ndices: 3 } : i === 0 ? { ...p, nodeId: far.id } : p,
     );
     const s: GameState = { ...state, players };
     const r = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
@@ -180,7 +256,9 @@ describe('★ 核子飛彈（13）', () => {
     expect(r.toolStock[6]).toBe((s.toolStock[6] ?? 0) + 1);
   });
 
-  run('★ 核彈连自己也炸 —— 飛彈不炸自己', () => {
+  // ★★ 2026-09-24 订正：先前断言「飛彈不炸自己」（理由是「自己站在别处」）—— 原版没有这条例外：
+  //   `0x40ae8c..0x40aeaa` 对 id 里每个玩家位都 `call 0x40cd07`，片后 `0x004470a1` 那一圈也不看是谁。
+  run('★ 飛彈与核彈都炸自己（站在范围里就算，没有发射者例外）', () => {
     const { state, topo } = setup({ 7: 1, 13: 1 });
     const node = firstHousingNode(topo);
     if (node === undefined) return;
@@ -189,10 +267,72 @@ describe('★ 核子飛彈（13）', () => {
     const s: GameState = { ...state, players };
 
     const byMissile = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
-    expect(byMissile.players[0]!.blocking.inHospital).toBe(0);
+    expect(byMissile.players[0]!.blocking.inHospital).toBe(3);
 
     const byNuke = reduce(s, { type: 'useTool', toolId: 13, nodeId: node.id }, topo);
     expect(byNuke.players[0]!.blocking.inHospital).toBe(3);
+  });
+
+  // @source 0x40cd07：`cmp dword [+0x32], 0 / jne 0x40cd70` —— 住店 / 消失 / 監獄 / 醫院里的人不挂 0x40
+  //   ⇒ 片后那一圈（`0x4470ac test [+0x15], 0x40`）不记仇、不续住院天数
+  run('★ 范围里但已经关着的人（醫院）不再挨：不记仇、住院天数不续', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const players = state.players.map((p, i) =>
+      i === 1 ? { ...p, nodeId: node.id, blocking: { ...p.blocking, inHospital: 2 } } : p,
+    );
+    const s: GameState = { ...state, players };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.players[1]!.blocking.inHospital).toBe(2);
+    expect(r.players[1]!.hostility[0]).toBe(s.players[1]!.hostility[0]);
+  });
+
+  // @source 0x40aee0..0x40aefc：id 的 bits 8..14 = 物件 handle ⇒ `call 0x40e14d` 释放（地雷回库存）
+  run('★ 爆风里地上的物件被炸掉（地雷回库存），范围外的留着', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const target = topo.nodes[node.id - 1]!;
+    const far = topo.nodes.find((n) => !inBoardWindow({ x: target.x, y: target.y }, n, MISSILE_RADIUS))!;
+    const objects = state.objects.map((o) => ({ ...o, nodeId: 0, attached: 0 }));
+    objects[26] = { ...objects[26]!, nodeId: node.id }; // 槽 26..35 = 地雷
+    objects[27] = { ...objects[27]!, nodeId: far.id };
+    const s: GameState = { ...state, objects };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.objects[26]!.nodeId).toBe(0);
+    expect(r.toolStock[3]).toBe((s.toolStock[3] ?? 0) + 1);
+    expect(r.objects[27]!.nodeId).toBe(far.id);
+  });
+
+  // @source 0x40aeb4..0x40aede：id 的 bits 4..7 = 惡人 ⇒ `send_to_hospital(惡人, 0)`（0x43ee37 `+10 = 2`、0x43ee62 占用表）
+  run('★ 爆风里站在棋盘上的惡人进醫院', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const node = firstHousingNode(topo);
+    if (node === undefined) return;
+    const specialActors = state.specialActors.map((a, i) => (i === 0 ? { ...a, nodeId: node.id, place: 0 } : a));
+    const s: GameState = { ...state, specialActors: specialActors as GameState['specialActors'] };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: node.id }, topo);
+    expect(r.specialActors[0]!.place).toBe(2);
+    expect(r.hospitalOccupancy[4]).toBe(1);
+  });
+
+  // 一座設施占两个节点，id 图里只有一个 id ⇒ 只挨一次
+  run('★ 設施占两格也只挨一次 —— 敌意 30×物價 记一遍', () => {
+    const { state, topo } = setup({ 7: 1 });
+    const facNode = topo.nodes.find((n) => facilityIndexOf(n.type) !== null)!;
+    const fid = facilityIndexOf(facNode.type)!;
+    expect(topo.nodes.filter((n) => facilityIndexOf(n.type) === fid).length).toBeGreaterThan(1);
+    const facilityLevel = [...state.facilityLevel];
+    const facilityOwner = [...state.facilityOwner];
+    facilityLevel[fid] = 3;
+    facilityOwner[fid] = 2;
+    // 地块全清，免得住宅那一支也给 1 号记仇
+    const landOwner = state.landOwner.map(() => 0);
+    const s: GameState = { ...state, facilityLevel, facilityOwner, landOwner };
+    const r = reduce(s, { type: 'useTool', toolId: 7, nodeId: facNode.id }, topo);
+    expect(r.facilityLevel[fid]).toBe(2);
+    expect(r.players[1]!.hostility[0]).toBe(30 * s.priceIndex);
   });
 });
 
@@ -201,12 +341,6 @@ describe('★ 核子飛彈（13）', () => {
 //      （README §7.142(5) 的 E9 #6/#7/#11，通道 2 `test_damage_area.py`）
 // ============================================================
 describe('★★ 范围伤害必须把种类/地契落到状态（damage_area @source 0x0040ac7b）', () => {
-  const inMissileRange = (
-    n: { x: number; y: number },
-    target: { x: number; y: number },
-  ): boolean =>
-    Math.abs(n.x - target.x) <= MISSILE_RADIUS && Math.abs(n.y - target.y) <= MISSILE_RADIUS;
-
   run('★★ 飛彈把連鎖店夷平成「0 级住宅」—— landType 必须落回', () => {
     // @source 0x40ad2a `cmp byte [ebx+0x18],0 / je 结束` → `0x40ad30 [+0x1a]=0 / [+0x18]=0`
     const { state, topo } = setup({ 7: 1 });
@@ -255,7 +389,7 @@ describe('★★ 范围伤害必须把种类/地契落到状态（damage_area @s
     //   所以「本来就是 0」也走 `0x40ae0a type=0` + `0x40ae0d call 0x40dffa`。
     const { state, topo } = setup({ 7: 1 });
     // ★ 目标就选**設施所在的那一格** —— 飛彈的 `useTool` 不校验目标类型，
-    //   而爆风窗口是以目标格为中心的方窗，这样那一处設施必然在窗内（距离 0）。
+    //   而爆风窗口以目标格（的元素锚点）为心，这样那一处設施必然在窗内（偏移 0）。
     const facNode = topo.nodes.find((n) => facilityIndexOf(n.type) !== null);
     // ★ 这里**不能**写成「找不到就 return」—— 那会让本用例静默变成空跑
     expect(facNode, '这张图上必须有設施，否则本用例什么都没验').toBeDefined();
@@ -269,7 +403,8 @@ describe('★★ 范围伤害必须把种类/地契落到状态（damage_area @s
     facilityType[facId] = 1;
     facilityOwner[facId] = 2;
     // 一个被关在旅館、且**在爆风外**的玩家：用来观察「一刀切放人」
-    const far = topo.nodes.find((n) => !inMissileRange(n, target));
+    // ★ 玩家自己的锚点 = 他的节点坐标（他站在格上）
+    const far = topo.nodes.find((n) => !inBoardWindow(target, n, MISSILE_RADIUS));
     expect(far, '地图上必须有爆风外的格').toBeDefined();
     if (far === undefined) return;
     const players = state.players.map((p, i) =>

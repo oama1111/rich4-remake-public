@@ -125,6 +125,8 @@ export function markPlayerBankrupt(player: Player): Player {
     // +0x46（加持）、+0x4c（敌意）与 +0x5c / +0x60 同在 memset 区间内
     savedTrafficMethod: 0,
     savedNdices: 0,
+    // +0x64（`landingWhoPlays`）也在 memset 区间里 —— 清掉，免得出局者被当成「没上盘」再落地
+    ...(player.landingWhoPlays !== undefined ? { landingWhoPlays: 0 } : {}),
     misfortune: 0,
     fortune: 0,
     luck: 0,
@@ -144,11 +146,11 @@ export function markPlayerBankrupt(player: Player): Player {
 /**
  * 破产处理的结果分支。
  *
- * @source rich4_player_bankrupt.asm:276-307
+ * @source rich4_player_bankrupt.asm:276-307（VA 0x0040d029 起）
  * ```asm
- * test esi, esi            ; esi = 破产后剩余在场人数
+ * test esi, esi            ; esi = 破产后剩余在场的**真人**数（`who_plays & 1`，见 resolveBankruptcyOutcome）
  * jne  ...
- * mov byte [0x46caf8], 1   ; 全员出局 → 结束码 1，**跳过清算**
+ * mov byte [0x46caf8], 1   ; 真人全出局 → 结束码 1，**跳过清算**
  * jmp end
  * cmp eax, 1
  * jne  loc_0040d089        ; 剩余 > 1 人 → 正常清算 + 拍卖
@@ -176,15 +178,30 @@ export const GAME_OVER_MULTI_HUMAN = 3;
 /**
  * 判定破产后走哪条路径。
  *
+ * ★ 2026-09-24 审计订正：原版数的是**还在场的真人**，不是在场总人数 ——
+ * ```asm
+ * 0040cfdb  cmp [0x499104], 1 / jne       ; 单人类局
+ * 0040cfe4  test byte [esp+0x400], 1 / je ; 且出局者是真人（清 who_plays 之前存的那一字节）
+ * 0040cff0  call 0x407842(0)              ; 「輸了…」模态框 ⇒ [0x46caf8] = 1（或 4 = 读档屏）
+ * 0040d008..0040d027                      ; esi = 在场且 who_plays & 1 的人数，eax = 在场人数
+ * 0040d029  test esi, esi / jne           ; ★ 真人一个不剩 ⇒ [0x46caf8] = 1（电脑还在也照样结束）
+ * 0040d039  cmp eax, 1 / jne 清算         ; 只剩 1 人（此时必是真人）⇒ 2 / 3
+ * ```
+ * 先前按「在场总人数」判：真人全破产、电脑还剩 ≥ 2 家时对局不结束（电脑自己打到底），
+ * 真人输给最后 1 家电脑时又报成「真人胜」（码 2 / 3）。第一条（单人类局真人出局）
+ * 必然也让「在场真人 = 0」，码同为 1，已被第二条涵盖（模态框选「读档」的 4 未复刻，同 `victoryEndCode`）。
+ *
  * @param remainingAlive  该玩家出局**之后**仍在场的人数
- * @param numHumanPlayers 本局的人类玩家数 `_num_human_players`
+ * @param numHumanPlayers 本局的人类玩家数 `[0x499104]`（开局存下的）
+ * @param remainingHumans 出局之后仍在场、`who_plays & 1` 的人数
  */
 export function resolveBankruptcyOutcome(
   remainingAlive: number,
   numHumanPlayers: number,
+  remainingHumans: number,
 ): BankruptcyOutcome {
-  if (remainingAlive === 0) return { kind: 'gameOver', code: GAME_OVER_ALL_OUT };
-  if (remainingAlive > 1) return { kind: 'liquidate' };
+  if (remainingHumans === 0) return { kind: 'gameOver', code: GAME_OVER_ALL_OUT };
+  if (remainingAlive !== 1) return { kind: 'liquidate' };
   return {
     kind: 'gameOver',
     code: numHumanPlayers === 1 ? GAME_OVER_SINGLE_HUMAN : GAME_OVER_MULTI_HUMAN,

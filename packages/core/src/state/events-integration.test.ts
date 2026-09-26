@@ -6,14 +6,23 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { parseMap, SPECIAL_KIND } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
 import type { GameState } from './types.ts';
 import { isAlive } from './types.ts';
 import { topoOf } from '../testing/factories.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { dayNumberSince1998, weekdayOf } from '../places/calendar.ts';
 import { PASSIVE_CARDS } from '../cards/passive.ts';
-import { DISAPPEAR_REASON_ABDUCTED } from '../events/fortune-effects.ts';
+import { DISAPPEAR_REASON_ABDUCTED, FORTUNE_PAY_TAIL_IDS } from '../events/fortune-effects.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -86,6 +95,139 @@ describe('★ 落在命運格会真的抽牌并施加', () => {
     }
     // 至少抽到过两种不同的事件
     expect(new Set(seen).size).toBeGreaterThan(1);
+  });
+});
+
+/*
+ * ★★ A-2：命運 1「強制徵收土地一處」的三种受害者形状（回报 `20260925-032752009-manual-Charles.json`
+ *   「强制征收土地一处好像没生效」）。
+ *
+ * exe 的两处判据（都重新核过）：
+ *   ① **挑哪一块**（`0x0044bfca..0x0044c012`，pass 0）：`i = 1..地块数`，收
+ *      `owner == 当前玩家+1 && level == 0` 的那些，`call rand / idiv ebx` ⇒ `候选[rand() % 候选数]`；
+ *   ② **没有合格的地时根本抽不到它**（`0x0044bb4b` 的 `0x0044bc2f` 那一段：循环里找不到
+ *      「自己的 + 空着的」就 `jmp 0x44be0d` → `xor edi,edi` 返回 0；调用方
+ *      `0x0044dbf5 cmp esi,1 / jne 0x44dcaa` 跳过整个事件、`0x44dcc4 test edi,edi / je 0x44dbba`
+ *      再去抽下一张）⇒ 原版**不弹框、也不说话**。
+ *      本引擎的对应物是 `checkFortune(1)` + `drawEvent` 的跳过循环（`events/fortune.ts`）。
+ *   ③ **神明闸不管这两条**：`fcn_0044b896` 全 exe 15 个调用点里**没有** 0/1
+ *      （最近的落在事件 2 的 `0x0044c184`）⇒ 不存在「逃過此劫」那一句、也不作废。
+ */
+describe('★★ A-2 命運 1「強制徵收土地一處」：三种受害者形状', () => {
+  /** 把下一张命運钉成 1（`lastEvent.id` 一定是它，除非可行性判定跳过了它）*/
+  const forceDraw1 = (s: GameState): GameState => ({
+    ...s,
+    fortuneDeck: { ...s.fortuneDeck, order: [1, ...s.fortuneDeck.order.filter((x) => x !== 1)], cursor: 0 },
+  });
+  /** 給盘面安排地权 + 一块已开发地的等级 / 种类（`landType` 1 = 連鎖店，事件 1 一个字都不该碰）*/
+  const withLands = (s: GameState, owned: readonly (readonly [number, number])[], typed: readonly number[] = []): GameState => {
+    const landOwner = [...s.landOwner];
+    const landLevel = [...s.landLevel];
+    const landType = [...s.landType];
+    for (const [id, level] of owned) {
+      landOwner[id] = s.currentPlayer + 1;
+      landLevel[id] = level;
+    }
+    for (const id of typed) landType[id] = 1;
+    return { ...s, landOwner, landLevel, landType };
+  };
+  /** 地图模板里某一块地的记录（`map.lands` 是 1..n 的紧凑表，`id` 就是下标）*/
+  const landOf = (map: ReturnType<typeof loadMap>, id: number) => map.lands.find((l) => l.id === id)!;
+
+  run('① 有多块未开发地 ⇒ 挑中其中一块：owner 清 0、地契清 0、赔 word[+0x1c] 地价进现金；等级/种类一个字不碰', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 11 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    // 三块自己的空地（16/17/18）+ 一块自己的**已开发**地（19，不算候选）；19 还带地契与連鎖店身份
+    const base = withLands(forceDraw1(on), [[16, 0], [17, 0], [18, 0], [19, 2]], [19]);
+    const landTenure = [...base.landTenure];
+    landTenure[16] = 7;
+    landTenure[17] = 7;
+    landTenure[18] = 7;
+    landTenure[19] = 7;
+    const before: GameState = { ...base, landTenure };
+    const cash = before.players[before.currentPlayer]!.cash;
+    const s2 = reduce(before, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id, '抽到的就是事件 1（可行性判定放过它）').toBe(1);
+    const cleared = [16, 17, 18].filter((i) => s2.landOwner[i] === 0);
+    expect(cleared, '三块候选里**恰好一块**被收走').toHaveLength(1);
+    const taken = cleared[0]!;
+    // 另外两块候选还是自己的、地契也没动
+    for (const i of [16, 17, 18]) {
+      if (i === taken) continue;
+      expect(s2.landOwner[i]).toBe(before.currentPlayer + 1);
+      expect(s2.landTenure[i]).toBe(7);
+    }
+    // 被收走那一块：`0x0044c0ce owner=0` + `0x0044c0d2 地契=0`
+    expect(s2.landTenure[taken]).toBe(0);
+    // 已开发的那一块**不是候选**：归属 / 等级 / 种类 / 地契原样
+    expect(s2.landOwner[19]).toBe(before.currentPlayer + 1);
+    expect(s2.landLevel[19]).toBe(2);
+    expect(s2.landType[19]).toBe(1);
+    expect(s2.landTenure[19]).toBe(7);
+    // 收走的是空地 ⇒ 等级 / 种类一个字没碰（事件 1 只写 `+0x19` 与 `+0x30`）
+    expect(s2.landLevel[taken]).toBe(0);
+    expect(s2.landType[taken]).toBe(0);
+    // 赔的是**地价** `word[+0x1c]`（不是 level × house_price、也不乘物價指數）
+    const price = landOf(map, taken).landPrice;
+    expect(price, '地图模板里那一块地价非 0（否则这条断言没有区分力）').toBeGreaterThan(0);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash + price);
+    // 镜头交给被收走的那一块（`0x0044c080 call 0x41d476(x, y, 2)`）
+    expect(s2.lastViewTarget).toEqual({ x: landOf(map, taken).x, y: landOf(map, taken).y });
+  });
+
+  run('② 只有已开发地 ⇒ 事件 1 不可行：换抽下一张、这一块地一动不动（也不弹框）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 13 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const s1 = withLands(forceDraw1(on), [[16, 2], [17, 5]]);
+    const snapshot = { owner: [...s1.landOwner], level: [...s1.landLevel], tenure: [...s1.landTenure] };
+    const cash = s1.players[s1.currentPlayer]!.cash;
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id, '跳过了事件 1').not.toBe(1);
+    // 跳过 1、抽中下一张 ⇒ 游标至少前进两张（下一张本身也可能是不可行的，故只钉「走过了 1」）
+    expect(s2.fortuneDeck.cursor).not.toBe(s1.fortuneDeck.cursor);
+    expect(s2.landOwner).toEqual(snapshot.owner);
+    expect(s2.landLevel).toEqual(snapshot.level);
+    expect(s2.landTenure).toEqual(snapshot.tenure);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash);
+  });
+
+  run('③ 一块地都没有 ⇒ 同上：事件 1 不可行、跳过、什么都不发生', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 17 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const s1 = forceDraw1(on);
+    expect(s1.landOwner.every((o) => o !== s1.currentPlayer + 1), '这位名下真的一块地都没有').toBe(true);
+    const cash = s1.players[s1.currentPlayer]!.cash;
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).not.toBe(1);
+    expect(s2.fortuneDeck.cursor).not.toBe(s1.fortuneDeck.cursor);
+    expect(s2.players[s2.currentPlayer]!.cash).toBe(cash);
+    expect(s2.landOwner).toEqual(s1.landOwner);
+  });
+
+  run('④ 神明加持是**满档**也照收（事件 1 没有 `fcn_0044b896` 那一支）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 19 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    // 加持值拉满（> 100 ⇒ 档位 2）：别的命運会「加倍 / 免付」，事件 1 照收
+    const s1: GameState = {
+      ...withLands(forceDraw1(on), [[16, 0]]),
+      players: on.players.map((p, i) => (i === on.currentPlayer ? { ...p, fortune: 101 } : p)),
+    };
+    const s2 = reduce(s1, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(1);
+    expect(s2.landOwner[16]).toBe(0);
+    expect(s2.notices.some((n) => n.key.startsWith('blessing.')), '没有「逃過此劫 / 免付罰金」那一句').toBe(false);
   });
 });
 
@@ -211,7 +353,8 @@ describe('★★ 新聞 29「違法超貸」：目標由效果層隨機抽，不
     // ★ 抽牌者（当前玩家）**一根汗毛都没动** —— 关抽牌者是「关错人」
     expect(s3.players[s2.currentPlayer]!.blocking.inPrison).toBe(0);
     expect(s3.prisonOccupancy[s2.currentPlayer]).toBe(0);
-    // ★ 恰好消耗一次 rand()（抽企業那一步）
+    // ★ 抽企業一次 + 首次入獄 5 天的倒霉台词一次（`0x0043d5f9 call 0x44f2c2`，2026-09-25 起接进随机流）
+    probe.next();
     expect(s3.rngState).toBe(probe.getState());
     // ★ 保險理賠（原版 `0x43edf8 call 0x44ba63` 在 `send_to_prison` 函數體內）：
     //   2000 × 天 × 物價，落在**實際受害者**身上
@@ -280,6 +423,21 @@ describe('★ 命運 5 生日收卡：真人寿星**分帧**问每一位（T-055
     expect(s2.players[1]!.cards).toEqual([3, 7]);
     expect(s2.players[2]!.cards).toEqual([9]);
     expect(s2.players[0]!.cards).toEqual([]);
+  });
+
+  // ★★ 2026-09-24（provenance 审计）订正：电脑寿星那一支**没有**框（`0x0044c46d call 0x441e77` →
+  //   `0x0044c47e call 0x4412e4` → `jmp 0x44c573`），「搶得%s的」是搶奪卡 `0x00441ab1` 的，先前借错了出处。
+  run('★ **电脑**寿星当场收完、不弹「搶得」框；收走的牌先回牌堆再发给寿星（牌堆总数不变）', () => {
+    const { topo, s } = birthdayScene();
+    if (s === null) return;
+    const ai: GameState = { ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 2 } : p)) };
+    const s2 = reduce(ai, { type: 'settle' }, topo);
+    expect(s2.pending?.kind).not.toBe('birthdayCard');
+    const got = s2.players[0]!.cards;
+    expect(got.length).toBeGreaterThan(0);
+    expect(s2.notices.filter((n) => n.key === 'card.robbed')).toHaveLength(0);
+    const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
+    expect(sum(s2.cardAmount)).toBe(sum(ai.cardAmount));
   });
 
   run('★ 答一位走一位：挑中的牌进寿星手里，全答完 pending 清空', () => {
@@ -394,6 +552,56 @@ describe('★ 新聞 7「公開拍賣公有土地一處」会当场开一场拍�
   });
 });
 
+describe('★★ 第十八份：新聞 7 开拍即流标 / 落槌提示 `lastAuctionResults`', () => {
+  run('★ 全员现金 ≤ 底价（存款再多也不算，`0x0043c12c` 只读现金）⇒ 当场流标，并留下一条落槌提示；下一条 action 清掉', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    const s2: GameState = {
+      ...s1,
+      newsDeck: { order: [7, ...s1.newsDeck.order.filter((x) => x !== 7)], cursor: 0 },
+      players: s1.players.map((p) => ({ ...p, cash: 34, moneyInBank: 120_734 })),
+    };
+    const unowned = topo.lands?.find((l) => (s2.landOwner[l.id] ?? l.owner) === 0);
+    if (unowned === undefined) return;
+    const s3 = reduce(s2, { type: 'settle' }, topo);
+    expect(s3.lastEvent).toEqual({ kind: 'news', id: 7 });
+    expect(s3.pending).toBeNull();
+    const hints = s3.lastAuctionResults ?? [];
+    expect(hints.length).toBe(1);
+    expect(hints[0]!.winner).toBe(-1);
+    expect(hints[0]!.price).toBe(0);
+    expect(hints[0]!.pending.seller).toBe(-1);
+    expect(hints[0]!.pending.status?.every((x) => x === 'givenUp')).toBe(true);
+    // 只活一条 action
+    const s4 = reduce(s3, { type: 'endTurn' }, topo);
+    expect(s4).not.toBe(s3);
+    expect(s4.lastAuctionResults ?? null).toBeNull();
+  });
+
+  run('★ 正常竞价落槌：提示里是得标者与成交价（屏据此演「%d元成交」）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 5 });
+    const s1 = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (s1 === null) return;
+    const s2: GameState = { ...s1, newsDeck: { order: [7, ...s1.newsDeck.order.filter((x) => x !== 7)], cursor: 0 } };
+    let s = reduce(s2, { type: 'settle' }, topo);
+    if (s.pending?.kind !== 'auction') return;
+    const seat = s.pending.bidders[s.pending.seat]!;
+    s = reduce(s, { type: 'auctionBid', bidder: seat, status: 'raise', step: 1000 }, topo);
+    const price = s.pending?.kind === 'auction' ? s.pending.price : 0;
+    for (let guard = 0; guard < 8 && s.pending?.kind === 'auction'; guard++) {
+      const who = s.pending.bidders[s.pending.seat]!;
+      s = reduce(s, { type: 'auctionBid', bidder: who, status: 'pass', step: 0 }, topo);
+    }
+    expect(s.pending).toBeNull();
+    expect(s.lastAuctionResults).toEqual([expect.objectContaining({ winner: seat, price })]);
+  });
+});
+
 describe('★ 公园格仍然什么都不发生（原版行为）', () => {
   run('状态除 phase 外不变', () => {
     const map = loadMap();
@@ -455,6 +663,169 @@ describe('★ 神明加持真的接上了 @source VA 0x0044b896', () => {
     expect(s2.lastEvent?.id).toBe(14);
     // 3000 × 物价指数 1 × 2
     expect(s2.players[s2.currentPlayer]!.cash).toBe(cash - 6000);
+  });
+
+  // ★★ 第十四份試玩回報 #1 顺带查出：命運罰款那一族**共用**尾巴 `0x0044cec2`，
+  //   `0x0044cf11 call 0x44ba63`（保險理賠）不只 14 一条（见 `FORTUNE_PAY_TAIL_IDS` 的逐条入口）。
+  run('★★ 保險期内抽到「付保險金 / 亂丟垃圾 / 請客 / 遺失錢包 / 被倒會」⇒ 付完**照样理赔**（@source 0x0044cf11）', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return;
+    const me = on.currentPlayer;
+    // factor × 物價指數 1（`event-table.ts`）
+    const cases: [number, number][] = [[17, 6000], [18, 600], [19, 1500], [23, 1000], [24, 2000], [26, 8000], [30, 5000]];
+    expect(cases.every(([id]) => FORTUNE_PAY_TAIL_IDS.has(id))).toBe(true);
+    for (const [id, amount] of cases) {
+      const insured: GameState = {
+        ...on,
+        players: on.players.map((p, i) => (i === me ? { ...p, fortune: 0, insuranceDays: 30 } : p)),
+      };
+      const cash = insured.players[me]!.cash;
+      const s2 = reduce(forceDraw(insured, id), { type: 'settle' }, topo);
+      expect(s2.lastEvent).toEqual({ kind: 'fortune', id });
+      // 罚金照付进公库，保險公司再赔回同一笔（進現金，`pay_money` 旗标 1）
+      expect(s2.pool).toBe(insured.pool + amount);
+      expect(s2.players[me]!.monthlyPaid).toBe(insured.players[me]!.monthlyPaid + amount);
+      expect(s2.players[me]!.monthlyReceived).toBe(insured.players[me]!.monthlyReceived + amount);
+      expect(s2.players[me]!.cash).toBe(cash);
+
+      // 没保險 ⇒ 只付不赔
+      const bare: GameState = {
+        ...on,
+        players: on.players.map((p, i) => (i === me ? { ...p, fortune: 0, insuranceDays: 0 } : p)),
+      };
+      const s3 = reduce(forceDraw(bare, id), { type: 'settle' }, topo);
+      expect(s3.players[me]!.cash).toBe(bare.players[me]!.cash - amount);
+      expect(s3.players[me]!.monthlyReceived).toBe(bare.players[me]!.monthlyReceived);
+    }
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  //  ★★ 第十四份（需求方拍板照原版）：神明加持那一扇框 + 框之后那一句 + 理賠框 + 進帳台词提示
+  // ════════════════════════════════════════════════════════════════
+  const standFortune = (fortune: number, luck = 0, extra: Partial<GameState['players'][number]> = {}) => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return null;
+    const me = on.currentPlayer;
+    const s1: GameState = {
+      ...on,
+      players: on.players.map((p, i) => (i === me ? { ...p, fortune, luck, godInfo: 0, ...extra } : p)),
+    };
+    return { s1, me, topo };
+  };
+
+  run('★★ 罰款被神明免付 ⇒ 「%s保佑／免付罰金！」框（@source 0x0044b9c9）+ 之后 0x44f567 那一句（原额）', () => {
+    const c = standFortune(101);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 30), { type: 'settle' }, c.topo);
+    expect(s2.notices).toEqual([
+      { key: 'blessing.penaltyVoid', args: ['間諜'], beforeFilms: true, say: { player: c.me, reliefAmount: 5000 } },
+    ]);
+    expect(s2.pool).toBe(c.s1.pool);
+  });
+
+  run('★★ 罰款加倍 + 保險期 ⇒ 「罰金加倍」框在前、理賠框（2000 ms，×2 那一笔）在后；不带 say', () => {
+    const c = standFortune(-1, 0, { insuranceDays: 30 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 30), { type: 'settle' }, c.topo);
+    expect(s2.notices).toEqual([
+      { key: 'blessing.penaltyDouble', args: ['間諜'], beforeFilms: true },
+      { key: 'insurance.payout', args: [10000], holdMs: 2000 },
+    ]);
+  });
+
+  run('★ 事件 3（支票跳票）財運 < 0 ⇒ 调用方只认 1（`0x0044c28d cmp eax,1`）⇒ **不弹**', () => {
+    const c = standFortune(-1);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 3), { type: 'settle' }, c.topo);
+    if (s2.lastEvent?.id !== 3) return; // 这张图上 3 不可抽就跳过
+    expect(s2.notices.filter((n) => n.key.startsWith('blessing.'))).toEqual([]);
+  });
+
+  run('★★ 坐牢被福運挡掉 ⇒ 「逃過此劫」框 + 之后事件 0（@source 0x0044d873）', () => {
+    for (const id of [33, 34, 35, 36]) {
+      const c = standFortune(0, 101);
+      if (c === null) return;
+      const s2 = reduce(forceDraw(c.s1, id), { type: 'settle' }, c.topo);
+      expect(s2.lastEvent?.id).toBe(id);
+      expect(s2.notices).toEqual([
+        { key: 'blessing.misfortuneVoid', args: ['間諜'], beforeFilms: true, say: { player: c.me, event: 0 } },
+      ]);
+      expect(s2.players[c.me]!.blocking.inPrison).toBe(0);
+    }
+  });
+
+  run('★★ 命運「進帳」那一族 ⇒ `lastGainSays`（0x0044d334）；獎金作廢 ⇒ 没有、只弹框', () => {
+    const ok = standFortune(0);
+    if (ok === null) return;
+    const s2 = reduce(forceDraw(ok.s1, 25), { type: 'settle' }, ok.topo);
+    expect(s2.lastGainSays).toEqual([{ player: ok.me, amount: 10000 }]);
+    const voided = standFortune(-1);
+    if (voided === null) return;
+    const s3 = reduce(forceDraw(voided.s1, 25), { type: 'settle' }, voided.topo);
+    expect(s3.lastGainSays ?? null).toBeNull();
+    expect(s3.notices.map((n) => n.key)).toEqual(['blessing.rewardVoid']);
+    // 只活一条 action
+    const s4 = reduce(s2, { type: 'endTurn' }, ok.topo);
+    expect(s4.lastGainSays ?? null).toBeNull();
+  });
+
+  run('★★ 命運 10 / 11 施加后那一句：10 用同一个发生器掷 `rand()&1`（@source 0x0044cb28）→ 事件 3|4；11 固定事件 3', () => {
+    // 10 / 11 按座驾重映射（機車 → 10、汽車 → 11，`fortune.ts`）
+    const moto = standFortune(0, 0, { trafficMethod: 1 });
+    const car = standFortune(0, 0, { trafficMethod: 2 });
+    if (moto === null || car === null) return;
+    const s11 = reduce(forceDraw(car.s1, 11), { type: 'settle' }, car.topo);
+    const s10 = reduce(forceDraw(moto.s1, 10), { type: 'settle' }, moto.topo);
+    expect(s11.lastEvent).toEqual({ kind: 'fortune', id: 11, phraseIndex: 3 });
+    expect(s10.lastEvent?.id).toBe(10);
+    // 10 比 11 **多掷一次**（其余消耗两者相同：都是福運 0，不掷加持）
+    const rng = new WatcomRng();
+    rng.setState(s11.rngState);
+    const v = rng.next();
+    expect(s10.rngState).toBe(rng.getState());
+    expect(s10.lastEvent?.phraseIndex).toBe(3 + (v & 1));
+  });
+
+  run('★ 被福運挡掉（逃過此劫）⇒ 不带那一句', () => {
+    const c = standFortune(0, 101, { trafficMethod: 2 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 11), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent).toEqual({ kind: 'fortune', id: 11 });
+  });
+
+  run('★★ 命運 6 出國 3 天 ⇒ `0x0040d3f8` 那一句（事件 5）+ 保險期内理赔（`0x0040d425`）', () => {
+    const c = standFortune(0, 0, { insuranceDays: 30 });
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 6), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent?.id).toBe(6);
+    const victim = s2.lastDisappearSay?.player ?? -1;
+    expect(s2.lastDisappearSay).toEqual({ player: victim, event: 5 });
+    expect(s2.players[victim]!.blocking.disappearing & 0x3f).toBe(3);
+    expect(s2.notices.at(-1)).toEqual({ key: 'insurance.payout', args: [6000], holdMs: 2000 });
+  });
+
+  run('★ 倒霉加倍（6 天）⇒ 中间档 `rand()&1`：事件 3|4，用同一个发生器掷', () => {
+    const c = standFortune(0, -1);
+    if (c === null) return;
+    const s2 = reduce(forceDraw(c.s1, 6), { type: 'settle' }, c.topo);
+    expect(s2.lastEvent?.id).toBe(6);
+    expect([3, 4]).toContain(s2.lastDisappearSay?.event);
+  });
+
+  run('★ 16（汽車超速罰款）接上了加持：財運 > 100 ⇒ 免付', () => {
+    const c = standFortune(101, 0, { trafficMethod: 2 });
+    if (c === null) return;
+    const cash = c.s1.players[c.me]!.cash;
+    const s2 = reduce(forceDraw(c.s1, 16), { type: 'settle' }, c.topo);
+    if (s2.lastEvent?.id !== 16) return;
+    expect(s2.players[c.me]!.cash).toBe(cash);
+    expect(s2.notices[0]?.key).toBe('blessing.penaltyVoid');
   });
 
   run('★★ 財運 = 0 ⇒ 照常付一次（不受影响）', () => {
@@ -809,5 +1180,63 @@ describe('★★ 命運的免罪(21)/嫁禍(19) 二級判定接進 reducer @sour
     expect(after.players[me]!.blocking.inPrison).toBe(3);
     expect(after.prisonOccupancy[me]).toBe(1);
     expect(after.rngState).toBe(env.state.rngState);
+  });
+});
+
+describe('★★ 第十四份：新聞 8/9/10 受奖人的進帳台词提示（@source 0x00449a80 call 0x44f354）', () => {
+  run('新聞 8「表揚第一大地主」⇒ `lastGainSays` = [受奖人, 10000×物價]', () => {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const s0 = newGame({ map, players: players(), seed: 7 });
+    const on = standOn(s0, map, SPECIAL_KIND.NEWS);
+    if (on === null) return;
+    // 让 1 号名下有一块地 ⇒ 他就是第一大地主
+    const landId = (map.lands ?? [])[0]!.id;
+    const landOwner = [...on.landOwner];
+    landOwner[landId] = 2;
+    const forced: GameState = {
+      ...on,
+      landOwner,
+      newsDeck: { ...on.newsDeck, order: [8, ...on.newsDeck.order.filter((x) => x !== 8)], cursor: 0 },
+    };
+    const s2 = reduce(forced, { type: 'settle' }, topo);
+    expect(s2.lastEvent?.id).toBe(8);
+    expect(s2.lastGainSays).toEqual([{ player: 1, amount: 10000 * s2.priceIndex }]);
+    expect(s2.players[1]!.monthlyReceived - forced.players[1]!.monthlyReceived).toBe(10000 * s2.priceIndex);
+  });
+});
+
+/**
+ * ★ 命運「冒貸」也定还款日：`0x0044c1fa add [player+0x24], edx` 紧跟 `0x0044c201 call 0x433b7e`。
+ *   神明作廢（`0x0044c191 cmp eax,1 / jne` 那一支 `jmp 0x44c220`）碰不到这两句。
+ */
+describe('★ 命運「冒貸」→ 还款日 = 今天 + 0x5a 天（顺延）@source 0x0044c201', () => {
+  function setupLoan(fortune: number): { state: GameState; topo: ReturnType<typeof topoOf> } | null {
+    const map = loadMap();
+    const topo = topoOf(map);
+    const base = newGame({ map, players: players(), seed: 5 });
+    const on = standOn(base, map, SPECIAL_KIND.FORTUNE);
+    if (on === null) return null;
+    const state: GameState = {
+      ...on,
+      fortuneDeck: { order: [2, ...on.fortuneDeck.order.filter((x) => x !== 2)], cursor: 0 },
+      players: on.players.map((p, i) => (i === on.currentPlayer ? { ...p, fortune, loan: 0, loanDueDate: 0 } : p)),
+    };
+    return { state, topo };
+  }
+
+  run('贷款加上去了 ⇒ 还款日落在 90 天之后的第一个营业日', () => {
+    const env = setupLoan(0);
+    if (env === null) return;
+    const after = reduce(env.state, { type: 'settle' }, env.topo);
+    expect(after.lastEvent?.id).toBe(2);
+    const me = after.players[after.currentPlayer]!;
+    expect(me.loan).toBeGreaterThan(0);
+    const dueDay = dayNumberSince1998(me.loanDueDate >>> 16, (me.loanDueDate >>> 8) & 0xff, me.loanDueDate & 0xff);
+    const left = dueDay - dayNumberSince1998(after.year, after.month, after.day);
+    expect(left).toBeGreaterThanOrEqual(0x5a);
+    // 顺延只跳星期日与節日（连着的假日至多几天）
+    expect(left).toBeLessThan(0x5a + 7);
+    expect(weekdayOf(me.loanDueDate >>> 16, (me.loanDueDate >>> 8) & 0xff, me.loanDueDate & 0xff)).not.toBe(0);
   });
 });

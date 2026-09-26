@@ -10,11 +10,18 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Action, GameState, MapTopology, Player, Rich4Map } from '@rich4/core';
+import { setVoiceBusyProbe, setVoiceSink, setVoiceStopper } from './voice-sink.ts';
 import {
+  AUCTION_VOICE_TEXT,
+  AUCTION_INTRO_TEXT,
+  AUCTION_ASK_FORMAT,
+  auctionMessageForTest,
+  holdBoxForVoice,
   AUCTION_ART,
   AUCTION_BUTTON,
   AUCTION_BUTTONS,
   AUCTION_BOX_MS,
+  AUCTION_OPENING_MS,
   AUCTION_CHUNK,
   AUCTION_DEAL_FORMAT,
   AUCTION_FRAME_MS,
@@ -48,6 +55,9 @@ import {
   AUCTION_SELLER_CODE,
   AUCTION_BROKE_CODE,
   AUCTION_SELLER_TEXT,
+  AUCTION_PASSED_IN_TEXT,
+  auctionPresentationOnly,
+  drawAuctionScreen,
 } from './auction-screen.ts';
 import type { Sprite } from './assets.ts';
 import type { UiScreenEnv } from './ui-screen.ts';
@@ -322,11 +332,12 @@ describe('六个「不在场」@source 0x496b9a 起', () => {
     expect(AUCTION_STATUS_TEXT).toEqual(['住宿中', '消失中', '坐牢中', '住院中', '冬眠中', '夢遊中']);
   });
 
-  it('★ awayCodeOf 按 +0x32..+0x37 的先后取第一个非 0', () => {
+  it('★ awayCodeOf：+0x32..+0x37 六次顺序各写一次，同时非 0 时**后写的赢** @source 0x0043c155..0x0043c220', () => {
     const base = mkPlayer(0, 1);
     expect(awayCodeOf(base)).toBe(0);
     expect(awayCodeOf(withBlocking(base, { inHospital: 3 }))).toBe(4);
-    expect(awayCodeOf(withBlocking(base, { inHotel: 1, inPrison: 2 }))).toBe(1);
+    // 第十八份订正：每个 `je` 只跳过自己那一句 `mov word [座位+2], n`，后面几次照样比 ⇒ 3 盖掉 1
+    expect(awayCodeOf(withBlocking(base, { inHotel: 1, inPrison: 2 }))).toBe(3);
     expect(awayCodeOf(withBlocking(base, { sleepWalking: 1 }))).toBe(6);
   });
 });
@@ -446,6 +457,16 @@ function withNow(env: UiScreenEnv, now: number): UiScreenEnv {
   return { ...env, now };
 }
 
+/**
+ * ★ pt23：开场那句 +「底價…請意者出價」（各 `AUCTION_BOX_MS`）走完才轮到第一位（原版相位 1 → 2 → 3，`0x0043bb2f`）——
+ *   点钮的测试都从这一刻起。两扇框的交接要 `tick` 推，这里照帧推两下。
+ */
+function afterIntro(env: UiScreenEnv): UiScreenEnv {
+  auctionScreen.tick!(withNow(env, env.now + AUCTION_BOX_MS));
+  auctionScreen.tick!(withNow(env, env.now + AUCTION_OPENING_MS));
+  return withNow(env, env.now + AUCTION_OPENING_MS);
+}
+
 describe('整屏接线（UiScreen 契约）', () => {
   it('★ 只有 auction 待决交互才接管', () => {
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
@@ -489,8 +510,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
     // ★ 现价由 core 落账；屏内这一帧还没变（旧版是屏自己改，那是两条循环）
     expect(auctionRunForTest()!.price).toBe(5000);
@@ -502,8 +523,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'pass', step: 0 }]);
   });
 
@@ -513,8 +534,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(6);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'giveUp', step: 0 }]);
   });
 
@@ -524,8 +545,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3); // +1000 > 5500 − 5000
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    auctionScreen.down!(406, y, afterIntro(env));
+    auctionScreen.up!(406, y, afterIntro(env));
     expect(actions).toEqual([]);
   });
 
@@ -537,6 +558,7 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env, actions } = mkEnv(pending, players, 1000);
     auctionScreen.tick!(env); // 建桌，开场消息 2 秒
     auctionScreen.tick!(withNow(env, 3500));
+    auctionScreen.tick!(withNow(env, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
   });
 
@@ -559,8 +581,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const mine: UiScreenEnv = { ...env, localSeat: 0 };
     auctionScreen.tick!(mine);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, mine);
-    auctionScreen.up!(406, y, mine);
+    auctionScreen.down!(406, y, afterIntro(mine));
+    auctionScreen.up!(406, y, afterIntro(mine));
     expect(actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'pass', step: 0 }]);
   });
 
@@ -571,8 +593,8 @@ describe('整屏接线（UiScreen 契约）', () => {
     const other: UiScreenEnv = { ...env, localSeat: 1 };
     auctionScreen.tick!(other);
     const y = auctionButtonY(0);
-    auctionScreen.down!(406, y, other);
-    auctionScreen.up!(406, y, other);
+    auctionScreen.down!(406, y, afterIntro(other));
+    auctionScreen.up!(406, y, afterIntro(other));
     expect(actions).toEqual([]);
   });
 
@@ -585,12 +607,14 @@ describe('整屏接线（UiScreen 契约）', () => {
     const netEnv: UiScreenEnv = { ...netSide.env, localSeat: 1 };
     auctionScreen.tick!(netEnv);
     auctionScreen.tick!(withNow(netEnv, 3500));
+    auctionScreen.tick!(withNow(netEnv, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(netSide.actions).toEqual([]);
 
     resetAuctionScreenForTest();
     const solo = mkEnv(pending, players, 1000);
     auctionScreen.tick!(solo.env);
     auctionScreen.tick!(withNow(solo.env, 3500));
+    auctionScreen.tick!(withNow(solo.env, 5500)); // 「底價…請意者出價」收掉（pt23）
     expect(solo.actions).toEqual([{ type: 'auctionBid', bidder: 0, status: 'raise', step: 1000 }]);
   });
 
@@ -612,10 +636,14 @@ describe('整屏接线（UiScreen 契约）', () => {
     const { env } = mkEnv(pending, players);
     auctionScreen.tick!(env);
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
-    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    const ready = afterIntro(env);
+    auctionScreen.down!(406, y, ready);
+    auctionScreen.up!(406, y, ready);
+    // ★ pt23：落槌那一口的挥槌先演完（`0x0043ab40` → 相位 5 才判终局）
+    const settled = { ...ready, state: { ...env.state, pending: null } as GameState };
     auctionScreen.tick!(settled);
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!(withNow(settled, ready.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES));
     expect(auctionRunForTest()!.phase).toBe('sold');
     expect(auctionRunForTest()!.winner).toBe(0);
     // 演出结束后屏自己退出接管
@@ -666,7 +694,7 @@ describe('整屏接线（UiScreen 契约）', () => {
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
     const { env } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
     auctionScreen.tick!(env); // 建桌：开场
-    auctionScreen.tick!(withNow(env, 3500)); // 开场到期 → 拆掉，下一帧才请出价
+    auctionScreen.tick!(withNow(env, 3500)); // 开场到期 → 当拍弹「底價…請意者出價」（pt23：每一场一次，挡 2 秒）
     auctionScreen.tick!(withNow(env, 3600));
     // 走到这里没有崩、也没有 dispatch —— 真人那一格就等着点钮
     expect(auctionScreen.active(env)).toBe(true);
@@ -684,12 +712,16 @@ describe('★★ 试玩 4 回归：落槌那一刻屏**不能**立刻退场（�
     const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
     const { env } = mkEnv(auctionPending({ bidders: [0, 1], limits: [0, 9000] }), players);
     auctionScreen.tick!(env); // 建桌
-    // 真人点 +1000（屏内记下「0 号加过 1000」）
+    // 真人点 +1000（屏内记下「0 号加过 1000」）—— 开场那句走完、挥槌也走完（pt23）
     const y = auctionButtonY(3);
-    auctionScreen.down!(406, y, env);
-    auctionScreen.up!(406, y, env);
+    const ready = afterIntro(env);
+    auctionScreen.down!(406, y, ready);
+    auctionScreen.up!(406, y, ready);
     // core 落槌 ⇒ pending 变 null，此刻 settling/outcome **都还是假的**
-    const settled = { ...env, state: { ...env.state, pending: null } as GameState };
+    const settled = {
+      ...withNow(ready, ready.now + AUCTION_FRAME_MS * AUCTION_HAMMER_FRAMES),
+      state: { ...env.state, pending: null } as GameState,
+    };
     // ★★ 这一条就是那个 bug：先前 `active()` 是 `screen.settling`，
     //   而 `settling` 要等 `tick` 里的 `beginSettle` 才置 —— 于是 `active()` 先变假、
     //   `tick` 再也不被调、`beginSettle` 永远起不来（结果一次都演不出来）。
@@ -711,5 +743,213 @@ describe('★★ 试玩 4 回归：落槌那一刻屏**不能**立刻退场（�
     auctionScreen.tick!(settled);
     // 一次都没人加价 ⇒ 流拍
     expect(auctionRunForTest()!.phase).toBe('passedIn');
+  });
+});
+
+describe('★★ 第十八份「怎么拍卖直接流标了」：结果以 core 的落槌提示为准', () => {
+  it('★ 电脑那几口不是本屏发的（单机回合驱动 / 联机服务器）⇒ 屏照样演「成交」，不再演成流標', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1, 34), mkPlayer(1, 2), mkPlayer(2, 2)];
+    const pending = auctionPending({ basePrice: 2500, bidders: [0, 1, 2], seat: 1, status: ['givenUp', 'active', 'active'] });
+    const { env } = mkEnv(pending, players);
+    auctionScreen.tick!(env); // 建桌
+    // 屏外有人把几口出完、core 落槌：1 号 4500 成交
+    const after = {
+      ...env.state,
+      pending: null,
+      lastAuctionResults: [{ pending: { ...pending, price: 4500, top: 1 }, winner: 1, price: 4500 }],
+    } as unknown as GameState;
+    auctionScreen.event!(env.state, after, env);
+    const settled = { ...env, state: after };
+    auctionScreen.tick!(settled);
+    expect(auctionRunForTest()!.phase).toBe('sold');
+    expect(auctionRunForTest()!.winner).toBe(1);
+    // 结算这段是纯演出：驱动 / 收件箱都该等它（原版模态窗）
+    expect(auctionPresentationOnly(settled)).toBe(true);
+    auctionScreen.tick!({ ...settled, now: settled.now + 5000 });
+    expect(auctionScreen.active({ ...settled, now: settled.now + 5000 })).toBe(false);
+    expect(auctionPresentationOnly({ ...settled, now: settled.now + 5000 })).toBe(false);
+  });
+
+  it('★ 竞价进行中不算纯演出（每一口要靠驱动 / 收件箱送进来）', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const { env } = mkEnv(auctionPending({ bidders: [0, 1] }), players);
+    expect(auctionPresentationOnly(env)).toBe(false);
+    auctionScreen.tick!(env);
+    expect(auctionPresentationOnly(env)).toBe(false);
+  });
+
+  it('★ 开拍即流标（pending 从没挂出来）⇒ 照原版开窗、开场那句走完再「無人出價，宣佈流標。」@source 0x0043b2c5..0x0043b2cd', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1, 10), mkPlayer(1, 2, 10)];
+    const { env } = mkEnv(null, players);
+    const opened = auctionPending({ basePrice: 2500, bidders: [0, 1], seat: -1, status: ['givenUp', 'givenUp'] });
+    const after = { ...env.state, lastAuctionResults: [{ pending: opened, winner: -1, price: 0 }] } as unknown as GameState;
+    auctionScreen.event!(env.state, after, env);
+    const e2 = { ...env, state: after };
+    expect(auctionScreen.active(e2)).toBe(true);
+    expect(auctionPresentationOnly(e2)).toBe(true);
+    auctionScreen.tick!(e2); // 开窗：开场那句
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!({ ...e2, now: e2.now + 500 }); // 开场那句还没走完
+    expect(auctionRunForTest()!.phase).toBe('bidding');
+    auctionScreen.tick!({ ...e2, now: e2.now + AUCTION_BOX_MS }); // 走完 ⇒ 宣布流標
+    expect(auctionRunForTest()!.phase).toBe('passedIn');
+    expect(AUCTION_PASSED_IN_TEXT).toBe('無人出價，宣佈流標。');
+    const done = { ...e2, now: e2.now + AUCTION_BOX_MS * 3 };
+    auctionScreen.tick!(done);
+    expect(auctionScreen.active(done)).toBe(false);
+  });
+
+  it('★ 不在场（1..6）盖掉「出不起底价」(8)：坐牢又没钱的那位显示「坐牢中」@source 0x0043c140 → 0x0043c19d', () => {
+    const players = [withBlocking(mkPlayer(0, 1, 10), { inPrison: 2 }), mkPlayer(1, 2)];
+    const seats = seatViewOf(auctionPending({ bidders: [0, 1], seat: 1, status: ['givenUp', 'active'] }), players, -1);
+    expect(seats[0]!.state).toBe('away');
+    expect(seats[0]!.away).toBe(3);
+  });
+});
+
+describe('★★ 第十八份：「賣方」是发起拍卖者（arg0 = pending.seller），不是地主 @source 0x0043c109 / 0x0043c22a / 0x0043c23c', () => {
+  it('★ 发起者不在 bidders 里也占一格（按玩家号排）、显示賣方；地主照常是可出价的一格', () => {
+    resetAuctionScreenForTest();
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2), mkPlayer(2, 2)];
+    // 拍賣卡：1 号用卡（arg0 = 1）→ core 的 bidders 不含他；待拍地的地主是 0 号
+    const pending = { ...auctionPending({ bidders: [0, 2], seat: 1 }), seller: 1 };
+    const { env } = mkEnv(pending as never, players);
+    const landOwner = [1, 1, 1, 1]; // 四块地都归 0 号（owner 编码 = 玩家号 + 1）
+    const e = { ...env, state: { ...env.state, landOwner } as GameState };
+    auctionScreen.tick!(e);
+    const run = auctionRunForTest()!;
+    expect(run.seats.map((x) => [x.player, x.state])).toEqual([
+      [0, 'canBid'], // 地主能举牌（0x43c11f 只看 who_plays，不看 owner）
+      [1, 'seller'],
+      [2, 'canBid'],
+    ]);
+    // pending.seat 是 bidders 下标（1 → 2 号）⇒ 屏上座位下标 2
+    expect(run.current).toBe(2);
+  });
+
+  it('★ 新聞 7 / 破產清算（seller = −1）没有賣方那一格', () => {
+    const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+    const seats = seatViewOf({ ...auctionPending({ bidders: [0, 1] }), seller: -1 } as never, players, -1);
+    expect(seats.map((x) => x.state)).toEqual(['canBid', 'canBid']);
+  });
+
+  it('★ 开场建桌时賣方画自己的 `3×角色+0x1b` 第 0 帧、不在场画 `3×角色+0x1c` @source 0x0043c486..0x0043c4cb', () => {
+    const calls: [number, number][] = [];
+    const sprite = (_a: 'Panel.mkf', res: number, idx: number) => {
+      calls.push([res, idx]);
+      return null;
+    };
+    const ctx = {
+      save() {}, restore() {}, drawImage() {}, fillText() {}, strokeText() {}, measureText: () => ({ width: 10 }),
+      fillStyle: '', strokeStyle: '', lineWidth: 0, font: '', textAlign: 'left', textBaseline: 'alphabetic',
+    } as unknown as CanvasRenderingContext2D;
+    drawAuctionScreen(ctx, sprite, {
+      seats: [
+        { player: 0, character: 2, state: 'seller', away: 0, cash: 1 },
+        { player: 1, character: 5, state: 'away', away: 3, cash: 1 },
+      ],
+      current: -1,
+      top: -1,
+      price: 0,
+      entityImage: 0x5a,
+      pressed: null,
+      humanTurn: false,
+      animating: null,
+      message: null,
+    });
+    expect(calls).toContainEqual([3 * 2 + 0x1b, 0]);
+    expect(calls).toContainEqual([3 * 5 + 0x1c, 0]);
+  });
+});
+
+// ============================================================
+//  ★★ 第二十六份 panel #2：消息框的语音与时长（`fcn_0044ee18`）
+// ============================================================
+describe('★★ 第二十六份 panel #2：拍賣消息框 = `0x44ecb6` 气泡 ⇒ 带语音、满 2000 ms 且语音放完才收', () => {
+  it('原串带 `#0131` / `#0132` / `#0148` / `#0135`（逐字同 exe），屏上画跳掉之后的字', () => {
+    expect(AUCTION_VOICE_TEXT).toEqual({
+      intro: '#0131公開拍賣土地一處。',
+      ask: '#0132底價%d元\n請意者出價。',
+      passedIn: '#0148無人出價，宣佈流標。',
+      deal: '#0135%d元成交',
+    });
+    expect(AUCTION_INTRO_TEXT).toBe('公開拍賣土地一處。');
+    expect(AUCTION_ASK_FORMAT).toBe('底價%d元\n請意者出價。');
+  });
+
+  it('`holdBoxForVoice`：到点那一拍语音还在响 ⇒ 这句与挂在它后面的时刻一起往后推；不响 / 没到点 ⇒ 不动', () => {
+    const st = { message: 'x', messageUntil: 3000, nextAt: 3000, settleUntil: 0 };
+    holdBoxForVoice(st, 2999, true);
+    expect(st).toEqual({ message: 'x', messageUntil: 3000, nextAt: 3000, settleUntil: 0 });
+    holdBoxForVoice(st, 3000, false);
+    expect(st.messageUntil).toBe(3000);
+    holdBoxForVoice(st, 3500, true);
+    expect(st).toEqual({ message: 'x', messageUntil: 3501, nextAt: 3501, settleUntil: 0 });
+    // 结算那一句：收摊时刻跟着推；不相干的更晚的 nextAt 不动
+    const settle = { message: 'y', messageUntil: 100, nextAt: 9000, settleUntil: 100 };
+    holdBoxForVoice(settle, 200, true);
+    expect(settle).toEqual({ message: 'y', messageUntil: 201, nextAt: 9000, settleUntil: 201 });
+  });
+
+  for (const mode of ['single', 'multiplayer'] as const) {
+    it(`${mode}：开场那句 #0131 语音 3.5 秒 ⇒「底價…」等它念完才弹（#0132），第一口也跟着顺延；点一下收框并停语音`, () => {
+      resetAuctionScreenForTest();
+      const played: number[] = [];
+      let stopped = 0;
+      let busy = true;
+      setVoiceSink((v) => played.push(v));
+      setVoiceBusyProbe(() => busy);
+      setVoiceStopper(() => {
+        stopped++;
+        busy = false;
+      });
+      try {
+        const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+        const base = mkEnv(auctionPending({ bidders: [0, 1] }), players, 1000).env;
+        const env = mode === 'single' ? base : { ...base, localSeat: 1 };
+        auctionScreen.tick!(env); // 开屏
+        expect(played).toEqual([131]);
+        expect(auctionMessageForTest()).toBe(AUCTION_INTRO_TEXT);
+        auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS));
+        auctionScreen.tick!(withNow(env, 1000 + 3000));
+        expect(auctionMessageForTest(), '语音还在响：满 2000 ms 也不收').toBe(AUCTION_INTRO_TEXT);
+        busy = false;
+        auctionScreen.tick!(withNow(env, 1000 + 3500));
+        auctionScreen.tick!(withNow(env, 1000 + 3516));
+        expect(auctionMessageForTest()).toBe(AUCTION_ASK_FORMAT.replace('%d', '5000'));
+        expect(played).toEqual([131, 132]);
+        // 「底價…」同样至少 2000 ms；挂着时点一下 ⇒ 收框 + 停语音（`0x0043bb27 push 1 / call 0x44ee18`）
+        busy = true;
+        auctionScreen.down!(10, 10, withNow(env, 1000 + 4000));
+        expect(stopped).toBe(1);
+        auctionScreen.tick!(withNow(env, 1000 + 4016));
+        expect(auctionMessageForTest()).toBeNull();
+      } finally {
+        setVoiceSink(null);
+        setVoiceBusyProbe(null);
+        setVoiceStopper(null);
+      }
+    });
+  }
+
+  it('音效关着（语音不响）⇒ 恰好 2000 ms，语音照样请求（sink 里由音效档闸掉）', () => {
+    resetAuctionScreenForTest();
+    const played: number[] = [];
+    setVoiceSink((v) => played.push(v));
+    try {
+      const players = [mkPlayer(0, 1), mkPlayer(1, 2)];
+      const env = mkEnv(auctionPending({ bidders: [0, 1] }), players, 1000).env;
+      auctionScreen.tick!(env);
+      auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS - 1));
+      expect(auctionMessageForTest()).toBe(AUCTION_INTRO_TEXT);
+      auctionScreen.tick!(withNow(env, 1000 + AUCTION_BOX_MS));
+      expect(auctionMessageForTest()).toBe(AUCTION_ASK_FORMAT.replace('%d', '5000'));
+      expect(played).toEqual([131, 132]);
+    } finally {
+      setVoiceSink(null);
+    }
   });
 });

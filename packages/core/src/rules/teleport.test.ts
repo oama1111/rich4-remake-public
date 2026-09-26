@@ -98,8 +98,9 @@ describe('傳送機', () => {
       expect(r.facilityLastToll[5]).toBe(300);
     });
 
-    it('无主設施搬不动；搬到自己身上也不行', () => {
-      expect(teleportFacility(two(), 2, 5)).toBeNull();
+    // ★ 2026-09-25 审计订正：来源拾取 `0x1200036` 的组字节 0 = 不设限 ⇒ 无主的来源也照搬
+    it('无主設施也照搬（来源不看归属）；搬到自己身上不行', () => {
+      expect(teleportFacility(two(), 2, 5)).not.toBeNull();
       expect(teleportFacility(two(), 1, 1)).toBeNull();
     });
 
@@ -137,6 +138,17 @@ describe('傳送機', () => {
     // @source `mov [源+0x19], 0` 等三行 —— 源头是要清掉的
     expect(after.landOwner[1]).toBe(0);
     expect(after.landLevel[1]).toBe(0);
+  });
+
+  it('★★ 到期日随地搬走、源的上次過路費清零；目标必须无主 0 级（0x00447546..0x00447553 / 0x0044658c）', () => {
+    const s0 = withTool();
+    const s = { ...s0, landTenure: s0.landOwner.map((_, i) => (i === 1 ? 777 : 0)), landLastToll: s0.landOwner.map((_, i) => (i === 1 ? 55 : 0)) };
+    const after = teleportLand(s, 1, 2)!;
+    expect(after.landTenure[2]).toBe(777);
+    expect(after.landTenure[1]).toBe(0);
+    expect(after.landLastToll[1]).toBe(0);
+    const owned = { ...s, landOwner: s.landOwner.map((v, i) => (i === 2 ? 3 : v)) };
+    expect(teleportLand(owned, 1, 2)).toBeNull();
   });
 
   it('空地搬不动，同一块地也搬不动', () => {
@@ -195,6 +207,19 @@ describe('傳送機', () => {
     expect(teleportPlayer(after, cross.nodes, 0, 5)).toBeNull(); // 已经在那儿了
   });
 
+  it('★★ 搬自己：先拍時光機快照、步数清 0、直接进停步结算（0x004477c3..0x004477d6），不再掷骰', () => {
+    const s = withTool();
+    const after = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 1, value: 5 }, cross);
+    expect(after.players[0]!.nodeId).toBe(5);
+    expect(after.phase).toBe('settling');
+    expect(after.stepsRemaining).toBe(0);
+    expect(after.snapshots[0]).toBeTruthy();
+    expect(toolCount(after.tools, 0, TOOL_TELEPORTER)).toBe(0);
+    // 搬别人不改相位
+    const other = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 2, value: 5 }, cross);
+    expect(other.phase).toBe('awaitingRoll');
+  });
+
   it('★ 走 useTool 这条路：地產编码 → 搬地產，并扣掉道具', () => {
     const s = withTool();
     const after = reduce(
@@ -211,14 +236,27 @@ describe('傳送機', () => {
     expect(toolCount(after.tools, 0, TOOL_TELEPORTER)).toBe(0);
   });
 
-  it('★ 設施那一路还没做 —— 不生效也不消耗道具（Q-TOOL-2）', () => {
-    const s = withTool();
-    const after = reduce(
-      s,
-      { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 0xfa1, value: 0xfa2 },
-      cross,
-    );
-    expect(after).toBe(s);
-    expect(toolCount(after.tools, 0, TOOL_TELEPORTER)).toBe(1);
+  it('★ 搬惡人 / 地上物件 / 附身物件（0x00447857 / 0x004478df / 0x00447495）', () => {
+    const base = withTool();
+    const actors = base.specialActors.map((a, i) => (i === 1 ? { ...a, place: 0 as const, nodeId: 1, direction: 0 } : a));
+    const s = { ...base, specialActors: actors, players: base.players.map((p) => ({ ...p, nodeId: 2 })) };
+    const movedActor = reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 0x8000 | (1 << 5), value: 5 }, cross);
+    expect(movedActor.specialActors[1]!.nodeId).toBe(5);
+    expect(toolCount(movedActor.tools, 0, TOOL_TELEPORTER)).toBe(0);
+    const objects = s.objects.map((o, i) => (i === 16 ? { ...o, nodeId: 1, attached: 0 } : o));
+    const withObj = { ...s, objects };
+    const movedObj = reduce(withObj, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 0x8000 | (17 << 8), value: 5 }, cross);
+    expect(movedObj.objects[16]!.nodeId).toBe(5);
+    // 附身物件 ⇒ 搬的是附身者（这里是 2 号玩家）
+    const carried = {
+      ...s,
+      objects: s.objects.map((o, i) => (i === 0 ? { ...o, nodeId: 2, attached: 3 } : o)),
+      players: s.players.map((p, i) => (i === 2 ? { ...p, godInfo: 1 } : p)),
+    };
+    const movedCarrier = reduce(carried, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 0x8000 | (1 << 8), value: 5 }, cross);
+    expect(movedCarrier.players[2]!.nodeId).toBe(5);
+    expect(movedCarrier.objects[0]!.nodeId).toBe(5);
+    // 真人搬到有人站着的格 ⇒ 不收（`0x409bc0`）
+    expect(reduce(s, { type: 'useTool', toolId: TOOL_TELEPORTER, nodeId: 0x8000 | (1 << 5), value: 2 }, cross)).toBe(s);
   });
 });

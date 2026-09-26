@@ -18,11 +18,12 @@
 
 import type { UiScreen } from './ui-screen.ts';
 import { boardScreen } from './board-screen.ts';
+import { bankruptScreen } from './bankrupt-screen.ts';
 import { auctionScreen } from './auction-screen.ts';
 import { lotteryScreen } from './lottery-screen.ts';
 import { lotteryDrawScreen } from './lottery-draw-screen.ts';
 import { magicScreen } from './magic-screen.ts';
-import { eventBoxScreen } from './event-box-screen.ts';
+import { eventBoxScreen, eventTailScreen } from './event-box-screen.ts';
 import { noticeBoxScreen } from './notice-box-screen.ts';
 import { wheelScreen } from './wheel-screen.ts';
 import { godSlotScreen } from './god-slot.ts';
@@ -33,6 +34,7 @@ import { helpScreen } from './help-screen.ts';
 import { bigMapScreen } from './big-map-screen.ts';
 import { sharesScreen } from './shares-screen.ts';
 import { facilityPickerScreen } from './facility-picker.ts';
+import { scapegoatPickerScreen } from './scapegoat-picker.ts';
 import { stealPickerScreen } from './steal-picker.ts';
 
 export const SCREENS: readonly UiScreen[] = [
@@ -49,14 +51,24 @@ export const SCREENS: readonly UiScreen[] = [
   //   「得一張卡片」与卡片格都会让手牌变长，两屏会从同一次 action 各起一段；
   //   魔法屋那一次该由魔法屋屏演（见 `event-box-screen.ts` 头注释）。
   eventBoxScreen,
+  // ★★ 2026-09-22（第十一份試玩回報 #15「踩到保险公司…应该是等玩家点完转盘停下…才弹出金额」）：
+  //   **转盘与老虎机必须排在訊息框之前** —— 原版次序是「转盘（阻塞、玩家点停）→ 費用/保費訊息框
+  //   → 台词」（設施收費 `0x41a458 轉盤 → 0x41a579 費用框`；別人的保險
+  //   `0x41ac3f 轉盤 → 0x41aeaa 保費框`）。
+  //   本引擎只画「此刻接管整屏」的**第一屏**（`main.ts` 的 `activeUiScreen`），
+  //   而且鼠标只发给那一屏 ⇒ 先前訊息框排在前面时，同一 action 里它先起播，
+  //   **压住转盘、还把玩家那一下「点停」吃掉**。
+  wheelScreen,
+  // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
+  //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。
+  //   ★ 它另有「等附身影片/开场白收场」的闸（见 `god-slot.ts` 的 `pendingCue`）。
+  godSlotScreen,
   // ★ 付费类落点的棕色訊息框（issue #18）：由 `state.notices` 起播，每扇 1500 ms
   //   可跳过（得点格那三扇是 1000 ms）；同一 action 里连弹两扇时按顺序一扇一扇放。
   //   原版弹在**结算当场**（`0x440cac`），与上面几屏不会同时起。
   noticeBoxScreen,
-  wheelScreen,
-  // ★ 「神明附身」那一刻的老虎机窗（Q-GOD-1）：与转盘同一类**演出**屏，
-  //   由 `event(before, after)` diff 出「刚附身 + 四种金額型」时起播。
-  godSlotScreen,
+  // ★ 第十五份：命運让出框之后那 800 ms（`0x0044dd7b`）—— 排在訊息框之后：pass 1 的理賠框先演完才开始数
+  eventTailScreen,
   // ★ 「請選擇設施類別」（Q-TOOL-4）：真人盖**等级 0 的設施**时要先选种类
   //   （原版 `fcn_00440aac`，一扇盖在棋盘上的浮窗）。它由主机的拾取/加蓋流程
   //   主动 `openFacilityPicker()` 打开，`active()` 只在开窗期间为真。
@@ -66,6 +78,16 @@ export const SCREENS: readonly UiScreen[] = [
   //   由主机的「目标拾取」拾到人之后主动 `openStealPicker()` 打开。
   //   ★ 与施設类别窗同一类：`windowed: true`、`active()` 只在开窗期间为真。
   stealPickerScreen,
+  // ★ 第十四份（D-008 收口）：嫁禍卡的选人窗（真人、候选两位以上）—— 排在訊息框之后：
+  //   原版先亮牌「嫁禍卡生效！」（`0x00444889`）再开这扇窗（`0x004448a1`）。
+  scapegoatPickerScreen,
+  // ★★ 第二十五份試玩回報「为什么忽然出现拍卖」：破產那一刻原版先阻塞播一段
+  //   `Data.mkf` 0x22b（碎裂的「破產」二字，10 帧 × 71 ms @ (0,40)，+2 s 静置，见
+  //   `bankrupt-screen.ts` 的文件头），**演完才** `_rich4_ui_auction_entry`。
+  //   本引擎一条 action 就把 `pending = auction` 写好了 ⇒ 拍賣屏会抢在影片之前。
+  //   故这一屏排在 `boardScreen` / `auctionScreen` **之前**：影片期间它接管，演完让位。
+  //   （訊息框 / 事件框仍排在它前面：原版也是「框 → 影片 → 拍賣」。）
+  bankruptScreen,
   // 待决交互类
   boardScreen,
   auctionScreen,

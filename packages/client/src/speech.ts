@@ -41,10 +41,12 @@
  * ── 有意偏离（完整版见 `docs/deviations/T-052.md`）────────────────
  *
  * 1. 原版在**中间档**用 `rand() & 1` 在相邻两句里随机二选一
- *    （`call _libc_rand / and eax,1 / mov reg,[表 + eax*4]`）。本文件是纯函数、
- *    不许动 PRNG，故**一律取 `eax = 0` 那一支**（即两句话里靠前、语气更重的那句）。
- * 2. 原版 `_rich4_player_say` 是**逐句播完再返回**，本引擎的 `SoundPlayer`
- *    是即发即忘，故同一动作里派生的多句会**叠着响**（见 main.ts 的 playSoundFor）。
+ *    （`call _libc_rand / and eax,1 / mov reg,[表 + eax*4]`），事件 18 / 17 的闸是 1/2、1/3。
+ *    本文件是纯函数、不许动 PRNG。✅ **2026-09-25（provenance 审计 events 第二轮）**：那一次 `rand()`
+ *    由 core 在 exe 掷的那一刻掷（与规则同一条流），原值记在 `after.lastSpeechRolls`；这里用
+ *    `speech-roll.ts` 的 `speechRand(before, after, 说话人, 站点 VA)` **查**它（先前 WP-3 的状态哈希已退役）。
+ * 2. 原版 `_rich4_player_say` 是**逐句播完再返回**；本引擎台词队列逐句上台，语音经 `audio.ts` 的
+ *    `VoiceChannel`（原版唯一那一路 `[0x47e750]`，起新句先 `0x454493` 停旧句）⇒ 不会再叠着响（pt26）。
  * 3. ✅ **2026-09-19：事件 16/17/22/23/26 已接线**（T-052 的 Q-SPEECH-5 原先登记为「没解」）：
  *    - 16/17 需要**街區**（同一 `land.name`）—— 那是地图静态数据 `topo`，
  *      故 `speechEventsFor` 多了一个**可选**的 `topo` 实参（缺席时这条探测器不出声）；
@@ -58,9 +60,14 @@
  */
 
 import {
+  FORTUNE_PAY_TAIL_IDS,
+  emptyOwnership,
   isAlive,
+  MAX_TOOL_ID,
+  MIN_TOOL_ID,
+  ownerOf,
+  toolCount,
   WHO_PLAYS_HUMAN,
-  WHO_PLAYS_MASK,
   type GameState,
   type MapTopology,
   type NoticeHint,
@@ -69,12 +76,15 @@ import {
 import {
   CARDS,
   CHARACTERS,
+  MAGIC_HOUSE_TEXT,
   SPEECH_CHARACTER_COUNT,
   SPEECH_EVENTS_PER_CHARACTER,
   speechIndex,
 } from '@rich4/data';
-import { cardLineBubbleOf, speechBubbleOf, type SpeechBubble } from './speech-bubble.ts';
+import { cardAnswerBubbleOf, cardLineBubbleOf, speechBubbleOf, toolLineBubbleOf, type SpeechBubble } from './speech-bubble.ts';
 import type { SpeechOrder } from './stage-gate.ts';
+import type { SpeechCue } from './presentation-order.ts';
+import { NEWS_OWNER_RAND_SITE, SPEECH_RAND_SITE, speechCoin, speechRand } from './speech-roll.ts';
 
 // ============================================================
 //  对外形状
@@ -109,6 +119,17 @@ export interface SayEvent {
    *    （`SpeechDetector.order`），新加探测器漏写就编不过 —— 逼着逐条过表。
    */
   order: SpeechOrder;
+  /**
+   * ★ 第十五份：这一句在 exe 里**夹在两段演出之间**（前一段是它的 `cue`）——
+   *   `cue` 那一段演完之前它不算数（不上台、也不挡任何框 / 影片），演完之后按 `order` 照常排。
+   */
+  cue?: SpeechCue;
+  /**
+   * **原样的一句字**（不查角色台词表）—— `player_say(玩家, 表情, 串)` 的第 3 个实参是
+   * 字面串而不是 `[0x48084a + …]` 表项的那几处（目前只有魔法屋的「？？？...」，`0x46482f`）。
+   * 给了它，`event` 就不再是槽位号（填 −1），`speech-bubble.ts` 直接拿它画、串首没有 `#NNNN` 就不放语音。
+   */
+  text?: string;
 }
 
 /**
@@ -121,7 +142,15 @@ export interface SayEvent {
  * 次序由 `SpeechDetector.order` 在 `speechEventsFor()` 里**一处一值**补上 ——
  * 不在每个 `push` 上重复写，避免同一个探测器里出现两个不一致的值。
  */
-export type DetectedSay = Omit<SayEvent, 'order'>;
+export type DetectedSay = Omit<SayEvent, 'order'> & {
+  /**
+   * ★ 第十五份：**这一句**的次序与探测器的缺省不同时才写（同一个事件号在 exe 里有两个位置）。
+   *   目前只有「剛滿 5 級」：自己加蓋那一支在框之前（`0x00419a19`），福神加蓋那一支在顯靈框之后（`0x0040fa1e`）。
+   */
+  order?: SpeechOrder;
+  /** ★ 第十五份：这一句自己的 `cue`（缺省取探测器的 `SpeechDetector.cue`）*/
+  cue?: SpeechCue;
+};
 
 /** 只要「谁 / 哪一句」的调用方（资源换算、气泡排版）——`SayEvent` 与裸字面量都能传 */
 export type SayKey = Pick<SayEvent, 'player' | 'event'>;
@@ -140,6 +169,8 @@ export interface SpeechDetector {
    * `docs/escalations.md`。**没有缺省值**：新探测器必须自己写一条。
    */
   readonly order: SpeechOrder;
+  /** ★ 第十五份：这一族台词在 exe 里排在哪一段演出**之后**（见 `SayEvent.cue`）；多数没有 */
+  readonly cue?: SpeechCue;
   /**
    * `before/after` 状态 → 谁说了哪几句。
    *
@@ -261,11 +292,14 @@ export const SMALL_LOSS_LOW = 3;
  * cmp ebx, 2000*物價指數 / jl 返回   ;  → 表 +32 = 事件 8
  * ```
  * 返回**事件号**（不是档位下标）。
+ *
+ * @param coin 中间档那次 `rand() & 1`（@source 0x0044f3d1）—— 调用方用
+ *   `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.gain)` 查 core 掷的那一次（**必填**，不许默认成前一句）
  */
-export function gainEventFor(amount: number, priceIndex: number): number | null {
+export function gainEventFor(amount: number, priceIndex: number, coin: number): number | null {
   if (amount >= MONEY_TIER_HIGH * priceIndex) return 6;
-  // ★ 原版此档 `call rand / and eax,1`，取 eax=0 ⇒ 事件 6（见文件头「有意偏离」1）
-  if (amount >= MONEY_TIER_MID * priceIndex) return 6;
+  // @source 0x0044f3d1 `call rand / and eax,1 / mov edi,[表 + eax*4 + 0x480862]` ⇒ 事件 6 | 7
+  if (amount >= MONEY_TIER_MID * priceIndex) return 6 + (coin & 1);
   if (amount >= MONEY_TIER_LOW * priceIndex) return 8;
   return null;
 }
@@ -280,11 +314,14 @@ export function gainEventFor(amount: number, priceIndex: number): number | null 
  * test ebx, ebx / jle 返回           ;  → 基址+2      = 事件 11 / 14
  * ```
  * ★ 与「進帳」不同：**最低档是 > 0**，没有 2000 那道线。
+ *
+ * @param coin 中间档那次 `rand() & 1`（付錢 @source 0x0044f4a7 / 罰款 @source 0x0044f5e1）——
+ *   调用方用 `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.pay | .fine)` 查 core 掷的那一次（必填）
  */
-export function payTierFor(amount: number, priceIndex: number): 0 | 1 | 2 | null {
+export function payTierFor(amount: number, priceIndex: number, coin: number): 0 | 1 | 2 | null {
   if (amount >= MONEY_TIER_HIGH * priceIndex) return 0;
-  // ★ 原版 `rand&1` → 取 0
-  if (amount >= MONEY_TIER_MID * priceIndex) return 0;
+  // @source 0x0044f4a7 / 0x0044f5e1 `call rand / and eax,1` ⇒ 基址 + 0 | 1
+  if (amount >= MONEY_TIER_MID * priceIndex) return (coin & 1) as 0 | 1;
   if (amount > 0) return 2;
   return null;
 }
@@ -292,11 +329,12 @@ export function payTierFor(amount: number, priceIndex: number): 0 | 1 | 2 | null
 /**
  * 小额获得（事件 0/1/2）的档位，返回 **0..2**。
  * @source `fcn_0044f230` @ VA 0x0044f230：
- * `cmp edx,0x64 / jle` → 0；`cmp edx,0x32 / jle` → 0|1（rand&1，取 0）；`test edx,edx / je 返回` → 2
+ * `cmp edx,0x64 / jle` → 0；`cmp edx,0x32 / jle` → 0|1（`0x0044f280` rand&1 = `coin`）；`test edx,edx / je 返回` → 2
+ * @param coin `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.smallGain)`（core 掷的那一次；必填）
  */
-export function smallGainTierFor(amount: number): 0 | 1 | 2 | null {
+export function smallGainTierFor(amount: number, coin: number): 0 | 1 | 2 | null {
   if (amount > SMALL_GAIN_HIGH) return 0;
-  if (amount > SMALL_GAIN_LOW) return 0;
+  if (amount > SMALL_GAIN_LOW) return (coin & 1) as 0 | 1;
   if (amount !== 0) return 2;
   return null;
 }
@@ -304,11 +342,12 @@ export function smallGainTierFor(amount: number): 0 | 1 | 2 | null {
 /**
  * 小额损失（事件 3/4/5）的档位，返回 **0..2**。
  * @source `fcn_0044f2c2` @ VA 0x0044f2c2：
- * `cmp edx,6 / jle` → 0；`cmp edx,3 / jle` → 0|1（rand&1，取 0）；`test edx,edx / je 返回` → 2
+ * `cmp edx,6 / jle` → 0；`cmp edx,3 / jle` → 0|1（`0x0044f312` rand&1 = `coin`）；`test edx,edx / je 返回` → 2
+ * @param coin `speechCoin(before, after, 说话人, SPEECH_RAND_SITE.smallLoss)`（core 掷的那一次；必填）
  */
-export function smallLossTierFor(amount: number): 0 | 1 | 2 | null {
+export function smallLossTierFor(amount: number, coin: number): 0 | 1 | 2 | null {
   if (amount > SMALL_LOSS_HIGH) return 0;
-  if (amount > SMALL_LOSS_LOW) return 0;
+  if (amount > SMALL_LOSS_LOW) return (coin & 1) as 0 | 1;
   if (amount !== 0) return 2;
   return null;
 }
@@ -318,29 +357,51 @@ export function smallLossTierFor(amount: number): 0 | 1 | 2 | null {
 // ============================================================
 
 /**
- * 入狱 —— 事件 19「放我出去！」。
- *
- * @source `_rich4_add_player_days_in_prison` @ VA 0x0043d593：
- * ```asm
- * dh = player.days_in_prison
- * test dh, dh / jne 加刑路径          ; ★ 已经在牢里 → 只累加，不吭声
- * …搬到监狱格…
- * mov edi, [表 + 0x480896]            ; = 事件 19
- * push edi / push 2 / push player
- * call _rich4_player_say              ; @ VA 0x0043d70d
- * ```
+ * 这一拍谁**被调了一次** `send_to_prison` / `send_to_hospital`：新判（计数 0 → 非 0）**或**加刑
+ * （原计数非 0、低 7 位变大 —— `(existing + days) & 0x7f`）。
+ * 高位 0x80 是「待释放」状态位（@source 0x0041c8ea `or ch, 0x80`），1 → 0x80 那一步不是送入。
  */
-export function detectPrisonEntered(before: GameState, after: GameState): DetectedSay[] {
-  return enteredBlocking(before, after, 'inPrison').map((player) => ({ player, event: 19 }));
+function sentToBlocking(before: GameState, after: GameState, field: 'inPrison' | 'inHospital'): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < after.players.length; i++) {
+    const b = before.players[i]?.blocking[field];
+    const a = after.players[i]?.blocking[field];
+    if (b === undefined || a === undefined) continue;
+    if (b === 0 ? a !== 0 : (a & 0x7f) > (b & 0x7f)) out.push(i);
+  }
+  return out;
 }
 
 /**
- * 住院 —— 事件 20「我不要打針！！」。
- * @source `_rich4_add_player_days_in_hospital` @ VA 0x0043ec3f，说在 VA 0x0043edbc
- *   （与监狱同构：`test dh,dh / jne 加刑路径`，只在**新判**时说）
+ * 入狱 —— 事件 19「放我出去！」。**新判与加刑都说**。
+ *
+ * @source `_rich4_add_player_days_in_prison` @ VA 0x0043d593：
+ * ```asm
+ * 0043d5d4  mov  dh, [player + 0x34]      ; days_in_prison（整字节）
+ * 0043d5da  test dh, dh
+ * 0043d5dc  jne  0x43d6bd                 ; 加刑：只跳过「搬到监狱格 + 警车片」
+ * …搬到监狱格… / 0043d6aa 警车 0x21a
+ * 0043d6bd  … (existing + days) & 0x7f    ; 加刑支
+ * 0043d6d6  push 0 … 0043d6f1 call 0x41d476   ; ← 两支在这里汇合，中间没有任何跳转
+ * 0043d70d  mov  edi, [表 + 0x480896]      ; = 事件 19
+ * 0043d714  push edi / push 2 / push player
+ * 0043d71c  call _rich4_player_say
+ * ```
+ * ⚠️ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：先前这里写「已经在牢里 → 只累加，不吭声」——
+ *   `jne 0x43d6bd` 落点之后一路直下到 `0x0043d71c`，加刑同样说这一句。
+ */
+export function detectPrisonEntered(before: GameState, after: GameState): DetectedSay[] {
+  return sentToBlocking(before, after, 'inPrison').map((player) => ({ player, event: 19 }));
+}
+
+/**
+ * 住院 —— 事件 20「我不要打針！！」。**新判与加刑都说**。
+ * @source `_rich4_add_player_days_in_hospital` @ VA 0x0043ec3f：`0x0043ec86 test dh,dh / 0x0043ec88 jne 0x43ed6c`
+ *   只跳过搬位置与救护车片；加刑支 `0x0043ed6c..0x0043ed7f` 落到 `0x0043ed85`，与新判汇合，
+ *   `0x0043eda0 view_to` → `0x0043edcb call 0x44ef41`（事件 20，表 `0x48089a`）照说。
  */
 export function detectHospitalEntered(before: GameState, after: GameState): DetectedSay[] {
-  return enteredBlocking(before, after, 'inHospital').map((player) => ({ player, event: 20 }));
+  return sentToBlocking(before, after, 'inHospital').map((player) => ({ player, event: 20 }));
 }
 
 /**
@@ -383,15 +444,11 @@ export function detectTurnStartBlocked(before: GameState, after: GameState): Det
   if (before.phase !== 'turnStart' || after.phase !== 'turnEnd') return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
-  const b = p.blocking;
-  const out: DetectedSay[] = [];
-  // 原版顺序：住宿/消失（无语音）→ 坐牢 → 住院 → 冬眠
-  if (b.inPrison !== 0) out.push({ player: p.index, event: 19 });
-  if (b.inHospital !== 0) out.push({ player: p.index, event: 20 });
-  if (b.sleeping !== 0 && (b.inHotel | b.disappearing) === 0) {
-    out.push({ player: p.index, event: 21 });
-  }
-  return out;
+  // ★ 第十三份試玩回報（需求方拍板「按原版」）：三句**各有 1/2 概率**，由 core 在 `startTurn` 里
+  //   用同一个随机数发生器掷好（`GameState.lastBlockedSays`，`fcn_0040c912` 的三处 `call rand / test al,1`）。
+  //   先前这里「计数非 0 就说」—— 一直说，且冬眠那一支只查了住宿/消失（原版 `dword [+0x32]` 连坐牢/住院一起查）。
+  //   原版顺序：住宿/消失（无语音）→ 坐牢 → 住院 → 冬眠 —— core 按这个顺序掷、按这个顺序记。
+  return (after.lastBlockedSays ?? []).map((event) => ({ player: p.index, event }));
 }
 
 /**
@@ -438,39 +495,81 @@ export function detectVictory(before: GameState, after: GameState): DetectedSay[
   if (aliveCount(after) !== 1 || aliveCount(before) <= 1) return [];
   const winner = after.players.find((p) => isAlive(p));
   if (winner === undefined) return [];
-  if ((winner.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_HUMAN) return [];
+  // `who_plays & 1`（bit0）—— 託管的真人也喊（2026-09-23 订正：先前按低 2 位比）
+  if ((winner.whoPlays & WHO_PLAYS_HUMAN) === 0) return [];
   return [{ player: winner.index, event: 24 }];
 }
 
 /**
  * 加蓋到頂（等級 = 5）—— 事件 15「我真佩服自己」。
  *
- * @source VA 0x00419a0e（加蓋流程）：
- * ```asm
- * inc byte [地块 + 0x1a]              ; ★ +0x1a = level（csrc/land.h）
- * …記「本月支出」、播音效…
- * cmp byte [地块 + 0x1a], 5
- * jne 跳过                            ; ★ **正好等于 5** 才说
- * mov edi, [表 + 0x480886]            ; = 事件 15
- * push edi / push 0 / push current_player
- * call _rich4_player_say
- * ```
- * 同一个槽位在 **0x0041ab4a**（建設公司免费加蓋那一路，先 `mov al,[+0x1a] / cmp al,4`）
- * 也出现。最多 5 级、`< 5` 才能续建（`fcn_0040b110`），故这一支只在
- * 「4 → 5」那一次命中。
+ * ★★ 第十五份（需求方拍板「照原版」）：**只有 exe 里那三处**说这一句 ——
+ *   `python3 tools/disasm.py xref 0x480886`（事件 15 的表项）只命中三条指令：
+ *
+ * | 取串 | `player_say` | 那一支 | 本引擎的判据 | 次序 |
+ * |---|---|---|---|---|
+ * | `0x00419a0e` | `0x00419a19` | 自己付费加蓋：住宅 `0x004199eb cmp [+0x1a],5`；設施 `0x0041a35d inc dh / 0x0041a362 cmp dh,5 / je 0x4199f1` | 这一条是答 `upgradeLand` / `upgradeFacility`，且那一处刚好到 5 | 台词 → 0x20b `0x00419a21` ⇒ `beforeStage` |
+ * | `0x0041ab4a` | `0x0041ab5b` | **自家**建設公司代蓋：`0x0041aae8 call 0x40b110`（第一次）的 bit7（`0x0041ab21 test [esp+0xbc],0x80`）| 本条的 `companyBuild` 提示 `reachedMaxLevel`，且公司是自己的 | 大锤 `0x0041ab10` → 台词 → 0x20b `0x0041ab63` ⇒ `beforeStage` + `cue: buildHammer` |
+ * | `0x0040fa13` | `0x0040fa1e` | 福神代蓋（`fcn_0040f8be`）到 5 | 本条有 `godManifest` 提示 `reachedMaxLevel`，且附身的是福神（3 / 4）| 顯靈框 `0x0040f9c9` → 台词 → 0x20b `0x0040fa26` ⇒ `beforeStage` + `cue: manifestBox` |
+ *
+ * **不说**的（先前一律说）：天使顯靈（`fcn_0040f381` 里 `0x0040f517` 只放 0x20b）、别人的建設公司
+ * （`0x0041ad99` 大锤 → `0x0041adb4` 0x20b，中间没有 `player_say`）、機器工人（`0x0044735c` → `0x00447373`）、
+ * 天使卡（`0x004436d4`）、魔法屋（`0x431caa`，那一支说「？？？...」，见 `magicPonder`）。
  *
  * ★ 勘误：`@rich4/data` 的 `speech.ts` 把这一处注成「`player+0x1a == 5`」，
  *   但那条 `esi` 指的是**地块记录**（`+0x04` 是地名、`+0x1a` 是等级），
  *   不是玩家结构 —— 见 `docs/deviations/T-052.md` 的 Q-SPEECH-7。
  */
-export function detectLevelFive(before: GameState, after: GameState): DetectedSay[] {
-  const reached =
-    reachedLevelFive(before.landLevel, after.landLevel) ||
-    reachedLevelFive(before.facilityLevel, after.facilityLevel);
-  if (!reached) return [];
+export function detectLevelFive(before: GameState, after: GameState, topo?: MapTopology): DetectedSay[] {
+  if (magicHouseThisAction(before, after) !== null) return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
-  return [{ player: p.index, event: 15 }];
+  const hints = freshBuildHints(before, after);
+  // ③ 福神代蓋到 5：框在前，台词等框收了才算数（`cue`），再挡 0x20b
+  if (hints.some((h) => h.source === 'godManifest' && h.reachedMaxLevel)) {
+    return LUCKY_GOD_INFO.has(p.godInfo) ? [{ player: p.index, event: 15, cue: 'manifestBox' }] : [];
+  }
+  // ② 自家建設公司：只看**第一次** `0x40b110` 的 bit7
+  const company = hints.find((h) => h.source === 'companyBuild');
+  if (company !== undefined) {
+    return company.reachedMaxLevel && ownCompanyBuild(before, topo)
+      ? [{ player: p.index, event: 15, cue: 'buildHammer' }]
+      : [];
+  }
+  // ① 自己付费加蓋，刚好到 5
+  const kind = before.pending?.kind;
+  if (kind !== 'upgradeLand' && kind !== 'upgradeFacility') return [];
+  const reached =
+    reachedLevelFive(before.landLevel, after.landLevel) || reachedLevelFive(before.facilityLevel, after.facilityLevel);
+  return reached ? [{ player: p.index, event: 15 }] : [];
+}
+
+/**
+ * 附身的是福神（小 3 / 大 4）—— 与 core 的 `isLuckyGod` 同一判据。
+ * @source `fcn_0040f8be` 入口 `0x0040f8da cmp dl,3` / `0x0040f8df cmp dl,4`（比的是 `god_info` 槽位，1..14 恒等于种类）
+ */
+const LUCKY_GOD_INFO: ReadonlySet<number> = new Set([3, 4]);
+
+type BuildHint = NonNullable<GameState['lastBuildUpgrades']>[number];
+
+/** 这一条 action 新写的加蓋提示（`lastBuildUpgrades` 换了引用才算）*/
+function freshBuildHints(before: GameState, after: GameState): readonly BuildHint[] {
+  const hints = after.lastBuildUpgrades ?? null;
+  if (hints === null || hints === (before.lastBuildUpgrades ?? null)) return [];
+  return hints;
+}
+
+/**
+ * 建設公司代蓋的是不是**自家**公司（`0x0041aa3c` 那一支；别人的公司走 `0x0041acd1`，不说事件 15）。
+ * 真人：`chooseBuildTarget.charge` 为假 = 自家；电脑：落点那家企業的董事長就是自己。
+ */
+function ownCompanyBuild(before: GameState, topo?: MapTopology): boolean {
+  const pend = before.pending;
+  if (pend?.kind === 'chooseBuildTarget') return !pend.charge;
+  const me = before.players[before.currentPlayer];
+  const ref = me === undefined ? undefined : topo?.nodes[me.nodeId - 1]?.ref;
+  if (ref?.kind !== 'commercial') return false;
+  return ownerOf(before.commercialOwners[ref.index] ?? emptyOwnership()) === before.currentPlayer;
 }
 
 /** 有没有哪一块刚好在这一步变成 5 级 */
@@ -484,26 +583,79 @@ function reachedLevelFive(before: readonly number[], after: readonly number[]): 
 /**
  * 進帳 —— 事件 6/7/8（「這是我應得的！」/「我是全球首富」/「蠅頭小利～」）。
  *
- * @source 调用点 VA 0x00419fa1 / 0x00419ff0 / 0x0041a735（過路費給地主，
- *   金额 = `ebp`）、0x0040ed85（命运/新闻进账）；分档与阈值在
- *   `fcn_0044f354`（本文件 `gainEventFor`）。
+ * ★★ 第十四份（2026-09-23，需求方拍板「照原版」）：**只认原版调了 `fcn_0044f354` 的那几处**。
+ *   先前这里按 `monthlyReceived` 的差分「谁进了钱谁就说」—— 樂透、拍賣、分紅、理賠、
+ *   拆屋赔款……原版一句都不说的地方全都开口。`0x44f354` 全 exe 只有 6 个调用点：
+ *   `0x00419fa1` / `0x00419ff0`（過路費的地主）、`0x0041a735`（設施費的主人）、
+ *   `0x00449a80`（新聞 8/9/10）、`0x0044d334`（命運「進帳」那一族）、`0x0040ed85`（大財神）。
+ *   前五处由 core 在那一刻交出来（`GameState.lastGainSays`，金额 = 原版压栈的那个数），
+ *   大財神那一处有它自己的闸，由 `detectBigWealthLine` 负责（走 `lastGodPower`）。
+ *   分档与阈值在 `fcn_0044f354`（本文件 `gainEventFor`）。
  */
 export function detectMoneyGained(before: GameState, after: GameState): DetectedSay[] {
+  const says = after.lastGainSays ?? null;
+  if (says === null || says === (before.lastGainSays ?? null)) return [];
   const out: DetectedSay[] = [];
-  // ★★ W-55 行 7：財神那一笔**不走**「進帳」档位这条通用路 ——
-  //   小財神有它自己的出口（`0x0040ecde`，事件 8，另有 >700 与终局两道闸），
-  //   大財神虽然也是调 `fcn_0044f354`，但**多一道 `≥ 5000×物價` 的闸**
-  //   （`0x0040ed74`）—— 通用路按 2000×物價 就会开口，会把「原版不说」说成事件 8。
-  //   ⇒ 这里让开，由 `detectSmallWealthLine` / `detectBigWealthLine` 独家负责
-  //   （与 `detectPointsGained` 让开 `minigameDecline` 同一条规矩）。
-  const wealthHost = wealthGodHostThisAction(before, after);
-  for (let i = 0; i < after.players.length; i++) {
-    if (i === wealthHost) continue;
-    const amount = delta(before, after, i, 'monthlyReceived');
-    if (amount <= 0) continue;
-    const event = gainEventFor(amount, after.priceIndex);
-    if (event === null) continue;
-    out.push({ player: i, event });
+  for (const g of says) {
+    const event = gainEventFor(g.amount, after.priceIndex, speechCoin(before, after, g.player, SPEECH_RAND_SITE.gain));
+    if (event !== null) out.push({ player: g.player, event });
+  }
+  return out;
+}
+
+/**
+ * ★ 第十四份：「消失」那一刻当事人说的那一句（`fcn_0040d375` 的 `0x0040d3f8 call 0x44f2c2(玩家, 天数)`）——
+ * 命運 6/7 与航空旅遊共用；事件号由 core 交（4..6 天那一档的 `rand()&1` 在 core 掷）。
+ * 次序：台词在理賠框（`0x0040d425`）与飛機 / 飛碟影片（`0x0040d498`）之前 ⇒ 这里 `afterStage`
+ * 排在同一拍的收費框 / 事件框之后，理賠框等台词说完（`noticeAfterSpeech`），影片再等两者（`main.ts`）。
+ */
+export function detectDisappearSay(before: GameState, after: GameState): DetectedSay[] {
+  const say = after.lastDisappearSay ?? null;
+  if (say === null || say === (before.lastDisappearSay ?? null)) return [];
+  return [{ player: say.player, event: say.event }];
+}
+
+/**
+ * ★ 第十四份：命運 9「變賣所有股票求現」/ 10「機車被偷」/ 11「汽車撞電線桿」/ 32「變賣所有卡片道具」
+ * 施加完当前玩家说的那一句（事件号由 core 交在 `lastEvent.phraseIndex`，10 的二选一在 core 掷）。
+ *
+ * @source 9 `0x0044ca30`（事件 5）、10 `0x0044cb41`（事件 3|4，`0x0044cb28 rand()&1`）、
+ *   11 `0x0044cc41`（事件 3）、32 `0x0044d777`（事件 3），表情号都是 `push 2`。
+ *   都在施加之后（卖股 / 清座驾 + 镜头 / 变卖）⇒ 事件框收了才说（`afterStage`）。
+ */
+export function detectFortuneLine(before: GameState, after: GameState): DetectedSay[] {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev === (before.lastEvent ?? null) || ev.kind !== 'fortune') return [];
+  if (!FORTUNE_LINE_IDS.has(ev.id) || ev.phraseIndex === undefined) return [];
+  return [{ player: after.currentPlayer, event: ev.phraseIndex }];
+}
+
+const FORTUNE_LINE_IDS: ReadonlySet<number> = new Set([9, 10, 11, 32]);
+
+/**
+ * ★ 第十四份：訊息框之后原版**紧跟着**的那一句（`NoticeHint.say`）。
+ *
+ * @source 三处：
+ *   - 免收九种（`0x0041d559`）：`0x0041d6a4` 弹框 → `0x0041d6dd player_say(当前玩家, 3, 事件 13)`；
+ *   - 大財神把过路费抹成 0（`0x0041d709`）：`0x0041d7a2` 弹框 → `0x0041d7c1 call 0x44f567(付款方, 原额)`；
+ *   - 命運的神明加持：罰金免付 `0x0044d009` 弹框 → `0x0044d028 call 0x44f567(当前玩家, 原额)`；
+ *     坐牢逃过 `0x0044d83f` 弹框 → `0x0044d873 player_say(当前玩家, 0, 事件 0)`。
+ *   `0x44f567` 的档位与 `payTierFor` 同（9000 / 5000 / >0 × 物價），基址事件 12
+ *   （`0x0044f59c` / `0x0044f5e9` / `0x0044f60f`）。
+ * 次序：框在前 ⇒ `afterStage`（框是纯演出整屏，押着的台词等它收）。
+ */
+export function detectNoticeSay(before: GameState, after: GameState): DetectedSay[] {
+  if (after.notices === before.notices) return [];
+  const out: DetectedSay[] = [];
+  for (const n of after.notices) {
+    const say = n.say;
+    if (say === undefined) continue;
+    if ('event' in say) {
+      out.push({ player: say.player, event: say.event });
+      continue;
+    }
+    const tier = payTierFor(say.reliefAmount, after.priceIndex, speechCoin(before, after, say.player, SPEECH_RAND_SITE.fine));
+    if (tier !== null) out.push({ player: say.player, event: 12 + tier });
   }
   return out;
 }
@@ -525,7 +677,8 @@ export function detectMoneyGained(before: GameState, after: GameState): Detected
  * 说事件 18（表 +0x480892）；return 1
  * ```
  * 返回 1 时调用点**不再**调 `fcn_0044f42d` —— 即 18 **顶替** 9/10/11。
- * （原版那 1/2 機率此处确定性取「说」；见文件头「有意偏离」1。）
+ * 那 1/2 機率（`0x0044f525 call rand / test al,1 / je 0x44f561`）由 core 在付款之前掷（`tollSpeechDraws`）；
+ * 没中 ⇒ 返回 0 ⇒ 调用点照常 `call 0x44f42d`（`0x00419f63 jne / 0x00419f67`），那里的中间档**另掷一次**。
  *
  * 收款方的还原：同一动作里 `monthlyReceived` 涨了的那个玩家 = 收錢的人；
  * 没有人涨而公库涨了 = 進公库（罰款）。两者都不是（企业/流拍）则不吭声。
@@ -548,9 +701,12 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
   //   `monthlyPaid` 差分说了一句泛用的「付錢」—— 原版不说 ⇒ 整条探测器让开。
   const wealthHost = wealthGodHostThisAction(before, after);
   if (wealthHost >= 0) return out;
+  // 命運罰款共用尾巴那一句只给**抽到的人**、且他付完还在场（`0x0044ced1`）
+  const fortunePayer = fortunePayTailThisAction(before, after) ? before.currentPlayer : -1;
 
   for (let i = 0; i < after.players.length; i++) {
     if (i === wealthHost) continue;
+    if (i === fortunePayer && !isAlivePlayer(after, i)) continue;
     const amount = delta(before, after, i, 'monthlyPaid');
     if (amount <= 0) continue;
 
@@ -564,30 +720,75 @@ export function detectMoneyPaid(before: GameState, after: GameState): DetectedSa
 
     if (payee >= 0) {
       // @source 0x0044f4ed：最敵對玩家拿走 ≥ 5000×物價指數 → 事件 18
+      //   core 只在闸成立时掷（`hostileDrawsRand`）⇒ 有那一次就说明闸成立，奇数才说
+      const hostileRoll = speechRand(before, after, i, SPEECH_RAND_SITE.hostile);
       if (
         payee === mostHostilePlayer(before, i) &&
-        amount >= MONEY_TIER_MID * after.priceIndex
+        amount >= MONEY_TIER_MID * after.priceIndex &&
+        hostileRoll !== null &&
+        (hostileRoll & 1) !== 0
       ) {
         out.push({ player: i, event: 18 });
         continue;
       }
-      const tier = payTierFor(amount, after.priceIndex);
+      const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     } else if (poolGrew > 0) {
-      const tier = payTierFor(amount, after.priceIndex);
-      if (tier !== null) out.push({ player: i, event: 12 + tier });
+      // ★★ 第十四份試玩回報 #1（Charles，2026-09-23）：「为什么交保险这个倒霉的事情触发的是
+      //   高兴的玩家台词」—— 命運 30「付保險金」进公库，先前这里一律说 12/13/14，
+      //   而那一档是**逃过一劫**的庆幸话（約翰喬「上帝保佑～」、宮本寶藏「哈哈哈，很羨慕吧！」）。
+      //   `fcn_0044f567`（12/13/14）全 exe 只有 3 个调用点，**全是「这笔钱没付」**：
+      //     · `0x0044ce7e` / `0x0044d028`：命運罰金被神明加持挡掉（`0x44b896` 返回 1，
+      //       框「%s保佑\n\n免付罰金！」`0x4658c1`）—— 走这一支就**不**调 `pay_money`；
+      //     · `0x0041d7c1`：大財神附身把费用减到 0（`0x0041d7b4 test ebx,ebx / jne`）。
+      //   真付了钱的命運罰款走共用尾巴 `0x0044cec2 pay_money(cur,-1,金额,0)` →
+      //   `0x0044ced1 [cur+0x15] != 0`、`0x0044cede [0x46caf8] == 0` →
+      //   **`0x0044cef9 call 0x44f42d`** = 付錢那一档 9/10/11（「老本都快沒了～」…）。
+      //   除此之外进公库的钱（乞丐 `0x41b686`、大窮神 `0x40f076`、新聞的稅 / 罰款、
+      //   无卖家的拍卖…）原版都**不**经过 `0x44f42d` / `0x44f567` ⇒ 不说。
+      if (i === fortunePayer) {
+        const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
+        if (tier !== null) out.push({ player: i, event: 9 + tier });
+      }
     } else if (companyFundsGrew(before, after)) {
       // ★★ 第八份试玩回报 #1（2026-09-22）：付給**企業**（董事長收費 / 保險費）也要说 9/10/11。
       //   先前这里「企业则不吭声」是读漏了：企業收費那一段的尾巴
       //   `0x0041b000 cmp edi,[0x49910c] / jne` → `0x0041b004 push ebp（金額）/ push eax（付款人）/
       //   0x0041b006 call 0x44f42d` —— 与付給玩家同一支阶梯函数，且它**不看收款方是谁**（只有
       //   付款人与金额两个实参）。少了这一句，訊息框 1500 ms 一到就换人，「字还没看清就下一个」。
-      //   （付款人被死神顶替时 `edi != 当前玩家` ⇒ 不说 —— 那种情形付款人的 `monthlyPaid` 本来就不涨。）
-      const tier = payTierFor(amount, after.priceIndex);
+      // ★ 第十四份：付款人被嫁禍卡 / 死神顶替时原版**不说**（`0x0041affb cmp edi,[0x49910c] / jne`）——
+      //   先前注释说「那种情形付款人的 `monthlyPaid` 本来就不涨」，是因为企業那一路当时还没接顶替；
+      //   现在接上了（`chargeCompanyFee`），替死鬼 / 死神的 `monthlyPaid` 会涨 ⇒ 只认当前玩家。
+      if (i !== before.currentPlayer) continue;
+      const tier = payTierFor(amount, after.priceIndex, speechCoin(before, after, i, SPEECH_RAND_SITE.pay));
       if (tier !== null) out.push({ player: i, event: 9 + tier });
     }
   }
   return out;
+}
+
+/** **这一条 action** 刚抽出来的命運事件号；不是这一条抽的返回 null（判据同 `demolishedHouseThisAction`）*/
+function fortuneIdThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): number | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'fortune' || before.lastEvent === ev) return null;
+  return ev.id;
+}
+
+/** 命運罰款共用尾巴那一族（`FORTUNE_PAY_TAIL_IDS`，逐条 `@source` 在 core）是不是这一条抽的 */
+function fortunePayTailThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): boolean {
+  const id = fortuneIdThisAction(before, after);
+  return id !== null && FORTUNE_PAY_TAIL_IDS.has(id);
+}
+
+function isAlivePlayer(state: GameState, i: number): boolean {
+  const p = state.players[i];
+  return p !== undefined && isAlive(p);
 }
 
 /** 这一条 action 里有哪家企業的資金涨了（= 钱付给了企業）*/
@@ -620,7 +821,7 @@ export function detectHotelStay(before: GameState, after: GameState): DetectedSa
   for (const i of enteredBlocking(before, after, 'inHotel')) {
     const raw = after.players[i]?.blocking.inHotel ?? 0;
     const days = (raw & 0x7f) + 1;
-    const tier = smallLossTierFor(days);
+    const tier = smallLossTierFor(days, speechCoin(before, after, i, SPEECH_RAND_SITE.smallLoss));
     if (tier === null) continue;
     out.push({ player: i, event: 3 + tier });
   }
@@ -637,8 +838,29 @@ export function detectHotelStay(before: GameState, after: GameState): DetectedSa
  *   - `0x00452753`：`_rich4_receive_card` 之后取同一個卡片字段
  *   本引擎里对应的量就是 `points` 的增量（商店回购、魔法屋、點數格……）。
  */
+/** 这一拍里第 i 位手上的卡或道具变少了（百貨公司变卖）*/
+function soldInventory(before: GameState, after: GameState, i: number): boolean {
+  const b = before.players[i];
+  const a = after.players[i];
+  if (b === undefined || a === undefined) return false;
+  // 董事長赠礼那一拍就是一趟百貨公司（赠来的卡可能当场又被电脑 S1 卖掉，前后手牌一样）——
+  //   赠礼那句归 `detectShopGift`，其余點券变化都是买卖
+  if (i === after.currentPlayer && (after.lastShopGift ?? null) !== null && after.lastShopGift !== before.lastShopGift) return true;
+  // 逐种比（董事長赠卡 + 同一趟卖卡时张数可能不变）
+  for (const id of new Set(b.cards)) {
+    if (a.cards.filter((c) => c === id).length < b.cards.filter((c) => c === id).length) return true;
+  }
+  for (let id = MIN_TOOL_ID; id <= MAX_TOOL_ID; id++) {
+    if (toolCount(after.tools, i, id) < toolCount(before.tools, i, id)) return true;
+  }
+  return false;
+}
+
 export function detectPointsGained(before: GameState, after: GameState): DetectedSay[] {
   const out: DetectedSay[] = [];
+  // ★ 魔法屋「變賣所有卡片 / 道具」：`0x431caa` 那两支直接 `add word [player+0x30], ax`
+  //   （0x00431d3d），不经过 `fcn_0044f230` ⇒ 原版这一笔**不说话**。
+  if (magicHouseThisAction(before, after) !== null) return out;
   // ★★ 2026-09-19（第 94 条）：**得點券格 / 小遊戲不玩**那两笔「點入帳」不走 `0x44f230`，
   //   它们各自 `player_say(玩家, 0, 角色表事件)`（`0x41b1f8` / `0x41b28d` / `0x4154b6`），
   //   由下面的 `pointsSquarePhrase` 开口。这里必须**让开**，否则同一笔会说两句
@@ -647,7 +869,12 @@ export function detectPointsGained(before: GameState, after: GameState): Detecte
   for (let i = 0; i < after.players.length; i++) {
     const amount = delta(before, after, i, 'points');
     if (amount <= 0) continue;
-    const tier = smallGainTierFor(amount);
+    // ★ 审计（provenance-ai-econ）：百貨公司**变卖**卡片 / 道具（`0x42d145` / `0x42d1b2`，电脑那一支
+    //   `0x0042ed8d` 起的 S1–S3 与真人的退货）是直接 `mov word [player+0x30], ax` 入帳，不调 `0x44f230`
+    //   （它的调用点只有 `0x40ee46`/`0x41b38c`/`0x41b98b`/`0x41bafa`/`0x42ea23`/`0x452753`）⇒ **不说话**。
+    //   手上的卡或道具变少、點券变多 = 这一笔是变卖。
+    if (soldInventory(before, after, i)) continue;
+    const tier = smallGainTierFor(amount, speechCoin(before, after, i, SPEECH_RAND_SITE.smallGain));
     if (tier === null) continue;
     out.push({ player: i, event: tier });
   }
@@ -689,6 +916,138 @@ function pointsSquareEventThisAction(
 }
 
 /**
+ * ★★ 第九份試玩回報 #6（Charles，2026-09-22）：
+ *   「强制拆除房屋一栋，完全没看到到底拆了哪里的房子，如果是真的拆了，
+ *     那房屋主人应该也会触发一个倒霉的台词」。
+ *
+ * 查證：core 那邊**根本沒拆**（事件 0/1 是 `factor: null`，直接 `unimplemented`），
+ * 已由 `fortune-effects.ts` 补上（含镜头）。這一條补的是**台词**。
+ *
+ * ★★ A-2（回報「强制征收土地一处好像没生效」）：**事件 1 走的是同一条尾巴**。
+ *   事件 0 的施加支 `0x0044bf42` 之后直接落进 `0x0044bf46`；事件 1 的施加支末尾是
+ *   `0x0044c0e3 jmp 0x44bf46` —— 从那里起两边**逐字节相同**：
+ *   `0x0044bf46 call 0x451985`（闪）→ `0x0044bf51 view_to(0,0,1)`（镜头复位）
+ *   → `0x0044bf59 push 0x12c / call 0x4528b9`（sleep 300）→ `0x0044bf9f player_say`。
+ *   先前这里只认 `ev.id === 0` ⇒ 被徵收的人一声不吭。
+ *
+ * @source `0x0044bf9f call 0x44ef41`：`player_say(current_player, 2, 台词[rand()&1])`
+ *   —— 槽 3/4 =「我慘了」/「唉呦喂呀」，`packages/data/src/speech.ts:137,139`
+ *   （`sites` 里就含 `0x0044bf8e`；调用点清单 `docs/tasks/speech-callsites.md:98` 第 91 条）。
+ *   房主 = **抽到命運的人自己**，不是别家。
+ *   原版排在 `sleep 300`（`0x0044bf5e`）与镜头复位（`0x0044bf51`）**之后** ⇒ `afterStage`。
+ *
+ * ✅ 那一次 `rand()&1`（`0x0044bf86`）由 core 在拆完之后掷（同一条流，FU-1），这里查 ⇒ 槽 3 | 4。
+ *   先前固定取槽 3（Q-SPEECH-3 的旧口径）。
+ */
+export function detectDemolishedHouse(before: GameState, after: GameState): DetectedSay[] {
+  const ev = demolishedHouseThisAction(before, after);
+  if (ev === null) return [];
+  const player = after.currentPlayer;
+  return [{ player, event: 3 + speechCoin(before, after, player, SPEECH_RAND_SITE.demolished), expression: 2 }];
+}
+
+/**
+ * ★★ 第十二份試玩回報（「龙卷风摧毁房屋没有看到具体哪个房子受影响」）：
+ *   新聞「随机挑一处建筑」那一族里，挑中那一处**有主**时，房主说一句倒霉台词。
+ *
+ * @source 四个函数的尾巴同一个形状（以新聞 21 `fcn_0044ac99` 为例）：
+ * ```asm
+ * 0044ae4a  mov  eax, [0x48c5a0]          ; pass 0 存下的 owner（1 基，改之前）
+ * 0044ae4f  test eax, eax / je 0x44ab21   ; ★ 无主 ⇒ 不说
+ * 0044ae57  dec  eax / imul eax, 0x68     ; 房主的玩家记录
+ * 0044ae5d  mov  dl, [eax + 0x496b7b]     ; 角色号
+ * 0044ae74  call 0x456f2d / and eax, 1    ; rand() & 1
+ * 0044ae7c  mov  edx, [ebx + eax*4 + 0x480856]   ; 角色台词表 +0xc ⇒ **事件 3 / 4**
+ * 0044ae84  push edx / jmp 0x44ab10       ; → push 2 / push owner−1 / call 0x44ef41
+ * ```
+ *   新聞 5（`0x0044948e`..`0x004494cd`）、15（`0x0044a58f`..`0x0044a5c3`）、
+ *   19（`0x0044aad7`..`0x0044ab19`）同一张表 `0x480856`、同一个 `push 2`。
+ *   新聞 20「超級颱風」**没有**这一段（`0x0044ac87` sleep 500 之后直接返回）。
+ *
+ * ✅ 那一次 `rand()&1`（四个站点见 `NEWS_OWNER_RAND_SITE`）由 core 在施加之后掷（同一条流，FU-1），
+ *   这里查 ⇒ 事件 3 | 4。先前固定取事件 3（与命運 0 同一条旧口径）。
+ */
+export function detectNewsPlaceOwner(before: GameState, after: GameState): DetectedSay[] {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'news' || before.lastEvent === ev) return [];
+  if (!NEWS_PLACE_OWNER_LINE.has(ev.id)) return [];
+  const owner = ev.place?.owner ?? 0;
+  const who = after.players[owner - 1];
+  // ★ `player_say` 开头那三道闸（消失 / 梦游 / 冬眠的人不出声）
+  if (owner === 0 || who === undefined || !speechGatesOpen(who)) return [];
+  const site = NEWS_OWNER_RAND_SITE.get(ev.id) ?? 0;
+  return [{ player: owner - 1, event: 3 + speechCoin(before, after, owner - 1, site), expression: 2 }];
+}
+
+/**
+ * 命運 5「今天是你生日 向每人收取一張卡片」—— **收完之后**寿星说一句「好消息」（事件 0 | 1）。
+ *
+ * @source `fcn_0044c3b7`（施加那一趟，入参 ≠ 0）：
+ * ```asm
+ * 0044c41b  ebx = 0 ; edi = 0                       ; edi = 「问过几个人」
+ * 0044c42b  跳过自己（cmp ebx,[0x49910c]）/ 出局的（[+0x15] == 0）/ 没牌的（call 0x441262）
+ * 0044c45f  ebp = edi + 1
+ * 0044c468  寿星 [+0x15] > 1（电脑）⇒ 0x441e77 抽一张 → 0x4412e4 收下
+ *           寿星 == 1（真人）       ⇒ 0x44192a(对方, 寿星, 0) 模态选牌窗（返回值不看）
+ * 0044c573  edi = ebp                               ; 两支都 +1（取消也算）
+ * 0044c57b  test edi,edi / je 返回                   ; ★ 一个合格的人都没有 ⇒ 不说
+ * 0044c585  call 0x41d476(0, 0, 3)                  ; 重画棋盘（bit0，不移镜头）
+ * 0044c5ad  call rand / and eax,1                   ; ★ 二选一（core 掷，站点 0x0044c5ad）
+ * 0044c5b5  ebp = [角色*108 + eax*4 + 0x48084a]     ; = 事件 0 | 1
+ * 0044c5c5  call 0x44ef41(当前玩家, 0, ebp)
+ * ```
+ * 本引擎两条路（`events/fortune-effects.ts` 的 `birthdayCard`）：
+ *   - **电脑寿星**：抽到命運的那一条 action 里当场收完，每收一张弹一扇 `card.robbed`（`0x00441ab1`）
+ *     ⇒ 判据 = 本条抽到命運 5、且本条新写的 `notices` 里有 `card.robbed`（= `edi != 0`）；
+ *   - **真人寿星**：挂 `pending{birthdayCard, seats}` 逐个问（T-055）⇒ 判据 = **最后一位答完**那一条
+ *     （`pending` 由 `birthdayCard` 变没）；挂出来时 `seats` 非空 ⇒ `edi != 0` 恒成立。
+ * 联机旁观端重放同一条 action ⇒ 同一个判据、同一枚硬币。
+ * 次序：选牌窗 / 「搶得」框都在前 ⇒ `afterStage`。
+ */
+export function detectBirthdayLine(before: GameState, after: GameState): DetectedSay[] {
+  const humanDone = before.pending?.kind === 'birthdayCard' && after.pending?.kind !== 'birthdayCard';
+  // ★★ 2026-09-24（provenance 审计）：电脑寿星那一支没有「搶得」框（`0x0044c46d..0x0044c486` 直接收），
+  //   台词的闸是循环计数 `edi != 0`（`0x0044c57b`）= **至少有一位合格**（不是自己、在场、手上有牌）——
+  //   先前拿那扇（借错出处的）框当信号，框去掉之后改看合格人数。
+  const drawer = after.currentPlayer;
+  const computerDone =
+    fortuneIdThisAction(before, after) === BIRTHDAY_FORTUNE_ID &&
+    after.pending?.kind !== 'birthdayCard' &&
+    before.players.some((q, i) => i !== drawer && isAlive(q) && q.cards.length > 0);
+  if (!humanDone && !computerDone) return [];
+  const player = after.currentPlayer;
+  const p = after.players[player];
+  if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
+  return [{ player, event: speechCoin(before, after, player, SPEECH_RAND_SITE.birthday), expression: 0 }];
+}
+
+/** 命運 5「今天是你生日」@source 命運表 `event-table.ts` id 5 = `0x0044c3b7` */
+const BIRTHDAY_FORTUNE_ID = 5;
+
+/** 尾巴有「房主说一句」的那几条新聞 @source 见 `detectNewsPlaceOwner` */
+export const NEWS_PLACE_OWNER_LINE: ReadonlySet<number> = new Set([5, 15, 19, 21]);
+
+/**
+ * 这一条 action 写下的「命運 0 強制拆除房屋 / 1 強制徵收土地」事件；不是这一条写的返回 null。
+ *
+ * ★ 判据是 `before.lastEvent !== after.lastEvent`（**引用不同**）—— 与
+ *   `pointsSquareEventThisAction` / `lastCardPlay` 同一条规矩：`lastEvent` 不是瞬态字段，
+ *   只看 `after` 会让这一句在之后每一条 action 上重说一遍。
+ *
+ * ★★ A-2：**0 与 1 一起认** —— 两条事件共用尾巴（`0x0044c0e3 jmp 0x44bf46`），
+ *   台词那一句 `0x0044bf9f` 在共用段里（见 `detectDemolishedHouse` 的 @source 块）。
+ */
+function demolishedHouseThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): NonNullable<GameState['lastEvent']> | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev.kind !== 'fortune' || (ev.id !== 0 && ev.id !== 1)) return null;
+  if (before.lastEvent === ev) return null;
+  return ev;
+}
+
+/**
  * 同一街區獨佔 ≥ 3 塊 —— 事件 16「我是個大地主」/ 17「我要稱霸一方了」。
  *
  * ── 原版判据（逐个照抄）─────────────────────────────────────────
@@ -723,7 +1082,8 @@ function pointsSquareEventThisAction(
  * 即：**買下一块无主地** → 16；**在自己的地上加蓋**（且没到 5 級）→ 17
  * （到 5 級那一支在 `0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 处
  * 改说事件 15，故 17 只在 `等級 ≠ 5` 时说）。
- * `0x44f627` 的 `rand()%3` 与其余中间档一样**确定性取「说」**（Q-SPEECH-3）。
+ * `0x44f627` 的 `rand()%3`（`0x0044f67b`，余数为 0 才说 ⇒ 1/3）由 core 在加蓋那一刻掷（FU-1；
+ * 先前确定性取「说」，Q-SPEECH-3 的旧口径）。買地那一支（`push 0`）不掷，照旧必说 16。
  *
  * ── 街區号从哪来 ─────────────────────────────────────────────
  *
@@ -771,7 +1131,11 @@ export function detectAreaMonopoly(
     if ((after.landOwner[l.id] ?? 0) === player + 1) owned += 1;
   }
   if (owned < 3) return [];
-  return [{ player, event: pend.kind === 'buyLand' ? 16 : 17 }];
+  if (pend.kind === 'buyLand') return [{ player, event: 16 }];
+  // @source 0x0044f67b `call rand / idiv 3` → 0x0044f68c `test edx,edx / jne 0x44f6e7`（不说）
+  const roll = speechRand(before, after, player, SPEECH_RAND_SITE.areaMonopoly);
+  if (roll === null || roll % 3 !== 0) return [];
+  return [{ player, event: 17 }];
 }
 
 // ============================================================
@@ -1001,8 +1365,9 @@ export function detectLuckyGodLine(before: GameState, after: GameState): Detecte
  *   ★ 入参是**點數价**（`toolPrice` / `cardPrice`），不是现金价 —— 商店里买东西
  *     花的就是點數。
  *
- * 判据 = `after.lastShopGift` 与 `before` **引用不同**（core 只在真的送成时才写，
- * 规矩同 `lastCardPlay`）。事件号用同一支阶梯 `smallGainTierFor`（阈值 100 / 50）。
+ * 判据 = `after.lastShopGift` 与 `before` **引用不同**（core 在那一拍**弹框**时写，规矩同 `lastCardPlay`；
+ *   ★ 空袋那一支也写 —— 原版框是无条件走的，點數价取别名项的 70，见 `reduce.ts` 的 `enterShop`）。
+ *   事件号用同一支阶梯 `smallGainTierFor`（阈值 100 / 50）。
  */
 export function detectShopGift(before: GameState, after: GameState): DetectedSay[] {
   const hint = after.lastShopGift ?? null;
@@ -1010,7 +1375,7 @@ export function detectShopGift(before: GameState, after: GameState): DetectedSay
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p)) return [];
   if (!speechGatesOpen(p)) return [];
-  const tier = smallGainTierFor(hint.points);
+  const tier = smallGainTierFor(hint.points, speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain));
   if (tier === null) return [];
   return [{ player: p.index, event: tier }];
 }
@@ -1018,19 +1383,43 @@ export function detectShopGift(before: GameState, after: GameState): DetectedSay
 /**
  * 福神附身得卡之后那句「好消息」（第八份试玩回报 #5）。
  *
- * @source `0x0040ee39 mov al,[ebx+0x47fdef]`（那张卡的**點數价**）→ `0x0040ee46 call 0x44f230(玩家, 點數价)`，
- *   每得一张说一次（大福神两张 ⇒ 两句）；档位阈值 100 / 50 与 `detectShopGift` 同一支阶梯。
- * 判据 = 这一条 action 新写的 `notices` 里的 `god.gotCard`（`cardId` 由 core 交下来）。
+ * @source `0x0040ee39 mov al,[ebx+0x47fdef]`（那张卡的**點數价**）→ `0x0040ee46 call 0x44f230(玩家, 點數价)`。
+ * 档位阈值 100 / 50 与 `detectShopGift` 同一支阶梯。
+ *
+ * ★★ 2026-09-22 订正（大福神那一条）：先前这里写「大福神两张 ⇒ 两句」并逐条按**各自**的点数价取档，
+ *   **与 exe 不符**。原版大福神（`fcn_0040ee50`）把两张卡的 `+0x47fdef` **相加**
+ *   （`0x0040eefb`-`0x0040ef0c`），`0x44f230` **只叫一次** ⇒ **一句**、档位按**和**取
+ *   （`0040ef16 jmp 0x40ee46 → call 0x44f230`）。
+ *   ⇒ 现在两种 notice 都认：`god.gotCard`（一卡，用它的点数价）与
+ *     `god.gotCardTwo`（大福神两卡，**用两张卡点数价的和**，且只产出一句）。
+ *
+ * 判据 = 这一条 action 新写的 `notices`（`cardId` / 两个卡名由 core 交下来）。
  */
 export function detectGodCard(before: GameState, after: GameState): DetectedSay[] {
   if (after.notices === before.notices) return [];
   const p = after.players[after.currentPlayer];
   if (p === undefined || !isAlive(p) || !speechGatesOpen(p)) return [];
   const out: DetectedSay[] = [];
+  const priceOf = (id: number): number => CARDS.find((c) => c.id === id)?.price ?? 0;
   for (const n of after.notices) {
-    if (n.key !== 'god.gotCard' || n.cardId === undefined) continue;
-    const tier = smallGainTierFor(CARDS.find((c) => c.id === n.cardId)?.price ?? 0);
-    if (tier !== null) out.push({ player: p.index, event: tier });
+    // 一卡（小福神 / 大福神只拿到一张）：用它自己那张的点数价
+    if (n.key === 'god.gotCard') {
+      if (n.cardId === undefined) continue;
+      const tier = smallGainTierFor(priceOf(n.cardId), speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain));
+      if (tier !== null) out.push({ player: p.index, event: tier });
+      continue;
+    }
+    // ★★ 大福神两张：`0x463353` 那一扇的 `args` 是**两张卡名**（不含神明名），
+    //   原版按两张的點數价**和**取一次档、只叫一次 `0x44f230` ⇒ 这里也只产出一句。
+    if (n.key === 'god.gotCardTwo') {
+      const ids = n.args.map((name) => CARDS.find((c) => c.name === name)?.id).filter((v): v is number => v !== undefined);
+      if (ids.length === 0) continue;
+      const tier = smallGainTierFor(
+        ids.reduce((sum, id) => sum + priceOf(id), 0),
+        speechCoin(before, after, p.index, SPEECH_RAND_SITE.smallGain),
+      );
+      if (tier !== null) out.push({ player: p.index, event: tier });
+    }
   }
   return out;
 }
@@ -1102,14 +1491,14 @@ export function detectSmallWealthLine(before: GameState, after: GameState): Dete
  * 0040ed74  cmp esi, eax / 0040ed76 jl 0x40ece6 ; ★ 够 5000×物價 才说
  * 0040ed7c  push esi / 0040ed84 push 玩家 / 0040ed85 call 0x44f354   ; = gainEventFor 那条档位表
  * ```
- * ⚠️ 因为闸门就是 `≥ 5000 × 物價`，而 `gainEventFor` 在 5000 档以上恒返回 **6** ——
- *   这里仍然照原版**走一遍分档函数**（不是为了「差不多」，是为了阈值方向写在一处）。
+ * 闸门就是 `≥ 5000 × 物價` ⇒ 只会落在 `gainEventFor` 的前两档：≥ 9000 × 物價 说 6，
+ *   5000..9000 × 物價 是中间档 `rand()&1`（`0x0044f3d1`）⇒ 6 | 7（core 在 `0x0040ed85` 那一刻掷，这里查）。
  */
 export function detectBigWealthLine(before: GameState, after: GameState): DetectedSay[] {
   const hint = godPowerHintThisAction(before, after);
   if (hint === null || hint.type !== BIG_WEALTH_GOD_TYPE) return [];
   if (hint.amount < MONEY_TIER_MID * after.priceIndex) return [];
-  const event = gainEventFor(hint.amount, after.priceIndex);
+  const event = gainEventFor(hint.amount, after.priceIndex, speechCoin(before, after, hint.player, SPEECH_RAND_SITE.gain));
   if (event === null) return [];
   const p = after.players[hint.player];
   if (p === undefined || !isAlive(p)) return [];
@@ -1137,9 +1526,13 @@ export function detectBigWealthLine(before: GameState, after: GameState): Detect
  * （`0x00407919 call 0x4018e7` / `Wait_0402_Message`）之后；`callers 0x407842`
  * 只有两处 —— `0x40cff0`（`0x40cd87` 破产流程里「唯一真人出局」那一支）
  * 与 `0x41da2d`（`0x41d89e` 的续局分支，它先把 `[0x49910c]` 归零再调）。
- * 两条都是**开局/重开**，都不经过任何 action ⇒ `playSoundFor` 永远看不到它。
+ * 两条都是**输了之后续局**（单人类局里真人破产 / 电脑达成胜利条件），都不经过任何 action
+ * ⇒ `playSoundFor` 永远看不到它。
  *
- * ⇒ 本引擎由 `main.ts` 的 `startGame()` 显式播一次（`openingSpeech`）。
+ * ★★ **新开一局不说**（第十四份试玩回报 #1）：`0x401cd0 call 0x406de7 → … → 0x415872`
+ *   （跳伞过场）→ `0x401981` 那条路上没有 `0x407842`。先前 `main.ts` 的 `startGame()`
+ *   每开一局都播一次（E-14 的「有意偏离」），需求方判定为错 —— 已撤掉。
+ *   续局模态框本引擎尚未复刻，本函数留给它用。
  */
 export const OPENING_SPEECH_EVENT = 26;
 
@@ -1192,6 +1585,69 @@ export function openingSpeech(state: GameState): SpeechBubble[] {
  *   （`landGodLine` / `luckyGodLine` / `smallWealthLine` / `bigWealthLine` 是
  *     W-55 行 6/7 在同一个工作区里并行加的，各带自己的依据注释。）
  */
+/**
+ * **这一条 action** 写下的魔法屋那一趟（`lastEvent` 刚变成 `kind: 'magicHouse'`）；不是返回 null。
+ * 判据按引用（`lastEvent` 不是瞬态字段，见 `pointsSquareEventThisAction`）。
+ */
+function magicHouseThisAction(
+  before: Pick<GameState, 'lastEvent'>,
+  after: Pick<GameState, 'lastEvent'>,
+): NonNullable<GameState['lastEvent']> | null {
+  const ev = after.lastEvent ?? null;
+  if (ev === null || ev === (before.lastEvent ?? null) || ev.kind !== 'magicHouse') return null;
+  return ev;
+}
+
+/** 魔法屋那三支收尾说的「？？？...」 */
+const MAGIC_PONDER_TEXT = MAGIC_HOUSE_TEXT.ponder.text;
+
+/**
+ * 魔法屋「就地加蓋 / 就地拆除」两支收尾：中签者说「？？？...」（表情 0）。
+ *
+ * @source `0x00432094 push 0x46482f / push 0 / push [0x49910c]（= 中签者）/ 0x004320a2 call player_say` ——
+ *   加蓋那一支在大锤（+bit7 时 0x20b）之后（0x0043208f 之后落到 0x00432094）、
+ *   拆除那一支在 0x211 影片之后（0x0043237f `jmp 0x4320a2`）。两支前面都有同一道闸
+ *   （`[player+0x32]` + 格型别），闸没过就整支跳过、不说话 —— core 过闸时才交 `magic.effect` 那一扇框，
+ *   这里拿那一扇认人。
+ * ★ 拍賣那一支（`0x0043242b`）同样收尾说这一句，但在**拍賣窗口关掉之后** —— 见 `detectMagicAuctionPonder`。
+ */
+export function detectMagicPonder(before: GameState, after: GameState): DetectedSay[] {
+  const ev = magicHouseThisAction(before, after);
+  if (ev === null || (ev.id !== 5 && ev.id !== 9)) return [];
+  if (after.notices === before.notices) return [];
+  const out: DetectedSay[] = [];
+  for (const who of ev.targets ?? []) {
+    const p = after.players[who];
+    if (p === undefined || !speechGatesOpen(p)) continue;
+    const name = characterName(p.character);
+    const passed = after.notices.some((n) => n.key === 'magic.effect' && n.args[0] === name);
+    if (!passed) continue;
+    out.push({ player: who, event: -1, expression: 0, text: MAGIC_PONDER_TEXT });
+  }
+  return out;
+}
+
+/**
+ * 魔法屋「拍賣當格土地」那一支：拍賣窗口（`0x43bde5`，模态）关掉之后，卖方（= 中签者）说「？？？...」。
+ *
+ * @source 0x004324d5 `call 0x43bde5` → `push 1 / call 0x41906a` → `push 0x46482f / push 0 / push 中签者`
+ *   → `jmp 0x4320a2 call player_say`。
+ * 判据：这一条 action 把 `pending{auction}` 收掉了，而 `lastEvent` 还是魔法屋「拍賣當格土地」那一趟
+ *   （拍賣本身不写 `lastEvent`）。
+ */
+export function detectMagicAuctionPonder(before: GameState, after: GameState): DetectedSay[] {
+  const bp = before.pending;
+  if (bp === null || bp.kind !== 'auction') return [];
+  if (after.pending !== null && after.pending.kind === 'auction') return [];
+  const ev = after.lastEvent;
+  if (ev === null || ev.kind !== 'magicHouse' || ev.id !== 11) return [];
+  const seller = bp.seller;
+  if (seller === undefined) return [];
+  const p = after.players[seller];
+  if (p === undefined || !speechGatesOpen(p)) return [];
+  return [{ player: seller, event: -1, expression: 0, text: MAGIC_PONDER_TEXT }];
+}
+
 export const DETECTORS: readonly SpeechDetector[] = [
   // §2.2 表：送監獄 —— 影片 `0x0043d6aa` → 镜头 → 台词
   { name: 'prisonEntered', source: [0x0043d70d], order: 'afterStage', detect: detectPrisonEntered },
@@ -1213,23 +1669,33 @@ export const DETECTORS: readonly SpeechDetector[] = [
   //   （`0x004199eb cmp byte [esi+0x1a],5 / jne 0x419a2b` 的另一边）。
   //   ⇒ `beforeStage`（先说出来、再放烟花）。E-19 表里「前者前有 Yes/No 框」那个框
   //   是**玩家早就答过**的加蓋确认（`0x00419996 call 0x440ba8`），不是本条 action 的演出。
-  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a], order: 'beforeStage', detect: detectLevelFive },
+  { name: 'levelFive', source: [0x00419a0e, 0x0041ab4a, 0x0040fa13], order: 'beforeStage', detect: detectLevelFive },
   // ★ 同一街區獨佔 ≥ 3 塊（買地 16 / 加蓋 17）—— 要 `topo` 才数得出街區
   // ⚠ C 级：E-19（台词在叶子函数 `0x44f627` 里，调用点 `0x0044f6df` 前后两列都空）
   { name: 'areaMonopoly', source: [0x0044f627, 0x0041a13e, 0x00419a31], order: 'afterStage', detect: detectAreaMonopoly },
   // ★ 神明：**先**旧神离身（23）**再**新神附身（22）—— 原版 `0x40eb3f` → `0x40ec0d`
   // ⚠ C 级：E-19（调用点 `0x0040e659` 前后两列都空）
-  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], order: 'afterStage', detect: detectGodLeft },
+  // ★★ 第十五份：换神时原版是 `god_activate` 先 `0x0040eb3f call 0x40e32c`（升天动画 → 台词 `0x0040e659`），
+  //   **再**播新神影片 / `0x40e2a2` ⇒ 这一句在升天之后（`cue: godAscend`）、新神的一切之前（`beforeStage`）。
+  //   先前取 `afterStage`（等全部影片），于是排到新神开场白之后。
+  { name: 'godLeft', source: [0x0040e32c, 0x0040e64a, 0x0041cc9b, 0x00444cc4], order: 'beforeStage', cue: 'godAscend', detect: detectGodLeft },
   // §2.2 表：壞神附身（小窮/大窮/小衰/大衰/死神）—— 台词 → 影片 → 神明台词窗 →（轉盤）→ 付款
-  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', detect: detectGodArrived },
+  // ★★ 第十五份：請神符是「出牌台词 `0x00444e8a` → 神明飞过来 `0x00444efa` → 附身（台词 → 影片）」⇒
+  //   有卡片 / 物件在飞、或旧神正在升天（换神：`0x0040eb3f call 0x40e32c` 在附身之前）时，这一句等它们演完
+  //   （`cue: godAttach`）；踩到神明、身上原本没神的那一路两样都没有，当场算数。
+  { name: 'godArrived', source: [0x0040ea9b, 0x0040e64a, 0x0040ef2f, 0x0040f2ff], order: 'beforeStage', cue: 'godAttach', detect: detectGodArrived },
   // ★ W-55 行 6：神明**落脚顯靈**的台词（天使/惡魔/福神在落点尾块那一族）。
   // §2.2 表：土地公顯靈 `0x0040f8ab` —— 镜头 → 訊息框 → 台词 ⇒ `afterStage`。
-  { name: 'landGodLine', source: [0x0040f86e, 0x0040f8ab], order: 'afterStage', detect: detectLandGodLine },
+  // ★ 第十五份：顯靈框本身在落点尾块（`0x0041b086 call 0x40f381`），排在付款 / 免收台词**之后**（`tail` 档）
+  //   ⇒ 这一句排在尾框之后（`afterTailBox`），不是与付款台词同档。
+  { name: 'landGodLine', source: [0x0040f86e, 0x0040f8ab], order: 'afterTailBox', detect: detectLandGodLine },
   // §2.2 表：福神顯靈 `0x0040fa1e`（到 5 级）/ `0x0040fa5c`（没到，`rand()&1` 二选一）
   //   —— 訊息框 → 音效 → 镜头 → 台词 ⇒ 裁定是 `afterNotice`，而 `SpeechOrder`
   //   只有两档（`beforeStage` / `afterStage`）⇒ 按 §2.2 的兜底「先按 `afterStage`
   //   做并在 PR 里注明」。到 5 级那一支的事件 15 另由 `detectLevelFive` 说（不在这里）。
-  { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterStage', detect: detectLuckyGodLine },
+  // ★ 第十五份：`0x00419a48 call 0x40f8be` 在街區台词 `0x00419a31` 之后 ⇒ 福神框是 `tail` 档、这一句 `afterTailBox`
+  //   （这正是上面说的 `afterNotice` —— 第三档现在有了，见 `stage-gate.ts`）。
+  { name: 'luckyGodLine', source: [0x0040f8be, 0x0040fa49, 0x0040fa5c], order: 'afterTailBox', detect: detectLuckyGodLine },
   // ★ W-67-a：董事長蒞臨商店的贈禮 —— 訊息框（`0x464378`，1500 ms）→ 台词（`0x44f230`）
   //   ⇒ `afterStage`（框在前、台词在后）。
   { name: 'shopGift', source: [0x0042e9f8, 0x0042ea23], order: 'afterStage', detect: detectShopGift },
@@ -1239,6 +1705,12 @@ export const DETECTORS: readonly SpeechDetector[] = [
   { name: 'moneyPaid', source: [0x0044f42d, 0x0044f4ed, 0x0044f567], order: 'afterStage', detect: detectMoneyPaid },
   // ⚠ C 级：E-19（调用点 `0x0044f420` 前后两列都空）
   { name: 'moneyGained', source: [0x0044f354], order: 'afterStage', detect: detectMoneyGained },
+  // ★ 第十四份：訊息框之后紧跟的那一句（免收 → 13、財神/加持免付 → 12..14、坐牢逃过 → 0）
+  { name: 'noticeSay', source: [0x0041d6dd, 0x0041d7c1, 0x0044d028, 0x0044ce7e, 0x0044d873], order: 'afterStage', detect: detectNoticeSay },
+  // ★ 第十四份：命運 9 / 10 / 11 / 32 施加后那一句
+  { name: 'fortuneLine', source: [0x0044ca30, 0x0044cb41, 0x0044cc41, 0x0044d777], order: 'afterStage', detect: detectFortuneLine },
+  // ★ 第十四份：出國 / 綁架 / 航空旅遊那一句（`0x0040d3f8 call 0x44f2c2`）
+  { name: 'disappearSay', source: [0x0040d3f8, 0x0044f2c2], order: 'afterStage', detect: detectDisappearSay },
   // ★ W-55 行 7（G33）：小財神 `0x0040ecde` —— 神明台词窗 → 轉盤窗 → 收款 → **台词**
   //   ⇒ `afterStage`（§2.2 表）。排在收款那两条之后。
   { name: 'smallWealthLine', source: [0x0040eca4, 0x0040ecde], order: 'afterStage', detect: detectSmallWealthLine },
@@ -1253,6 +1725,20 @@ export const DETECTORS: readonly SpeechDetector[] = [
   // ★ 得點券格 / 小遊戲不玩：走角色台词表（`0x41b211`/`0x41b29e`/`0x4154b6`）
   // ⚠ C 级：E-19（两个调用点不一致：`0x0041b211` 两列都空、`0x004154cf` 前有訊息框）
   { name: 'pointsSquarePhrase', source: [0x0041b211, 0x0041b29e, 0x004154b6], order: 'afterStage', detect: detectPointsSquarePhrase },
+  // ★★ 第九份试玩回报 #6：命運 0「強制拆除房屋一棟」—— 房主（= 抽到的人自己）的倒霉台词。
+  //   §2.2 表：镜头（`0x0044bee8`）→ 赔款（`0x0044bf36`）→ 镜头复位（`0x0044bf51`）
+  //   → sleep 300 → 台词（`0x0044bf9f`）⇒ `afterStage`。
+  //   ★ A-2：命運 1「強制徵收土地一處」`0x0044c0e3 jmp 0x44bf46` **汇进同一段** ⇒ 同一句、同一档。
+  { name: 'demolishedHouse', source: [0x0044bf9f], order: 'afterStage', detect: detectDemolishedHouse },
+  // ★★ 第十二份試玩回報：新聞 5 / 15 / 19 / 21「随机挑一处建筑」—— 那一处的**房主**说一句。
+  //   调用点都在 `view_to` → `mutate_land` →（影片 → sleep）**之后**、函数的最后一步 ⇒ `afterStage`。
+  { name: 'newsPlaceOwner', source: [0x004494cd, 0x0044a5c3, 0x0044ab19, 0x0044ae84], order: 'afterStage', detect: detectNewsPlaceOwner },
+  // 命運 5 生日收卡：收完（电脑当场 / 真人最后一位答完）之后寿星说 0|1；选牌窗与「搶得」框在前
+  { name: 'birthdayLine', source: [0x0044c57b, 0x0044c5ad, 0x0044c5c5], order: 'afterStage', detect: detectBirthdayLine },
+  // ★ 魔法屋（2026-09-23）：加蓋 / 拆除两支收尾「？？？...」—— 框 → 影片 →（0x20b）→ 台词 ⇒ `afterStage`
+  { name: 'magicPonder', source: [0x00432094, 0x004320a2], order: 'afterStage', detect: detectMagicPonder },
+  // ★ 魔法屋拍賣那一支：拍賣窗口关掉之后才说
+  { name: 'magicAuctionPonder', source: [0x004324d5, 0x004320a2], order: 'afterStage', detect: detectMagicAuctionPonder },
 ];
 
 /**
@@ -1353,7 +1839,10 @@ export function speechEventsFor(
       // ★ W-50 §1.2 第 1 条：表情号按**事件号**查表（判据见 `EXPRESSION_BY_EVENT`）。
       //   没取证的事件**不写这个字段**（`speechBubbleOf` 回落到 0），不猜。
       const expression = expressionOf(ev.event);
-      out.push(expression === null ? { ...ev, order: d.order } : { ...ev, order: d.order, expression });
+      const order = ev.order ?? d.order;
+      const cue = ev.cue ?? d.cue;
+      const base = cue === undefined ? { ...ev, order } : { ...ev, order, cue };
+      out.push(expression === null ? base : { ...base, expression });
     }
   }
   return out;
@@ -1402,6 +1891,8 @@ export function speechResourcesFor(state: GameState, events: readonly SayKey[]):
 export interface SpeechLine {
   readonly bubble: SpeechBubble;
   readonly order: SpeechOrder;
+  /** ★ 第十五份：排在哪一段演出之后（见 `SayEvent.cue`）*/
+  readonly cue?: SpeechCue;
 }
 
 /**
@@ -1421,7 +1912,7 @@ export function speechLinesFor(state: GameState, events: readonly SayEvent[]): S
     const p = state.players[ev.player];
     if (p === undefined) continue;
     const bubble = speechBubbleOf(ev, p.character, characterName(p.character));
-    if (bubble !== null) out.push({ bubble, order: ev.order });
+    if (bubble !== null) out.push(ev.cue === undefined ? { bubble, order: ev.order } : { bubble, order: ev.order, cue: ev.cue });
   }
   return out;
 }
@@ -1461,6 +1952,24 @@ export function speechBubblesFor(
  * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
  */
 export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubble[] {
+  return cardPlaySpeechLines(before, after).map((l) => l.bubble);
+}
+
+/**
+ * ★★ 第十五份：出牌台词的**次序**。
+ *
+ * 从手里出的牌（亮牌 `fcn_00441f73` 在卡片函数之前）：26 张卡的函数体里，出牌台词都是**第一个**演出
+ * —— 在 `animate_object`（`0x40e669`，卡片飞行）、影片、訊息框之前（`python3 tools/disasm.py` 逐个读过；
+ * 例：均貧 `0x00442225` → 飞 `0x004422d6`；怪獸 `0x0044398f` → 飞 `0x00443a6a` → 影片 `0x00443aaf`；
+ * 股票卡 `0x00444f5b` → 框 `0x00444fdb`；查稅 `0x0044526b` → 飞 `0x004452c6` → 框 `0x004453ef`）
+ * ⇒ `beforeStage`（亮牌是 `lead` 档的框，台词排在它之后、飞行 / 影片 / 结果框之前）。
+ *
+ * 收費那一段的被动卡（免費卡 / 嫁禍卡，`popup === false`）：过路费框（`stage`）在前、
+ * 亮牌 → 台词 → 回应台词（`0x00444b25` → `0x00444b5e` → `0x00444b98`）⇒ `afterStage`。
+ * 回应那一句（地主 / 替死鬼）一律 `afterStage`，紧跟出牌者那句。
+ * 先前一律取 `afterStage`（「首席若要逐卡裁定，改这一处即可」）⇒ 从手里出牌时台词被押到飞行 / 影片 / 结果框之后。
+ */
+export function cardPlaySpeechLines(before: GameState, after: GameState): SpeechLine[] {
   const play = after.lastCardPlay;
   if (play === null) return [];
   // 同一次用卡只出一次（提示字段是「最近一次」的覆写语义）
@@ -1469,8 +1978,108 @@ export function cardPlaySpeech(before: GameState, after: GameState): SpeechBubbl
   if (p === undefined) return [];
   const b = p.blocking;
   if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return [];
+  const out: SpeechLine[] = [];
   const bubble = cardLineBubbleOf(play.player, p.character, characterName(p.character), play.cardId);
+  if (bubble !== null) out.push({ bubble, order: play.popup === false ? 'afterStage' : 'beforeStage' });
+  // ★ 第十四份：被动卡之后回一句（免費卡 → 地主 `0x00444b98`；嫁禍卡 → 替死鬼 `0x00444a4b`），紧跟出牌者那句
+  const ans = play.answeredBy === undefined ? undefined : after.players[play.answeredBy];
+  if (ans !== undefined) {
+    const a = cardAnswerBubbleOf(ans.index, ans.character, characterName(ans.character), play.cardId);
+    if (a !== null) out.push({ bubble: a, order: 'afterStage' });
+  }
+  return out;
+}
+
+/**
+ * ★★ **道具台词**（第十一份試玩回報 #3）—— 用道具那一下角色说的那句话。
+ *
+ * 与 `cardPlaySpeech` 同一个形状：它**不是探测器**（`useTool` 不带可 diff 的状态跃迁），
+ * 走的是 `GameState.lastToolUsed` 这条瞬态提示通道。
+ *
+ * @source 原版 13 件道具在用的那一下都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`
+ *   —— 路障 `0x00446bcc`（`[eax+0x480d5e]`）/ 地雷 `0x00446caa`（+8）/ 定時炸彈 `0x00446d8b`（+12），
+ *   三处都在各自函式的**开头**、`cmp byte [eax+0x496b7d],1 / jne` **之前**
+ *   ⇒ **不分人机，电脑也说**（玩家回报「NPC放置炸弹…好像也有台词」就是这个）。
+ *   表 `0x480d5a`（12×26，行距 0x68），前 13 列 = 道具 1..13；见 `@rich4/data` 的 `TOOL_LINES`。
+ *
+ * 纯函数（C-DET-1/2/4）：不读 DOM、不碰音频、不动 PRNG。
+ */
+export function toolUseSpeech(before: GameState, after: GameState): SpeechBubble[] {
+  const use = after.lastToolUsed;
+  if (use === null) return [];
+  // 同一次用道具只出一次（提示字段是「最近一次」的覆写语义，规矩同 `cardPlaySpeech`）
+  if (before.lastToolUsed === use) return [];
+  const bubble = toolLineOf(after, use.player, use.toolId);
   return bubble === null ? [] : [bubble];
+}
+
+/**
+ * 某人用某件道具那一句（`_tool_strings[角色][道具号−1]`）；不出声返回 null。
+ * ★ 第十四份 #4：本机真人**选定道具、开选择界面之前**也用它先说（见 `main.ts` 的 `sayOwnToolLine`）。
+ */
+export function toolLineOf(state: GameState, player: number, toolId: number): SpeechBubble | null {
+  const p = state.players[player];
+  if (p === undefined) return null;
+  const b = p.blocking;
+  // 消失中 / 梦游 / 冬眠的人不出声（与 `cardPlaySpeech` 同一条）
+  if (b.disappearing !== 0 || b.sleepWalking !== 0 || b.sleeping !== 0) return null;
+  return toolLineBubbleOf(player, p.character, characterName(p.character), toolId);
+}
+
+/**
+ * ★★ 第十四份試玩回報 #2（Charles，2026-09-23）：「使用机器工人时应该是先出台词才出特效」。
+ *
+ * 道具台词的**次序**是 `beforeStage`（先说、说完才起影片 / 建屋动效 / 投掷）。
+ *
+ * @source 13 件道具的函数体里，`player_say(当前玩家, 0, _tool_strings[角色][道具号−1])`
+ *   都是**第一个**有表现的调用（`python3 tools/disasm.py va <函数头> 25` 逐个读过）：
+ *   | 道具 | 取串 | `call 0x44ef41` | 其后第一个演出 |
+ *   |---|---|---|---|
+ *   | 1 機器娃娃 | `0x00446b26` | `0x00446b2e` | 娃娃上路 |
+ *   | 2 路障 | `0x00446bc4` | `0x00446bcc` | `0x00446be6` 选格（真人）/ `0x00446bef`（电脑）→ 投掷 |
+ *   | 3 地雷 | `0x00446ca2` | `0x00446caa` | `0x00446cc7` / `0x00446cd0` → 投掷 |
+ *   | 4 定時炸彈 | `0x00446d83` | `0x00446d8b` | `0x00446da8` / `0x00446db1` → 投掷 |
+ *   | 5 機車 | `0x00446ed0` | `0x00446ed8` | — |
+ *   | 6 汽車 | `0x00446f88` | `0x00446f90` | （之前只有 `0x00446f67` 镜头）|
+ *   | 7 飛彈 | `0x00446fdb` | `0x00446fe3` | `0x00447000` / `0x00447009` 选格 → 爆炸影片 |
+ *   | 8 遙控骰子 | `0x00447146` | `0x0044714e` | — |
+ *   | 9 機器工人 | `0x004472b2` | `0x004472ba` | `0x004472d7`/`0x004472e0` 选地 → `0x00447326` 读 0x229 → `0x0044733c` 镜头 → `0x0044735c` 播大锤 → `0x00447373` 0x20b |
+ *   | 10 時光機 | `0x004473a2` | `0x004473aa` | `0x004473b2` |
+ *   | 11 傳送機 | `0x0044744a` | `0x00447451` | `0x0044746e` 选格 |
+ *   | 12 工程車 | `0x00447a99` | `0x00447aa1` | （之前只有 `0x00447a78` 镜头）|
+ *   | 13 核子飛彈 | `0x00447aed` | `0x00447af5` | `0x00447b12` 选格 → 爆炸影片 |
+ *   `player_say` 是同步的（说完才返回，见 W-51 / `stage-gate.ts`）⇒ 影片一律排在台词**之后**。
+ *   先前这里取 `afterStage`（「押到演出收摊之后」）正好把次序弄反：機器工人的大锤、
+ *   飛彈 / 核彈的爆炸、路障等的投掷都先演完，台词才出来。
+ */
+export const TOOL_LINE_ORDER: SpeechOrder = 'beforeStage';
+
+/** `toolUseSpeech` + 次序 —— `main.ts` 的 `playSoundFor` 直接拿去 `queueSpeech` */
+export function toolUseSpeechLines(before: GameState, after: GameState): SpeechLine[] {
+  return toolUseSpeech(before, after).map((bubble) => ({ bubble, order: TOOL_LINE_ORDER }));
+}
+
+/**
+ * ★ 第十四份 #4：本机真人**已经在开选择界面之前说过**的那一句（选格 / 骰面盘的道具）。
+ *
+ * @source 需要选目标的那几件，`player_say` 都在选择界面**之前**：路障 `0x00446bcc` → `0x00446be6`、
+ *   地雷 `0x00446caa` → `0x00446cc7`、定時炸彈 `0x00446d8b` → `0x00446da8`、飛彈 `0x00446fe3` → `0x00447000`、
+ *   遙控骰子 `0x0044714e` → `0x00447171`（点数盘）、機器工人 `0x004472ba` → `0x004472d7`、
+ *   傳送機 `0x00447451` → `0x0044746e`、核子飛彈 `0x00447af5` → `0x00447b12`（`0x446ae8` = 真人选格）。
+ *   本引擎的 `useTool` 带着目标才发出去 ⇒ 真人那一句在选定道具时先说，action 落地时**不再说第二遍**
+ *   （同一回合、同一人、同一件）；旁观端没有这份记录，照旧在 action 到达时说。
+ */
+export interface OwnToolLine {
+  player: number;
+  toolId: number;
+  turnCount: number;
+}
+
+/** 这一条 action 的道具台词是不是本机已经说过的那一句（是就该吞掉） */
+export function ownToolLineSpoken(before: GameState, after: GameState, own: OwnToolLine | null): boolean {
+  const use = after.lastToolUsed;
+  if (own === null || use === null || before.lastToolUsed === use) return false;
+  return use.player === own.player && use.toolId === own.toolId && after.turnCount === own.turnCount;
 }
 
 /** 角色号的显示名；越界给一个看得出来的占位（与 `main.ts` 里那几处同一套约定）*/

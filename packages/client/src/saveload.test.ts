@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { decideAction, newGame, parseMap, reduce, type GameState } from '@rich4/core';
 import { initSaveStore, saveStore, type SaveStore } from './host.ts';
 import {
   AUTOSAVE_SLOT,
+  autosaveStep,
+  gameDateKey,
   LOAD_SLOTS,
   ROW,
   SAVELOAD_AT,
@@ -23,7 +27,17 @@ import {
   importRect,
   hitImport,
   formatGaps,
+  drawSaveLoad,
+  rowTexts,
+  ROW_TEXT_STYLE,
+  ROW_FACE_X0,
+  ROW_FACE_PITCH,
+  ROW_THUMB_X,
+  EMPTY_CELL_IMAGE,
+  PORTRAIT_RESOURCE,
+  type SlotInfo,
 } from './saveload.ts';
+import { BOX_TEXT_STYLE } from './font.ts';
 import { SCREEN_H, SCREEN_W } from './stage.ts';
 
 describe('存讀檔屏的版式', () => {
@@ -167,5 +181,163 @@ describe('★ 匯入原版存檔的入口（T-054）', () => {
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
     expect(hitSaveLoad('load', cx, cy)).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ 自動存檔的时机（第十六份回报续，2026-09-24）
+// ============================================================
+
+describe('★★ 自動存檔：推过日期、新一天第一位的回合边界走完才存 @source 0x00419041..0x0041904d', () => {
+  const at = (
+    y: number,
+    m: number,
+    d: number,
+    extra: Partial<Pick<GameState, 'phase' | 'pending' | 'deferredTurnStart'>> = {},
+  ) => ({ year: y, month: m, day: d, phase: 'turnStart' as const, pending: null, deferredTurnStart: null, ...extra });
+
+  it('`gameDateKey` 按年·月·日单调', () => {
+    expect(gameDateKey({ year: 1998, month: 1, day: 31 })).toBeLessThan(gameDateKey({ year: 1998, month: 2, day: 1 }));
+    expect(gameDateKey({ year: 1998, month: 12, day: 31 })).toBeLessThan(gameDateKey({ year: 1999, month: 1, day: 1 }));
+  });
+
+  it('新局 / 读档之后第一次看到：只记下、不存（开局那天游标没绕回过）', () => {
+    expect(autosaveStep(at(1998, 1, 1), null)).toEqual({ save: false, key: gameDateKey(at(1998, 1, 1)) });
+  });
+
+  it('同一天里的回合（不分人机）都不存；推过日期那一刻存一次', () => {
+    const k0 = gameDateKey(at(1998, 1, 1));
+    expect(autosaveStep(at(1998, 1, 1), k0)).toEqual({ save: false, key: k0 });
+    const step = autosaveStep(at(1998, 1, 2), k0);
+    expect(step.save).toBe(true);
+    // 记下之后同一天不再存
+    expect(autosaveStep(at(1998, 1, 2), step.key).save).toBe(false);
+  });
+
+  it('推日期里开出了拍卖 / 还款提醒窗 ⇒ 等它们收掉、落回 turnStart 才存（原版是阻塞调用）', () => {
+    const k0 = gameDateKey(at(1998, 1, 1));
+    const auction = autosaveStep(at(1998, 1, 2, { phase: 'awaitingDecision', deferredTurnStart: 0 }), k0);
+    expect(auction).toEqual({ save: false, key: k0 });
+    const reminder = autosaveStep(
+      at(1998, 1, 2, { pending: { kind: 'loanReminder' } as unknown as GameState['pending'] }),
+      k0,
+    );
+    expect(reminder).toEqual({ save: false, key: k0 });
+    expect(autosaveStep(at(1998, 1, 2), auction.key).save).toBe(true);
+  });
+
+  it('日期往回走（時光機）不算推进：跟着记下、不存；之后再推进才存', () => {
+    const k5 = gameDateKey(at(1998, 1, 5));
+    const back = autosaveStep(at(1998, 1, 3), k5);
+    expect(back).toEqual({ save: false, key: gameDateKey(at(1998, 1, 3)) });
+    expect(autosaveStep(at(1998, 1, 4), back.key).save).toBe(true);
+  });
+
+  // ★★ 2026-09-24（CI「三绿」红）：CI 里 `RICH4_WORKSPACE` 指向仓库上一级、并没有
+  //   `extracted/`，先前这一条直接 `expect(existsSync(MAP)).toBe(true)` 把整个门禁打红。
+  //   没有原版素材 ⇒ **跳过**（与仓库里其余 51 个文件同一条口径）；有素材时断言一字不动。
+  const AUTOSAVE_MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
+
+  it.skipIf(!existsSync(AUTOSAVE_MAP))('★ 真跑一局（4 电脑）：存的次数 = 推过的天数，且每次都在 turnStart', () => {
+    const MAP = AUTOSAVE_MAP;
+    expect(existsSync(MAP), MAP).toBe(true);
+    const map = parseMap(new Uint8Array(readFileSync(MAP)));
+    const topo = { nodes: map.nodes, lands: map.lands, facilities: map.facilities, commercials: map.commercials, landscapes: map.landscapes };
+    let state = newGame({ map, players: [0, 1, 2, 3].map((i) => ({ character: i, kind: 'computer' as const })), seed: 4242 });
+    let key: number | null = null;
+    let saves = 0;
+    const startKey = gameDateKey(state);
+    for (let i = 0; i < 20_000 && state.turnCount < 60; i++) {
+      const step = autosaveStep(state, key);
+      key = step.key;
+      if (step.save) {
+        saves++;
+        expect(state.phase).toBe('turnStart');
+      }
+      const a = decideAction({ state, map });
+      if (a === null) break;
+      state = reduce(state, a, topo);
+    }
+    const lastStep = autosaveStep(state, key);
+    if (lastStep.save) saves++;
+    const days = Math.round((Date.UTC(state.year, state.month - 1, state.day) - Date.UTC(
+      Math.trunc(startKey / 10000), Math.trunc(startKey / 100) % 100 - 1, startKey % 100)) / 86_400_000);
+    expect(days).toBeGreaterThan(5);
+    expect(saves).toBe(days);
+  });
+});
+
+describe('★ gap-audit #18：一行的字与图全照 0x00403f1d..0x00404094', () => {
+  it('★ 字样 = `create_font(0x10, 0xf0f0f0, 0x101010, 3, 1)`（16 号米白、粗体 + 阴影）', () => {
+    expect(ROW_TEXT_STYLE).toEqual({ size: 0x10, color: '#f0f0f0', color2: '#101010', flags: 3, spacing: 1 });
+    expect(ROW_TEXT_STYLE).toBe(BOX_TEXT_STYLE);
+  });
+
+  it('★ 0 号槽：AUTO / 年 / 月日，都以 x = 0xa5 为中心，dy = 0x0f / 0x24 / 0x39', () => {
+    expect(rowTexts(0, { year: 1998, month: 3, day: 7 })).toEqual([
+      { text: 'AUTO', x: 0xa5, dy: 0x0f },
+      { text: '1998', x: 0xa5, dy: 0x24 },
+      { text: '3/7', x: 0xa5, dy: 0x39 },
+    ]);
+  });
+
+  it('其余槽不写 AUTO；空槽 / 坏档一句都不写（整槽跳过 0x00403e55）', () => {
+    expect(rowTexts(2, { year: 1998, month: 12, day: 31 }).map((t) => t.text)).toEqual(['1998', '12/31']);
+    expect(rowTexts(0, null)).toEqual([]);
+    expect(rowTexts(3, null)).toEqual([]);
+  });
+
+  it('★ 画出来：有档的槽 = 粉底板 + 字 + 縮圖 + 每位玩家的头像；空槽什么都不画（连粉底板都没有）', () => {
+    const images: { res: number; index: number; x: number; y: number }[] = [];
+    const texts: { text: string; x: number; y: number; fill: string; font: string }[] = [];
+    const ctx = {
+      save: () => {},
+      restore: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      fillText(this: { fillStyle: string; font: string }, text: string, x: number, y: number) {
+        texts.push({ text, x, y, fill: String(this.fillStyle), font: String(this.font) });
+      },
+      drawImage: (b: { res: number; index: number }, x: number, y: number) => images.push({ ...b, x, y }),
+      fillStyle: '',
+      strokeStyle: '',
+      font: '',
+      textAlign: '',
+      textBaseline: '',
+      lineWidth: 1,
+    } as unknown as CanvasRenderingContext2D;
+    const sprite = (_a: string, res: number, index: number) =>
+      ({ bitmap: { res, index } as unknown as ImageBitmap, width: 72, height: 72, anchorX: 0, anchorY: 0 }) as never;
+    const st = {
+      year: 1999,
+      month: 5,
+      day: 20,
+      globalMapId: 5,
+      players: [{ character: 3 }, { character: 7 }, { character: 0 }],
+    } as unknown as GameState;
+    const slots: SlotInfo[] = [
+      { slot: 0, state: null, error: null },
+      { slot: 1, state: st, error: null },
+    ];
+    drawSaveLoad(ctx, 'load', slots, null, sprite);
+    const y1 = ROW.y0 + ROW.pitch;
+    // 空的 0 号槽：一张行图都没有
+    expect(images.filter((i) => i.y === ROW.y0)).toEqual([]);
+    expect(texts.some((t) => t.text === 'AUTO')).toBe(false);
+    // 1 号槽：粉底板、縮圖（2 + 5）、三位玩家头像
+    expect(images.filter((i) => i.y === y1)).toEqual([
+      { res: 0x208, index: EMPTY_CELL_IMAGE, x: ROW.x, y: y1 },
+      { res: 0x208, index: 2 + 5, x: ROW_THUMB_X, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 3, x: ROW_FACE_X0, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 7, x: ROW_FACE_X0 + ROW_FACE_PITCH, y: y1 },
+      { res: PORTRAIT_RESOURCE, index: 0, x: ROW_FACE_X0 + 2 * ROW_FACE_PITCH, y: y1 },
+    ]);
+    // 字：正文米白画在 (+0,+0)，阴影深色在 (+1,+1)；16 号粗体
+    const year = texts.filter((t) => t.text === '1999');
+    expect(year).toEqual([
+      { text: '1999', x: 0xa5 + 1, y: y1 + 0x24 + 1, fill: '#101010', font: expect.stringMatching(/^bold 16px /) },
+      { text: '1999', x: 0xa5, y: y1 + 0x24, fill: '#f0f0f0', font: expect.stringMatching(/^bold 16px /) },
+    ]);
+    expect(texts.filter((t) => t.text === '5/20').map((t) => t.y)).toEqual([y1 + 0x39 + 1, y1 + 0x39]);
   });
 });

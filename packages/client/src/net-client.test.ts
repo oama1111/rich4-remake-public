@@ -3,7 +3,14 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 import { describe, expect, it } from 'vitest';
-import { PROTOCOL_VERSION, type Action, type ClientMessage, type SeatInfo, type ServerMessage } from '@rich4/core';
+import {
+  LOBBY_DEFAULT_OPTIONS,
+  PROTOCOL_VERSION,
+  type Action,
+  type ClientMessage,
+  type SeatInfo,
+  type ServerMessage,
+} from '@rich4/core';
 import { NetClient, netParamsFrom, type NetClientOptions } from './net-client.ts';
 
 function harness(extra: Partial<NetClientOptions> = {}) {
@@ -71,7 +78,7 @@ describe('NetClient', () => {
     h.push({ t: 'joined', version: PROTOCOL_VERSION, seat: 2, room: { id: 'r1', seats: [], started: false } });
     expect(h.client.seat).toBe(2);
     h.push({ t: 'room', room: { id: 'r1', seats: [{ seat: 0, name: 'a', character: 0, kind: 'human' }], started: false } });
-    h.push({ t: 'start', seed: 7, globalMapId: 0, seats: [] });
+    h.push({ t: 'start', seed: 7, globalMapId: 0, seats: [], options: LOBBY_DEFAULT_OPTIONS });
     h.push({ t: 'error', message: '拒绝' });
     h.push({ t: 'desync', seq: 9, expected: 'a', got: 'b', seat: 1 });
     expect(h.events).toEqual(['joined:2', 'room:1', 'start:7', 'error:拒绝', 'desync:9']);
@@ -233,6 +240,7 @@ describe('NetClient', () => {
     const actions = [roll, step, roll, step, roll];
     h.push({
       t: 'replay',
+      options: LOBBY_DEFAULT_OPTIONS,
       seed: 7,
       globalMapId: 0,
       seats,
@@ -278,6 +286,7 @@ describe('NetClient', () => {
     expect(h.applied).toEqual([]);
     h.push({
       t: 'replay',
+      options: LOBBY_DEFAULT_OPTIONS,
       seed: 1,
       globalMapId: 0,
       seats: [],
@@ -288,6 +297,133 @@ describe('NetClient', () => {
     // 之后补发来的 1 号是重复的，直接丢
     h.push({ t: 'action', seq: 1, action: step });
     expect(h.applied.map((x) => x.seq)).toEqual([0, 1, 2]);
+  });
+});
+
+describe('★★ 第十二份試玩回報：中途进房的补发 —— 攒齐一次交出，静默追上', () => {
+  // 回报：`20260923-014329884`「断线重连后莫名其妙又进入魔法屋」、
+  //       `20260923-014349833`「断线重连后所有文本提示又重新触发了一轮」。
+  //   刷新后服务器从 0 号补发整局，先前与实时广播走同一条 `onAction` → 演出路径，整局重演一遍。
+  const start = (through?: number): ServerMessage => ({
+    t: 'start',
+    seed: 7,
+    globalMapId: 0,
+    seats: [],
+    options: LOBBY_DEFAULT_OPTIONS,
+    ...(through === undefined ? {} : { through }),
+  });
+
+  function catchUpHarness(extra: Partial<NetClientOptions> = {}) {
+    const batches: { action: Action; seq: number }[][] = [];
+    const starts: number[] = [];
+    const h = harness({
+      onCatchUp: (items) => batches.push(items),
+      onStart: (s) => starts.push(s.through),
+      ...extra,
+    });
+    return { ...h, batches, starts };
+  }
+
+  it('start 带 through ⇒ 0..through 攒齐一次交给 onCatchUp，一条都不走 onAction；之后的照常', () => {
+    const h = catchUpHarness();
+    h.push(start(2));
+    expect(h.starts).toEqual([2]);
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.batches).toEqual([]); // 没凑齐不交
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 2, action: step });
+    expect(h.batches).toEqual([
+      [
+        { action: roll, seq: 0 },
+        { action: step, seq: 1 },
+        { action: step, seq: 2 },
+      ],
+    ]);
+    expect(h.applied).toEqual([]);
+    expect(h.client.catchingUp).toBe(false);
+    // 进房之后的实时广播：照常逐条走 onAction（由宿主按节拍演）
+    h.push({ t: 'action', seq: 3, action: roll });
+    expect(h.applied).toEqual([{ action: roll, seq: 3 }]);
+    expect(h.batches).toHaveLength(1);
+  });
+
+  it('乱序到达也照序号攒；补发那一段不报校验和', () => {
+    const h = catchUpHarness({ checksumEvery: 2 });
+    h.push(start(3));
+    h.push({ t: 'action', seq: 2, action: step });
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 3, action: step });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.batches[0]!.map((x) => x.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.sent.filter((m) => m.t === 'checksum')).toEqual([]);
+  });
+
+  it('断线重连（带 since）：只有 since+1..through 那一段算补发', () => {
+    const h = catchUpHarness({ since: 1 });
+    h.push(start(3));
+    expect(h.client.catchingUp).toBe(true);
+    h.push({ t: 'action', seq: 2, action: roll });
+    h.push({ t: 'action', seq: 3, action: step });
+    expect(h.batches).toEqual([
+      [
+        { action: roll, seq: 2 },
+        { action: step, seq: 3 },
+      ],
+    ]);
+    expect(h.client.catchingUp).toBe(false);
+  });
+
+  it('断线期间什么都没发生（through < since+1）⇒ 没有要追的', () => {
+    const h = catchUpHarness({ since: 3 });
+    h.push(start(3));
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 4, action: roll });
+    expect(h.applied).toEqual([{ action: roll, seq: 4 }]);
+    expect(h.batches).toEqual([]);
+  });
+
+  it('日志是空的（through = -1）/ 旧服务器不带 through / 带坏值 ⇒ 没有要追的', () => {
+    for (const msg of [start(-1), start(), { ...start(), through: 1.5 } as ServerMessage, { ...start(), through: 'x' } as unknown as ServerMessage]) {
+      const h = catchUpHarness();
+      h.push(msg);
+      expect(h.starts).toEqual([-1]);
+      expect(h.client.catchingUp).toBe(false);
+      h.push({ t: 'action', seq: 0, action: roll });
+      expect(h.applied).toEqual([{ action: roll, seq: 0 }]);
+    }
+  });
+
+  it('宿主不接 onCatchUp ⇒ 退回旧行为（补发也逐条走 onAction）', () => {
+    const h = harness();
+    h.push(start(1));
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.applied.map((x) => x.seq)).toEqual([0, 1]);
+  });
+
+  it('追赶中途来了 replay ⇒ 整体替换，攒着的那一段作废、不再交出', () => {
+    const h = catchUpHarness();
+    h.push(start(5));
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({
+      t: 'replay',
+      seed: 7,
+      globalMapId: 0,
+      seats: [],
+      options: LOBBY_DEFAULT_OPTIONS,
+      through: 1,
+      actions: [
+        { seq: 0, action: roll },
+        { seq: 1, action: step },
+      ],
+    });
+    expect(h.client.catchingUp).toBe(false);
+    h.push({ t: 'action', seq: 2, action: roll });
+    expect(h.batches).toEqual([]);
+    expect(h.applied.at(-1)).toEqual({ action: roll, seq: 2 });
   });
 });
 
@@ -307,5 +443,103 @@ describe('netParamsFrom', () => {
     const p = netParamsFrom('?ws=ws://h:1');
     expect(p?.room).toBe('default');
     expect(p?.name).toMatch(/^玩家\d+$/);
+  });
+});
+
+describe('★ 聯機存檔（v6）', () => {
+  it('join 帶 mode / fromSave / claimSeat；claim / unclaim / save 各發一條', () => {
+    const { client, sent } = harness({ mode: 'create', fromSave: 'm-1' });
+    client.join();
+    expect(sent[0]).toMatchObject({ t: 'join', mode: 'create', fromSave: 'm-1' });
+    expect('claimSeat' in sent[0]!).toBe(false);
+    const h2 = harness({ mode: 'join', claimSeat: 2 });
+    h2.client.join();
+    expect(h2.sent[0]).toMatchObject({ t: 'join', mode: 'join', claimSeat: 2 });
+    client.claim(1);
+    client.unclaim(3);
+    client.save('週末');
+    expect(sent.slice(1)).toEqual([
+      { t: 'claim', seat: 1 },
+      { t: 'unclaim', seat: 3 },
+      { t: 'save', name: '週末' },
+    ]);
+  });
+
+  it('start / replay 的 snapshot 與 startDate 原樣交上去；日期形狀不對就當沒帶；saved 交給 onSaved', () => {
+    const starts: unknown[] = [];
+    const saved: string[] = [];
+    const replays: unknown[] = [];
+    const { push } = harness({
+      onStart: (s) => starts.push(s),
+      onSaved: (n) => saved.push(n),
+      onResync: (r) => replays.push(r),
+    });
+    const options = { seatCount: 2, fundIndex: 0, vehicle: 0, landTenure: 0, timeIndex: 0, victoryIndex: 0 };
+    push({ t: 'start', seed: 1, globalMapId: 0, seats: [], options, snapshot: '{"s":1}', startDate: { year: 2003, month: 4, day: 5 } });
+    push({ t: 'start', seed: 1, globalMapId: 0, seats: [], options, startDate: { year: 'x' } as never });
+    expect(starts[0]).toMatchObject({ snapshot: '{"s":1}', startDate: { year: 2003, month: 4, day: 5 } });
+    expect(starts[1]).not.toHaveProperty('startDate');
+    expect(starts[1]).not.toHaveProperty('snapshot');
+    push({ t: 'replay', seed: 1, globalMapId: 0, seats: [], options, snapshot: '{"s":2}', through: -1, actions: [] });
+    expect(replays[0]).toMatchObject({ snapshot: '{"s":2}' });
+    push({ t: 'saved', name: '週末' });
+    expect(saved).toEqual(['週末']);
+  });
+});
+
+describe('★ 房主交接（v6）', () => {
+  it('leave 發一條 {t:leave}', () => {
+    const { client, sent } = harness();
+    client.leave();
+    expect(sent).toEqual([{ t: 'leave' }]);
+  });
+});
+
+describe('★ gap-audit #7（v8）：纯演出提示 `present`', () => {
+  const reveal = { kind: 'cardReveal', cardId: 7 } as const;
+
+  function presentHarness() {
+    const order: string[] = [];
+    const h = harness({
+      onAction: (action, seq) => order.push(`action:${seq}`),
+      onPresent: (p) => order.push(`present:${p.seat}:${p.cue.kind}`),
+      onCatchUp: (items) => order.push(`catchUp:${items.length}`),
+    });
+    return { ...h, order };
+  }
+
+  it('`present()` 只发一条 `present`（不是意图、不改本地）', () => {
+    const h = presentHarness();
+    h.client.present(reveal);
+    expect(h.sent).toEqual([{ t: 'present', cue: reveal }]);
+    expect(h.order).toEqual([]);
+  });
+
+  it('`after` 就是手上最后一号 ⇒ 当场交出；排在还没到的 action 后面 ⇒ 等那一号交出之后再交', () => {
+    const h = presentHarness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    // 乱序：2 号先到、1 号未到；提示排在 2 号之后
+    h.push({ t: 'action', seq: 2, action: step });
+    h.push({ t: 'present', seat: 1, after: 2, cue: { kind: 'cardFailed', cardId: 7 } });
+    expect(h.order).toEqual(['action:0', 'present:1:cardReveal']);
+    h.push({ t: 'action', seq: 1, action: step });
+    expect(h.order).toEqual(['action:0', 'present:1:cardReveal', 'action:1', 'action:2', 'present:1:cardFailed']);
+  });
+
+  it('过期的（`after` 比手上的还旧）/ 形状不对的 / 追赶补发期间的 ⇒ 丢掉', () => {
+    const h = presentHarness();
+    h.push({ t: 'action', seq: 0, action: roll });
+    h.push({ t: 'action', seq: 1, action: step });
+    h.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    h.push({ t: 'present', seat: 1, after: 1, cue: { kind: 'nope' } } as unknown as ServerMessage);
+    expect(h.order).toEqual(['action:0', 'action:1']);
+
+    const c = presentHarness();
+    c.push({ t: 'start', seed: 7, globalMapId: 0, seats: [], options: LOBBY_DEFAULT_OPTIONS, through: 1 });
+    c.push({ t: 'action', seq: 0, action: roll });
+    c.push({ t: 'present', seat: 1, after: 0, cue: reveal });
+    c.push({ t: 'action', seq: 1, action: step });
+    expect(c.order).toEqual(['catchUp:2']);
   });
 });

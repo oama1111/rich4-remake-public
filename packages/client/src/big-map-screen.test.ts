@@ -47,6 +47,8 @@ function mkEnv(): {
   const env = {
     screen: 'game',
     now: 0,
+    // 没有地块 ⇒ 没有归属色块（见下面「归属色块」那一组）
+    topo: { nodes: [] },
     requestRender: () => {
       renders += 1;
     },
@@ -268,5 +270,38 @@ describe('画法：底图在 (20,60)、标记减锚点', () => {
     expect(drawn.length).toBe(2);
     expect(drawn[0]?.slice(1)).toEqual([20 - 15, 60 - 13]);
     expect(drawn[1]?.slice(1)).toEqual([20 + 62 - 15, 60 + 41 - 13]);
+  });
+});
+
+describe('★ 第十三份試玩回報：大地圖上烙归属色块 @source 0x0040a82d → fcn_0040a4e1(1)', () => {
+  it('★ 底图之后、玩家标记之前：有主的地 / 設施 / 企業各一块（Data.mkf 517 图 26..29，抠黑），落点 = 世界×89>>9 + (20,60)', () => {
+    const { env, images, drawn } = mkEnv();
+    const map = mkMap([{ x: 360, y: 239 }]);
+    const state = {
+      ...mkState([{ character: 2, whoPlays: WHO_PLAYS_HUMAN, nodeId: 1 }], 0, map),
+      landOwner: [0, 1, 0],
+      facilityOwner: [0, 1],
+      commercialOwners: [undefined, { owner: 1 }],
+    } as unknown as GameState;
+    const topo = {
+      nodes: [],
+      lands: [
+        { id: 1, x: 1024, y: 512, facing: 3 },
+        { id: 2, x: 600, y: 600, facing: 0 }, // 无主 ⇒ 不画
+      ],
+      facilities: [{ id: 1, x: 512, y: 1024, facing: 2 }],
+      commercials: [{ id: 1, x: 2000, y: 100, facing: 1 }],
+    };
+    // 真浏览器里剪影要画在离屏画布上；单测环境没有 ⇒ 只核「取了哪几张图」
+    openBigMap(env);
+    bigMapScreen.draw({ ...env, state, map, topo } as unknown as UiScreenEnv);
+    expect(images).toEqual([
+      { archive: 'map.mkf', resource: 0x10, index: 1, colorKeyBlack: false },
+      { archive: 'Data.mkf', resource: 0x205, index: 0x1a + 1, colorKeyBlack: true }, // 地，朝向 3 ⇒ 菱
+      { archive: 'Data.mkf', resource: 0x205, index: 0x1c + 0, colorKeyBlack: true }, // 設施，朝向 2 ⇒ 方
+      { archive: 'Data.mkf', resource: 0x205, index: 0x1c + 1, colorKeyBlack: true }, // 企業，朝向 1 ⇒ 菱
+      { archive: 'map.mkf', resource: 0x1d, index: 5, colorKeyBlack: true },
+    ]);
+    expect(drawn.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -39,3 +39,24 @@
 export function shouldResumeDriver(prev: string, now: string): boolean {
   return now === 'game' && prev !== 'game';
 }
+
+/**
+ * ★★ 第十九份待办 / 审计 #15：**開局跳伞过场期间，回合驱动一律停着**。
+ *
+ * 根因（isolated headless Playwright `?screen=game&humans=0&ai=4&mute=1` 复现）：
+ * `scheduleAi()` 的入口**没有**屏号闸（上面文件头说「两条驱动都有」—— 实际只有
+ * `scheduleHumanTurn()` 有），而节拍闸 `holdForActorWalkReason()` 对非棋盘屏一律放行
+ * ⇒ 首位是电脑时，`startGame()` 末尾那一句 `scheduleAi()` 让电脑**在过场底下**全速开打；
+ * 第一扇訊息框 / 神明老虎机一开，渲染链走整屏分支、`screen === 'intro'` 那一支不再执行，
+ * 而过场唯一的收场判据（`introDone`）就写在那一支里 ⇒ 过场**永远收不了场**，
+ * 电脑在它底下一直下（实测 40 秒 24 回合，`screen` 始终是 `'intro'`）。
+ *
+ * 原版没有这回事：跳伞过场 `fcn_00415872` 是 `0x401981` 进棋盘之前的**阻塞**调用，
+ * 过场放完才有第一个回合（`0x418c55`）。
+ *
+ * ⇒ 过场期间两条驱动都停（`endIntro()` 与上面的 `shouldResumeDriver('intro','game')` 会叫醒）；
+ *   收场判据挪到渲染链之前，不再依赖「此刻没有整屏接管」。
+ */
+export function driverParkedByScreen(screen: string): boolean {
+  return screen === 'intro';
+}

@@ -40,6 +40,8 @@
  * ★ 每 N 次 tick 走完一格，**一次 tick 一帧**；tick 的时长见 `tickMs()`。
  */
 
+import { WHO_PLAYS_RELOCATED, WHO_PLAYS_RETURN_TO_BOARD, directionOf } from '@rich4/core';
+
 /**
  * 每种交通方式的走子速度，单位 **世界单位 / tick**（不是屏幕像素）。
  * @source VA 0x004749d8（dump 出来就是这 4 个数：走路 8、機車 12、汽車 16、船 8）
@@ -209,12 +211,68 @@ export interface WalkTween {
   to: { x: number; y: number };
   /** 是否走「特殊支」（`player+0x15 & 0x30`）—— 走回棋盘恒为真，见上 */
   special: boolean;
+  /**
+   * ★ 审计 #17：「被挪」那两支（`player+0x15 & 0x30`）的**显隐**与朝向 —— 见 `relocateVisible`。
+   * 只在调用方给了 `whoPlays` 时才判（没给 = 老口径，全程画、朝向照 state）。
+   */
+  relocate?: RelocateWalk;
+}
+
+/**
+ * 「被挪」那一趟的走法 —— `fcn_0040c05c` 的两条特殊支：
+ * - `'emerge'`：**走出来**（`+0x15 & 0x10`，刑满 / 住满「走回棋盘」）。起点 = 在押贴图位
+ *   （綠島 / 醫院大樓 / 旅館設施），终点 = 所在格。
+ * - `'enter'`：**走进去**（`+0x15 & 0x20`，旅館住店 `0x40d5a5` 支 A）。起点 = 旅館格、
+ *   终点 = 設施坐标（`0x40c0ed..0x40c127`：`設施表 [0x498e88] + [+0x4a]×0x38` 的 +0x00/+0x02）。
+ */
+export interface RelocateWalk {
+  kind: 'enter' | 'emerge';
+  /**
+   * 这一趟摆的朝向（`player+0x10`）= `directionOf(终点 − 起点)`。
+   * @source 走进去：`0x40d5a5` 支 A 先按「設施 − 自己」算好朝向再 `call 0x40dd1f`；
+   *   走出来：释放 `0x40d6be` 的 `0x0040d70f call 0x454fb4(node − x/y)` → `0x0040d717` 写 `+0x10`。
+   *   两支走路时都**不再**按格重算朝向（`0x0040c417 test [+0x15],0x30 / jne` 跳过 `0x40c437`）。
+   */
+  facing: number;
+}
+
+/**
+ * 「被挪」那一趟**第几拍起换了显隐**（1 基；`null` = 这一趟一直不换）。
+ *
+ * @source `fcn_0040c05c`：
+ * ```asm
+ * 0040c313  eax = [0x4749dc] / sar eax,1 / mov [0x48baf4], eax   ; 半程 = trunc(N_f) >> 1（钳到 1 之前）
+ * 0040c338  dec ecx / mov [0x4749dc], ecx                         ; 本拍之后还剩几拍
+ * 0040c34a  jle 0x40c3ec                                          ; 剩 0 ⇒ 末拍吸附，**不查**半程
+ * 0040c3ab  test byte [+0x15], 0x30 / je
+ * 0040c3ba  cmp  edx, [0x48baf4] / jge                            ; 剩余 < 半程 才动手（只动一次：动完把半程清 0）
+ * 0040c3cf  mov  dword [+0x32], 0                                 ; 0x10 支：清四个阻碍计数 ⇒ 开始画（走出来）
+ * 0040c3dc  and  dl, 0xf / mov [+0x15], dl                        ; 0x20 支：清掉 0x20 ⇒ 不再画（走进去）
+ * ```
+ * 画不画由棋子绘制 `0x00408691 cmp dword [+0x32],0 / je 画` + `0x0040869a test [+0x15],0x20 / je 不画` 决定。
+ * ⇒ 第 k 拍剩 `N − k`；第一次 `0 < N − k < N >> 1` 的那一拍 = `N − (N >> 1) + 1`（须 ≤ N − 1）。
+ */
+export function relocateToggleTick(ticks: number): number | null {
+  const t = ticks - (ticks >> 1) + 1;
+  return t <= ticks - 1 ? t : null;
+}
+
+/**
+ * 「被挪」那一趟第 `k` 拍（1..N；`k > N` = 走完之后）棋子画不画。
+ * - `'enter'`（住店）：过半之前画、之后隐 —— 人走进旅館**不见了**；
+ * - `'emerge'`（走回棋盘）：过半之前隐（阻碍计数还在）、之后画 —— 人从建筑里**走出来**。
+ * 拍数太少（`relocateToggleTick` 为 null）时原版这一趟不换显隐：走进去一直画、走出来一直隐。
+ */
+export function relocateVisible(kind: RelocateWalk['kind'], ticks: number, k: number): boolean {
+  const t = relocateToggleTick(ticks);
+  const toggled = t !== null && k >= t;
+  return kind === 'enter' ? !toggled : toggled;
 }
 
 export function walkTweenFor(
   actionType: string,
-  before: { currentPlayer: number; players: readonly { nodeId: number; xpos: number; ypos: number }[] },
-  after: { currentPlayer: number; players: readonly { nodeId: number; xpos: number; ypos: number }[] },
+  before: { currentPlayer: number; players: readonly TweenPlayer[] },
+  after: { currentPlayer: number; players: readonly TweenPlayer[] },
   nodeAt: (nodeId: number) => { x: number; y: number } | undefined,
   landing: number | null = null,
 ): WalkTween | null {
@@ -222,6 +280,23 @@ export function walkTweenFor(
   const a = after.players[idx];
   const b = before.players[idx];
   if (a === undefined || b === undefined) return null;
+  // ★★ 审计 #17：**住进旅館那一趟**（`0x41a85e call 0x40d5a5` 支 A：当前玩家、原格）——
+  //   core 在落点结算里置 `+0x15 |= 0x20` 并把贴图位写成設施坐标（`nodeId` 不变），
+  //   原版由 `0x40dd1f`（剩 1 格、走姿）+ 走路例程 `0x20` 支把人从旅館格走到設施坐标、半程隐去。
+  //   支 B（付钱的不是当前玩家，如死神代付）是瞬移（`0x40b93b`），不走 ⇒ 只看当前玩家。
+  if (
+    actionType !== 'step' &&
+    actionType !== 'startTurn' &&
+    a.whoPlays !== undefined &&
+    b.whoPlays !== undefined &&
+    (a.whoPlays & WHO_PLAYS_RELOCATED) !== 0 &&
+    (b.whoPlays & WHO_PLAYS_RELOCATED) === 0 &&
+    (a.xpos !== b.xpos || a.ypos !== b.ypos)
+  ) {
+    const from = { x: b.xpos, y: b.ypos };
+    const to = { x: a.xpos, y: a.ypos };
+    return { player: idx, from, to, special: true, relocate: { kind: 'enter', facing: directionOf(to.x - from.x, to.y - from.y) } };
+  }
   if (actionType === 'step') {
     if (a.nodeId === b.nodeId) return null; // 没真的挪窝（例如被阻碍）
     // ★ 终点 = 踏上的那一格（见文件头 `landing`）；没给就退回 after 的 `nodeId`
@@ -241,12 +316,21 @@ export function walkTweenFor(
   if (actionType === 'startTurn') {
     if (a.xpos === b.xpos && a.ypos === b.ypos) return null;
     // ★ 「走回棋盘」＝ `player+0x15 & 0x10` 那一支 ⇒ **特殊支**（见上）
-    return {
-      player: idx,
-      from: { x: b.xpos, y: b.ypos },
-      to: { x: a.xpos, y: a.ypos },
-      special: true,
-    };
+    const from = { x: b.xpos, y: b.ypos };
+    const to = { x: a.xpos, y: a.ypos };
+    // ★ 审计 #17：带着 0x10 走出来（監獄 / 醫院 / 旅館住满）⇒ 前半程不画、过半才露面（`relocateVisible`）
+    if (b.whoPlays !== undefined && (b.whoPlays & WHO_PLAYS_RETURN_TO_BOARD) !== 0) {
+      return { player: idx, from, to, special: true, relocate: { kind: 'emerge', facing: directionOf(to.x - from.x, to.y - from.y) } };
+    }
+    return { player: idx, from, to, special: true };
   }
   return null;
+}
+
+/** `walkTweenFor` 读的那几个玩家字段（`whoPlays` 可缺：缺了就不判「被挪」那两支）*/
+export interface TweenPlayer {
+  nodeId: number;
+  xpos: number;
+  ypos: number;
+  whoPlays?: number;
 }

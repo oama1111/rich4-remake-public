@@ -99,8 +99,8 @@ describe('用到的圖 @source 0x0044093a / 0x004409b5 / 0x0043f18d', () => {
     expect(wheelDiscChunk(11)).toBe(13);
   });
 
-  it('★ 氣泡是 Data.mkf 資源 0x205 = 517 的圖 6（271×199）', () => {
-    expect(WHEEL_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 6 });
+  it('★ 對話框是 Data.mkf 資源 0x205 = 517 的圖 5（249×170 棕色訊息框；`add eax,0x48` ⇒ (0x48−0xc)/12）', () => {
+    expect(WHEEL_BUBBLE).toEqual({ archive: 'Data.mkf', resource: 517, image: 5 });
   });
 });
 
@@ -619,11 +619,11 @@ function fakeCtx(): { ctx: CanvasRenderingContext2D; images: Drawn[]; texts: str
   return { ctx: ctx as unknown as CanvasRenderingContext2D, images, texts };
 }
 
-/** 假精靈：錨點照 manifest（圓盤 82,82 / 天使 (−6,0) / (0,0) / 氣泡 127,92）*/
+/** 假精靈：錨點照 manifest（圓盤 82,82 / 天使 (−6,0) / (0,0) / 對話框 Data#517 圖 5 = 123,101）*/
 function fakeSprite(archive: string, resource: number, index: number): Sprite | null {
   const anchor =
     archive === 'Data.mkf'
-      ? { x: 127, y: 92 }
+      ? { x: 123, y: 101 }
       : index === 0
         ? { x: -6, y: 0 }
         : index === 1
@@ -770,7 +770,7 @@ describe('★ 繪製：三張圖的落點與那一格圓盤', () => {
     });
 
     const bubble = ctx.images.find((i) => i.archive === 'Data.mkf');
-    expect(bubble).toMatchObject({ resource: 517, index: 6, x: 220 - 127, y: 140 - 92 });
+    expect(bubble).toMatchObject({ resource: 517, index: 5, x: 220 - 123, y: 140 - 101 });
     const disc = ctx.images.find((i) => i.resource === wheelResource(cue.wheel) && i.index >= 2);
     expect(disc).toMatchObject({ index: wheelDiscChunk(cue.start), x: 220 - 82, y: 320 - 82 });
     // 天使常態那張的錨點是 (−6,0) → 實際落點 (271,230)
@@ -855,5 +855,41 @@ describe('★ WM_KEYDOWN（0x101）也是「點一下」@source `0x0043fa66`', (
     const src = readFileSync(new URL('./ui-screen.ts', import.meta.url), 'utf8');
     expect(src).toContain('key?(key: UiKeyEvent, env: UiScreenEnv): boolean;');
     expect(src).toContain('export interface UiKeyEvent {');
+  });
+});
+
+describe('★ 联机旁观：跟着行动者收场（`fastForward`）', () => {
+  runMap('★ 还在转 ⇒ 停掉循环的 52、直接关屏；**电脑的转盘也收**（点击算不算与此无关）、不补落地音', () => {
+    resetWheelScreen();
+    const s = scene();
+    if (s === null) return;
+    const after = reduce(s.before, { type: 'settle' }, s.topo);
+    const env = makeEnv(after, s.topo);
+    wheelScreen.event!(s.before, after, env);
+    expect(wheelScreenState().cue?.human).toBe(false);
+    expect(wheelScreen.fastForward!(env)).toBe(true);
+    expect(wheelScreen.active(env)).toBe(false);
+    expect(env.effects).toEqual([`play:${WHEEL_SPIN_SOUND}:loop`, `stop:${WHEEL_SPIN_SOUND}`]);
+    expect(env.logs).toContain('轉盤：跟著行動者收場');
+    // 再问一次：没在播 ⇒ false
+    expect(wheelScreen.fastForward!(env)).toBe(false);
+  });
+
+  runMap('已经落地（52 早停了）⇒ 只关屏，不再停一次', () => {
+    resetWheelScreen();
+    const s = scene();
+    if (s === null) return;
+    const after = reduce(s.before, { type: 'settle' }, s.topo);
+    const env = makeEnv(after, s.topo);
+    wheelScreen.event!(s.before, after, env);
+    let guard = 0;
+    while (!wheelScreenState().landed && guard++ < 500) {
+      env.now += 1000;
+      wheelScreen.tick!(env);
+    }
+    const n = env.effects.length;
+    expect(wheelScreen.fastForward!(env)).toBe(true);
+    expect(wheelScreen.active(env)).toBe(false);
+    expect(env.effects).toHaveLength(n);
   });
 });

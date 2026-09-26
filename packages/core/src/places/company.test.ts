@@ -9,8 +9,11 @@ import {
   FEE_NAMES,
   INDUSTRY,
   INDUSTRY_FEE_NAME_INDEX,
+  AI_SHARE_RESERVE_RATIO,
   addInsuranceDays,
+  aiCommercialShareCount,
   aiPickConstructionTarget,
+  shareWindowLimit,
   applyDividend,
   chairmanEffect,
   companyDividends,
@@ -18,8 +21,9 @@ import {
   feeNameOf,
 } from './company.ts';
 import { WHEEL, WHEEL_TABLE, spinWheel } from '../rules/facility.ts';
-import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeFacility, makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { reduce, type MapTopology } from '../state/reduce.ts';
+import { decidePending } from '../ai/policy.ts';
 import { emptyOwnership } from './commercial.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { WHO_PLAYS_HUMAN, type GameState } from '../state/types.ts';
@@ -51,7 +55,7 @@ describe('★ 别人的公司按行業收費 @source 0x0041ab6d', () => {
     expect(spinWheel(WHEEL.travel, 2)).toBe(0);
     expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 2)).toEqual({ kind: 'none' });
     // 起点 6 停在 2
-    expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 6)).toEqual({ kind: 'fee', amount: 2 * 500 * PI, name: '旅遊費' });
+    expect(companyFeeOnLanding(INDUSTRY.airline, 500, PI, 0, 0, 0, 6)).toEqual({ kind: 'fee', amount: 2 * 500 * PI, name: '旅遊費', days: 2 });
   });
 
   it('★ 電子：地價 × 總天數，不乘物價（0x0041ac2c 跳过了那句）', () => {
@@ -134,6 +138,14 @@ describe('★ 月中分紅 @source 0x0042bd61', () => {
   });
   it('★ 没人持股：不分、也不清零（盈餘留着累积）', () => {
     expect(companyDividends(10_000, [0, 0, 0, 0], players)).toEqual({ rows: [], cleared: false });
+  });
+  it('★ 审计订正：比例是 float32、乘积不是 —— 盈餘 6、持股 5:1 ⇒ 5/6 那份得 4（0x0042bc93 fmul → 0x457dbc，无 fstp dword）', () => {
+    // fround(5/6) = 0.83333331；6 × 它 = 4.99999988 → 向零 4（旧式先 fround 成 5.0 → 5）
+    const d = companyDividends(6, [5, 1, 0, 0], players);
+    expect(d.rows).toEqual([
+      { player: 0, amount: 4 },
+      { player: 1, amount: 1 },
+    ]);
   });
   it('★ 恰好 .5 时向零截断（0x0042bc9a 的 `call 0x457dbc`）', () => {
     const two = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
@@ -235,14 +247,109 @@ describe('★ 踩到上市企業', () => {
     expect(r.players[0]?.cash).toBe(100_000);
   });
 
-  it('★ 建設公司董事長（电脑）：免費给自己租金最高的地加一级', () => {
+  // ★ 第十五份：自家公司蓋**两次**（第一次没到 5 级）—— `0x0041aae8 call 0x40b110` → `0x0041aaf7 test al,0x80 / jne`
+  //   → `0x0041aafb call 0x40b110`；先前这里写「加一级」是只读了第一次调用。
+  it('★ 建設公司董事長（电脑）：免費给自己租金最高的地蓋两级（第一次没到 5 级就再蓋一次）', () => {
     const s0 = landing(0, { players: [0, 1].map((i) => makePlayer({ index: i, nodeId: i === 0 ? 2 : 1, cash: 100_000, whoPlays: 2 })) });
     const landOwner = [...s0.landOwner];
     landOwner[1] = 1;
     const s = { ...s0, landOwner };
     const r = reduce(s, { type: 'settle' }, topoWith(INDUSTRY.construction));
-    expect(r.landLevel[1]).toBe(1);
+    expect(r.landLevel[1]).toBe(2);
     expect(r.players[0]?.cash).toBe(100_000);
+  });
+
+  // ★★ 20260925-153539948（需求方补充：「如果我是董事长可以修2级」）：董事長那一支的两次
+  //   `0x40b110` 对**真人**一样走 —— 原版不管座位是不是电脑，靠的是落点那家企业
+  //   `[企業+0x18] == 当前玩家+1`（`0x0041a9e0 cmp eax,edx / jne 0x41ab6d`）。
+  //   ⚠️ 两次调用**不分「蓋新」与「加蓋」**：`0x40b110` 只看 `[+0x18]`（种类）与 `[+0x1a]`（等级），
+  //   **不看归属** ⇒ 空地从 0 直接蓋到 2 级、别人家的房子也照升两级（都不收董事長的钱）。
+  it('★★ 董事長（真人）：自家建設公司选地后**连升两级** —— 空地 0 → 2（`0x0041aae8` + `0x0041aafb`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    // 空地（`landOwner` 保持 0）：`0x40b110` 不看归属，只看种类 0 与等级 < 5
+    const asked = reduce(s0, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(100_000); // 董事長一分不掏（`0x0041aaf7 jne 0x41ab04` 那一路）
+    expect(done.pending?.kind).toBe('buyShares');
+  });
+
+  it('★★ 董事長（真人）：别人家的地也照升两级、地主不变、自己不掏钱', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 2; // 对手（下标 1）的房子
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(3);
+    expect(done.landOwner[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(100_000);
+  });
+
+  it('★★ 董事長（真人）：4 → 5 顶到上限 ⇒ 第二次不蓋（`0x0041aaf7 test al,0x80 / jne 0x41ab04`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 4;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(5);
+    // 第一次就置了 bit7（`0x40b16e or al,0x80`）⇒ 表现层要看见那扇 `0x20b`
+    expect(done.lastBuildUpgrades).toEqual([
+      { entity: 0x7d0 + 1, reachedMaxLevel: true, source: 'companyBuild' },
+    ]);
+  });
+
+  it('★★ 董事長（真人）：連鎖店（种类 1）只到 1 级 —— `0x40b110` 第二次自己拒绝（`landType === 1 && level === 0`）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const lands = [{ ...(topo.lands ?? [])[0]!, type: 1 }];
+    const s0 = landing(0);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landType = [...s0.landType];
+    landType[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landType }, { type: 'settle' }, { ...topo, lands });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, { ...topo, lands });
+    expect(done.landLevel[1]).toBe(1);
+  });
+
+  it('★★ 董事長（真人）：选等级 0 的設施 ⇒ 先选种类，选完也连升两级（`0x40b1e2` 那一支 + 第二次 `0x40b110`）', () => {
+    const topo: MapTopology = {
+      ...topoWith(INDUSTRY.construction),
+      facilities: [makeFacility({ id: 1, name: '空地', owner: 1, level: 0, landPrice: 3000 })],
+    };
+    const askedOne = reduce(landing(0), { type: 'settle' }, topo);
+    expect(askedOne.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: false });
+    const askedType = reduce(askedOne, { type: 'buildTarget', entityId: 0xfa0 + 1 }, topo);
+    expect(askedType.pending).toMatchObject({
+      kind: 'buildFacility',
+      free: true,
+      company: { commercialId: CID, charge: false },
+    });
+    const done = reduce(askedType, { type: 'buildFacility', facilityType: 2 }, topo);
+    expect(done.facilityType[1]).toBe(2);
+    expect(done.facilityLevel[1]).toBe(2); // 首建 1 级 + `companyBuildTail` 的第二次
+    expect(done.players[0]?.cash).toBe(100_000);
+  });
+
+  it('★ 别人家的建設公司（真人）：只升一级（`0x0041ad7e` 只调一次）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(1);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const landLevel = [...s0.landLevel];
+    landLevel[1] = 1;
+    const asked = reduce({ ...s0, landOwner, landLevel }, { type: 'settle' }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'chooseBuildTarget', charge: true });
+    const done = reduce(asked, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(2);
+    expect(done.players[0]?.cash).toBe(99_000); // 工程費 = 地價 1000 × 物價 1
   });
 
   it('★ 别人的建設公司（电脑）：加一级后付那块地 地價 × 物價 的工程費', () => {
@@ -267,9 +374,54 @@ describe('★ 踩到上市企業', () => {
     expect(done.pending?.kind).toBe('buyShares');
   });
 
-  it('★ 真人没有可加蓋的地：不弹选地，直接問認購', () => {
-    const r = reduce(landing(1), { type: 'settle' }, topoWith(INDUSTRY.construction));
-    expect(r.pending?.kind).toBe('buyShares');
+  it('★★ 选地窗开着时被托管：AI 代答走电脑那一支 0x40b455（租金最高的自家住宅地），不是「取第一个」', () => {
+    const s0 = landing(1);
+    const landOwner = [...s0.landOwner];
+    landOwner[1] = 1;
+    const topo = topoWith(INDUSTRY.construction);
+    const asked = reduce({ ...s0, landOwner }, { type: 'settle' }, topo);
+    const piloted = { ...asked, players: asked.players.map((p, i) => (i === 0 ? { ...p, whoPlays: WHO_PLAYS_HUMAN | 4 } : p)) };
+    const map = { ...topo, facilities: [], landscapes: [], dataSize: 0 } as never;
+    expect(decidePending(piloted, map)).toEqual({ type: 'buildTarget', entityId: 0x7d0 + 1 });
+    // 电脑挑出来的不在可选里（或挑不出）⇒ 关窗
+    expect(decidePending({ ...piloted, landLevel: [0, 5] }, map)).toEqual({ type: 'declineDecision' });
+  });
+
+  it('★ 审计订正：真人选地窗照开（候选 = 全图每块地 / 每处設施，0x2090086 不按归属筛）；右键 ⇒ 别人家照收 1000×物價', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const r = reduce(landing(1), { type: 'settle' }, topo);
+    expect(r.pending?.kind).toBe('chooseBuildTarget');
+    if (r.pending?.kind !== 'chooseBuildTarget') return;
+    expect(r.pending.choices).toEqual((topo.lands ?? []).map((l) => 0x7d0 + l.id));
+    const cancelled = reduce(r, { type: 'declineDecision' }, topo);
+    expect(cancelled.players[0]!.cash).toBe(99_000); // 1000 × 物價 1（0x0041adff）
+    expect(cancelled.pending?.kind).toBe('buyShares');
+  });
+
+  it('★ 审计：选中等级 0 的設施（真人）⇒ 先选种类，再收工程費（地價 × 物價）', () => {
+    const topo: MapTopology = {
+      ...topoWith(INDUSTRY.construction),
+      facilities: [makeFacility({ id: 1, name: '空地', owner: 2, level: 0, landPrice: 3000 })],
+    };
+    const r = reduce(landing(1), { type: 'settle' }, topo);
+    if (r.pending?.kind !== 'chooseBuildTarget') throw new Error('no picker');
+    expect(r.pending.choices).toContain(0xfa0 + 1);
+    const asked = reduce(r, { type: 'buildTarget', entityId: 0xfa0 + 1 }, topo);
+    expect(asked.pending).toMatchObject({ kind: 'buildFacility', free: true, company: { commercialId: CID, charge: true } });
+    const done = reduce(asked, { type: 'buildFacility', facilityType: 2 }, topo);
+    expect(done.facilityType[1]).toBe(2);
+    expect(done.facilityLevel[1]).toBe(1);
+    expect(done.players[0]!.cash).toBe(100_000 - 3000);
+  });
+
+  it('★ 审计订正：选了蓋不成的（别人的 5 级地）⇒ 不蓋，但工程費照收（0x0041ad7e 不看 0x40b110 的返回值）', () => {
+    const topo = topoWith(INDUSTRY.construction);
+    const s0 = landing(1);
+    const r = reduce({ ...s0, landOwner: [0, 2], landLevel: [0, 5] }, { type: 'settle' }, topo);
+    if (r.pending?.kind !== 'chooseBuildTarget') throw new Error('no picker');
+    const done = reduce(r, { type: 'buildTarget', entityId: 0x7d0 + 1 }, topo);
+    expect(done.landLevel[1]).toBe(5);
+    expect(done.players[0]!.cash).toBeLessThan(100_000);
   });
 });
 
@@ -281,14 +433,23 @@ describe('★ 每日：保險期倒数；15 日分紅', () => {
   //   阻碍计数器的 `test 0x80 → 清零+释放` 分支，是整字节递减 ⇒ `0x80 → 0x7f`，
   //   于是 `1 → 0x80 → 0x7f → … → 1 → 0x80…` **永不归零**
   //   （闸门 `+0x3e != 0` 实际等于「买过一次保險就永久理赔」）。
-  it('保險期每回合 −1；到 0 挂 0x80，之后 0x80→0x7f（**永不归零**）', () => {
-    let s = makeGameState({ players: [makePlayer({ index: 0, nodeId: 1, insuranceDays: 2 })], phase: 'turnStart' });
-    s = reduce(s, { type: 'startTurn' }, topo);
+  it('★ 审计 2026-09-24：保險期在交接给他时（`0x41c84f`）走一天：2→1→0x80→0（次日停赔）@source 0x41cae3 / 0x41cc4b', () => {
+    let s = makeGameState({
+      players: [makePlayer({ index: 0, nodeId: 1, insuranceDays: 2 }), makePlayer({ index: 1, nodeId: 1 })],
+      phase: 'turnEnd',
+      currentPlayer: 1,
+    });
+    const round = (x: typeof s): typeof s =>
+      reduce({ ...x, currentPlayer: 1, phase: 'turnEnd', pending: null }, { type: 'endTurn' }, topo);
+    s = round(s);
     expect(s.players[0]!.insuranceDays).toBe(1);
-    s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
-    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING);
-    s = reduce({ ...s, phase: 'turnStart' }, { type: 'startTurn' }, topo);
-    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING - 1); // 0x7f，**不是 0**
+    s = round(s);
+    expect(s.players[0]!.insuranceDays).toBe(RELEASE_PENDING); // 0x80 那一天仍非 0（照赔）
+    s = round(s);
+    expect(s.players[0]!.insuranceDays).toBe(0); // ① `0x41cae3` 先清 0x80，② 看到 0 不动
+    // startTurn 本身不再动它
+    const t = reduce({ ...s, players: s.players.map((p, i) => (i === 0 ? { ...p, insuranceDays: 3 } : p)), currentPlayer: 0, phase: 'turnStart' }, { type: 'startTurn' }, topo);
+    expect(t.players[0]!.insuranceDays).toBe(3);
   });
 
   it('★ 推进到 15 日：盈餘按持股分进存款并清零', () => {
@@ -318,6 +479,8 @@ describe('★ 每日：保險期倒数；15 日分紅', () => {
   });
 });
 
+// ★★ 2026-09-24（provenance 审计）订正：間諜只在**停下来的那一格**取（`0x0041c447 cmp [0x48baf8],0 / jne`）
+//   ⇒ 这几条改成「走 1 步正好停在企業格上」；取款的记账（企業自己付、+0x28 归 0）见 `npc-audit.test.ts`。
 describe('★ 間諜取走盈餘 —— 负数就反向', () => {
   const topo = topoWith(INDUSTRY.bank);
   const line = (f: number): number => f + 1;
@@ -329,18 +492,18 @@ describe('★ 間諜取走盈餘 —— 负数就反向', () => {
     companyFunds[CID] = amount;
     return { ...s, companyFunds };
   }
-  it('盈餘 8000 → 間諜取 8000 给主人（進存款），公司盈餘不清', () => {
+  it('盈餘 8000 → 間諜取 8000 给主人（進存款）', () => {
     const s = withSurplus(8000);
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, topo, line, rng);
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 1), s, topo, line, rng);
     expect(w.events).toContainEqual({ kind: 'surplus', landlord: 1, amount: 8000, company: CID });
   });
-  it('★ 盈餘 −3000 → 主人替企業主掏 3000', () => {
+  it('★ 盈餘 −3000 → 事件带负数（企業账反而增加、主人存款减少）', () => {
     const s = withSurplus(-3000);
     const rng = new WatcomRng();
     rng.setState(1);
-    const w = runNpc(NPC.spy, releaseNpc(1, 0, 2), s, topo, line, rng);
+    const w = runNpc(NPC.spy, releaseNpc(1, 0, 1), s, topo, line, rng);
     expect(w.events).toContainEqual({ kind: 'surplus', landlord: 1, amount: -3000, company: CID });
   });
   it('自家公司不取；其他三个不取', () => {
@@ -348,7 +511,7 @@ describe('★ 間諜取走盈餘 —— 负数就反向', () => {
     for (const actor of [NPC.thief, NPC.robber, NPC.thug]) {
       const rng = new WatcomRng();
       rng.setState(1);
-      expect(runNpc(actor, releaseNpc(1, 0, 2), s, topo, line, rng).events.filter((e) => e.kind === 'surplus')).toEqual([]);
+      expect(runNpc(actor, releaseNpc(1, 0, 1), s, topo, line, rng).events.filter((e) => e.kind === 'surplus')).toEqual([]);
     }
   });
 });
@@ -359,5 +522,35 @@ describe('轉盤表', () => {
   });
   it('WHO_PLAYS_HUMAN 常量仍是 1（上面的电脑分支用 2）', () => {
     expect(WHO_PLAYS_HUMAN).toBe(1);
+  });
+});
+
+describe('★ 电脑认购上市企業股份 `0x41d839(單價, 上限)`（pt27-stock「忍太郎一下买了 3000 股」）', () => {
+  it('★★ 回报现场：單價 28、現金 188000、餘量 3000、開局 300000 ⇒ 上限 1000（不是 3000）', () => {
+    // 上限 = shareWindowLimit：`0x0041d20a cmp eax,0x3e8` 在 `0x0041d22a` 真人/电脑分叉之前
+    const limit = shareWindowLimit(28, 188_000, 3000);
+    expect(limit).toBe(1000);
+    // 188000 − trunc(300000×0.30)×1 = 98000 > 28×1000 ⇒ 上限（`0x0041d885 mov ecx, edi`）
+    expect(aiCommercialShareCount(28, limit, 188_000, 300_000, 1)).toBe(1000);
+  });
+  it('安全垫 = trunc(開局 × 0.30) × 物價，现金只够垫子 ⇒ 0（`0x0041d874 jle`）', () => {
+    expect(AI_SHARE_RESERVE_RATIO).toBe(0.3);
+    expect(aiCommercialShareCount(28, 1000, 90_000, 300_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(28, 1000, 90_028, 300_000, 1)).toBe(1);
+    // 物價 2 ⇒ 垫子 180000
+    expect(aiCommercialShareCount(28, 1000, 188_000, 300_000, 2)).toBe(Math.trunc(8000 / 28));
+  });
+  it('d ≤ 單價 × 上限 ⇒ d ÷ 單價（向零）；d 恰等于 單價×上限 也走除法（`jle`）', () => {
+    expect(aiCommercialShareCount(70, 1000, 100_000, 150_000, 1)).toBe(785); // 差分 B14
+    expect(aiCommercialShareCount(50, 100, 50_000, 150_000, 1)).toBe(100); // d = 5000 = 50×100
+    expect(aiCommercialShareCount(7, 1000, 45_001, 150_000, 1)).toBe(0); // 差分 B16
+  });
+  it('存款不参与；没有 [A] 支的 7000 封顶（差分 B7 / B11）', () => {
+    expect(aiCommercialShareCount(1, 1000, 45_000, 150_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(1, 1000, 7_001, 300_000, 1)).toBe(0);
+  });
+  it('上限 0 / 單價 0 ⇒ 0（原版连 0x41d839 都走不到）', () => {
+    expect(aiCommercialShareCount(28, 0, 188_000, 300_000, 1)).toBe(0);
+    expect(aiCommercialShareCount(0, 1000, 188_000, 300_000, 1)).toBe(0);
   });
 });

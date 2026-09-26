@@ -6,7 +6,7 @@
 > 有 `~~…~~` / `✅` / 「已结案」→ 结案；其余一律 `?` —— **不读正文猜**。
 > 一个编号一行（首次出现处），同编号的其余出现记在「位置」列的「另有 N 处」。
 
-合计 **240** 个编号：结案 74 · 有意偏离 22 · 未决 0 · ? 144；另有 16 个只在正文出现的编号（见文末）。
+合计 **240** 个编号：结案 75 · 有意偏离 22 · 未决 0 · ? 143；另有 16 个只在正文出现的编号（见文末）。
 
 ## 总表（按编号排序）
 
@@ -86,7 +86,8 @@
 | `D-MINI-1` | （**卡面错误，已接入**）財神屏的底图是 `Panel.mkf` **#92**，走无头 RGB555 出口 | ? | docs/deviations/T-042-044.md:56 |
 | `D-MINI-10` | ✅ （**已定案**）`scenes.ts` 的 `minigameScene(GIFT_FROM_SKY)` 返回 **92** | 结案 | docs/deviations/T-042-044.md:218 |
 | `D-MINI-11` | 小游戏音效 —— **2026-09-16 已接** | ? | docs/deviations/T-042-044.md:231 |
-| `D-MINI-2` | （**素材缺口，已用几何绕开**）企鵝的命中表 `Panel.mkf` **#81** 也取不到 | ? | docs/deviations/T-042-044.md:88 |
+| `D-MINI-13` | ✅ 结算大号分数那 2 秒能不能点掉 —— **2026-09-24 已按三屏各自的原版做** | 结案 | docs/deviations/T-042-044.md:286 |
+| `D-MINI-2` | ✅ 企鵝的命中表 `Panel.mkf` **#81** —— **2026-09-24 已接**（gap-audit #19；旧条目「取不到、用几何绕开」作废） | 结案 | docs/deviations/T-042-044.md:109 |
 | `D-MINI-3` | 入场 FLIC `Panel.mkf` **#78** —— **2026-09-16 已接**（旧条目的「外壳」判断是误读） | ? | docs/deviations/T-042-044.md:115 |
 | `D-MINI-4` | （**接口订正**）action 是 `{ type: 'minigame', score }`，不是 `minigameScore` | ? | docs/deviations/T-042-044.md:144 |
 | `D-MINI-5` | （**有意偏离**）没有「不玩」这条路 —— 卡面那句「不玩送 null」在原版不存在 | 有意偏离 | docs/deviations/T-042-044.md:154 |
@@ -163,7 +164,7 @@
 | `Q-CARD-1` | 偏离登记（换地/换屋的目標類別跟脚下走 + 拆除卡的物件分支） | ? | docs/deviations/Q-CARD-1.md:1 |
 | `Q-CARD-2` | AI 想出但引擎接不住的目标，会顺延到下一张卡（**已解决 2026-09-14，T-009**） | 结案 | docs/known-deviations.md:3858 |
 | `Q-CHAR-1` | 棋子那 21 个资源只认了 2 个 | ? | docs/known-deviations.md:2824 |
-| `Q-CO-1` | 真人在建設公司对等级 0 的設施加蓋要选种类 | ? | docs/known-deviations.md:683 |
+| `Q-CO-1` | 真人在建設公司对等级 0 的設施加蓋要选种类 —— **种类窗已接线**；「在种类窗上取消」是有意偏离（原版写种类 255 + 等级 1，我们选择不蓋，见该节 asm） | 已接线 + 有意偏离 | docs/known-deviations.md:692 |
 | `Q-COM-1` | 企业的持股排名与归属（**已结案**） | 结案 | docs/known-deviations.md:1680 |
 | `Q-COMMERCIAL-1` | —— 上市企業落点：**路过 vs 停留**、以及买股的「通用填数窗」 | ? | docs/deviations/Q-COMMERCIAL-1.md:1 |
 | `Q-DOLL-1` | 機器娃娃（道具 1）的**动画与音效** —— 表现层缺口 | ? | docs/deviations/Q-DOLL-1.md:1（另有 1 处） |
@@ -185,7 +186,7 @@
 | `Q-LAB-1` | 研究所 —— 触发点找到了（2026-09-14 结案） | 结案 | docs/known-deviations.md:688 |
 | `Q-LAND-1` | 开局地块上**没有**自造色块；四类立体物的图号都吃视角（2026-09-16） | ? | docs/known-deviations.md:4620 |
 | `Q-LAND-2` | 查封／漲價的涨价位没进状态（**已结案 2026-09-14，T-008 + T-084**） | 结案 | docs/known-deviations.md:783 |
-| `Q-LAYOUT-1` | 「託管AI」屏那两个亮/暗行图的**用法**没跟到 | ? | docs/known-deviations.md:1268 |
+| ~~`Q-LAYOUT-1`~~ | 「託管AI」屏那两个亮/暗行图的用法 —— **已结案 2026-09-24**（玩家行底板，gap-audit #20） | ✅ | docs/known-deviations.md:1268 |
 | `Q-LAYOUT-2` | 日曆底图 —— **「逐月查表」这条推论已被推翻；真正随地图变的是「節日插画」** | ? | docs/known-deviations.md:797 |
 | `Q-LAYOUT-3` | 棋盘「纵向拉长」—— **几何全部核对无误；另修掉真实的地图取景 bug** | ? | docs/known-deviations.md:1173 |
 | `Q-LAYOUT-4` | 建筑没有正确落在格子里 —— **已修（2026-09-14）** | 结案 | docs/known-deviations.md:1134 |
@@ -219,7 +220,7 @@
 | `Q-SPEECH-10` | `Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** | ? | docs/deviations/T-052.md:360 |
 | `Q-SPEECH-11` | 卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） | ? | docs/deviations/T-052.md:376 |
 | `Q-SPEECH-2` | 越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 | ? | docs/deviations/T-051.md:19 |
-| `Q-SPEECH-3` | 中间档的 `rand() & 1` 被改成「一律取前一句」 | ? | docs/deviations/T-052.md:36 |
+| `Q-SPEECH-3` | ✅ 中间档的 `rand() & 1`（原「一律取前一句」）—— **2026-09-24 WP-3 改判：状态哈希掷硬币** | 结案 | docs/deviations/T-052.md:36 |
 | `Q-SPEECH-4` | 「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 | ? | docs/deviations/T-052.md:61 |
 | `Q-SPEECH-5` | ✅ 原先没解的 5 个槽位 —— **2026-09-19 全部接线** | 结案 | docs/deviations/T-052.md:81 |
 | `Q-SPEECH-6` | ✅ 同一动作派生多句时会**叠着响** —— **2026-09-16 已修** | 结案 | docs/deviations/T-052.md:262 |
@@ -314,7 +315,7 @@
 - `D-MAGIC-9`（?）（**已修**，但记下取证过程）抠黑表第一版是猜的，漏了女巫与图标 —— docs/deviations/T-037.md:241
 - `D-MINI-1`（?）（**卡面错误，已接入**）財神屏的底图是 `Panel.mkf` **#92**，走无头 RGB555 出口 —— docs/deviations/T-042-044.md:56
 - `D-MINI-11`（?）小游戏音效 —— **2026-09-16 已接** —— docs/deviations/T-042-044.md:231
-- `D-MINI-2`（?）（**素材缺口，已用几何绕开**）企鵝的命中表 `Panel.mkf` **#81** 也取不到 —— docs/deviations/T-042-044.md:88
+- `D-MINI-2`（结案）✅ 企鵝的命中表 `Panel.mkf` **#81** —— **2026-09-24 已接**（gap-audit #19；旧条目「取不到、用几何绕开」作废） —— docs/deviations/T-042-044.md:109
 - `D-MINI-3`（?）入场 FLIC `Panel.mkf` **#78** —— **2026-09-16 已接**（旧条目的「外壳」判断是误读） —— docs/deviations/T-042-044.md:115
 - `D-MINI-4`（?）（**接口订正**）action 是 `{ type: 'minigame', score }`，不是 `minigameScore` —— docs/deviations/T-042-044.md:144
 - `D-MINI-8`（?）（原版分支走不到）冰屋那张图不画 —— docs/deviations/T-042-044.md:204
@@ -370,7 +371,7 @@
 - `Q-INS-2`（?）地图上没有保險公司时原版会写到企業表外 —— docs/known-deviations.md:663
 - `Q-INTRO-1`（?）開局跳伞过场的**画面**复刻不了（AVI 是残档 + 专有编码） —— docs/known-deviations.md:3226
 - `Q-LAND-1`（?）开局地块上**没有**自造色块；四类立体物的图号都吃视角（2026-09-16） —— docs/known-deviations.md:4620
-- `Q-LAYOUT-1`（?）「託管AI」屏那两个亮/暗行图的**用法**没跟到 —— docs/known-deviations.md:1268
+- ~~`Q-LAYOUT-1`~~（✅）「託管AI」屏那两个亮/暗行图的用法 —— 已结案 2026-09-24（玩家行底板） —— docs/known-deviations.md:1268
 - `Q-LAYOUT-2`（?）日曆底图 —— **「逐月查表」这条推论已被推翻；真正随地图变的是「節日插画」** —— docs/known-deviations.md:797
 - `Q-LAYOUT-3`（?）棋盘「纵向拉长」—— **几何全部核对无误；另修掉真实的地图取景 bug** —— docs/known-deviations.md:1173
 - `Q-LAYOUT-7`（?）樂透投注屏的规则与美术都不对 —— docs/known-deviations.md:1016
@@ -385,7 +386,6 @@
 - `Q-SPEECH-10`（?）`Data.mkf #0x205` / `#0x207` 两张表**不随 `load_map` 预装** —— docs/deviations/T-052.md:360
 - `Q-SPEECH-11`（?）卡牌使用者台词：一条**不走状态差分**的新通道（2026-09-19 补） —— docs/deviations/T-052.md:376
 - `Q-SPEECH-2`（?）越界**抛错**而不是夹取 —— 这是本项目的选择，不是原版行为 —— docs/deviations/T-051.md:19
-- `Q-SPEECH-3`（?）中间档的 `rand() & 1` 被改成「一律取前一句」 —— docs/deviations/T-052.md:36
 - `Q-SPEECH-4`（?）「金额」是从 `monthlyPaid` / `monthlyReceived` 的差分还原的 —— docs/deviations/T-052.md:61
 - `Q-SPEECH-7`（?）勘误：事件 15 的判据是**地块的 `+0x1a`（等级）**，不是玩家结构 —— docs/deviations/T-052.md:282
 - `Q-SPEECH-8`（?）`Speaking.mkf` 改成**按需装载**（本项目的选择） —— docs/deviations/T-052.md:298

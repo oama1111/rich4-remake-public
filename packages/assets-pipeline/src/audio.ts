@@ -102,13 +102,13 @@ export function readWaveInfo(data: Uint8Array): WaveInfo {
  *   所以 `sound.play('Effect.mkf', [表项])` 就是原版那一下。
  */
 export const SOUND_IDS = {
-  /** 破产 @source VA 0x0040d1cb `push 5`，在 player_bankrupt 内 */
-  BANKRUPT: 5,
-  /** 落在银行 @source VA 0x0043674d `push 4`，在银行落点 0x00436668 内 */
-  BANK: 4,
-  /** 樂透开奖 @source VA 0x004317a7 `push 8`，在开奖流程 0x00431712 内 */
+  // ★ 先前这里有 `BANKRUPT: 5`（「破产 @source 0x0040d1cb push 5」）—— 紧跟的是 `call 0x4549cf`（播 MIDI06，
+  //   拍賣配乐，只在破产释放 > 3 处地产、随机连拍 3 处时放），不是音效号。已删（第十三份试玩回报复核）。
+  // ★ 先前这里有 `BANK: 4`（「落在银行 @source 0x0043674d push 4」）—— 那是 `call 0x4549cf`（播 MIDI05，
+  //   貸款屏配乐）的参数，不是音效号；落在銀行原版**不放**任何 Effect.mkf 音效。已删（第十三份试玩回报复核）。
+  /** 樂透开奖 @source VA 0x004317a7 `push 8` ⚠️ 实为 `call 0x4549cf`（MIDI09），不是音效；client 未用 */
   LOTTERY_DRAW: 8,
-  /** 拍卖 @source VA 0x0043c6ca `push 5`，在 run_auction 0x0043bde5 内 */
+  /** 拍卖 @source VA 0x0043c6ca `push 5` ⚠️ 实为 `call 0x4549cf`（MIDI06），不是音效；client 未用 */
   AUCTION: 5,
   /**
    * 標題／選單的**悬停**音 —— 音效 **0**。
@@ -214,6 +214,44 @@ export const SOUND_IDS = {
    *   接它要另加一条 core 瞬态提示 —— 属 W-55 行 9 的邻域，留给首席裁。
    */
   GOD_MANIFEST: 50,
+  /**
+   * 特殊格**落地音**（新聞/命運/監獄/醫院/三個小遊戲/樂透/銀行/百貨/魔法屋）。
+   *
+   * @source `0x00419892 mov al, byte [ebx + 0x475299]`（種類 → 移動音效表下標）
+   *   → `0x0041989b add eax, 0x48234a` → `0x004198a1 call 0x4542ce`。
+   *   下標表 `0x475299 = [9,0,10,10,10,10,10,10,10,10,16,16,16,16,10,10,10]`，
+   *   移動音效表 `0x48234a` 的 idx10 = **43**、idx16 = **48**。
+   *   分派器前有 `cmp ebx,2 / jb` 与 `cmp ebx,0x10 / ja` ⇒ 種類 2..16 才放（公園被排除）。
+   */
+  SPECIAL_SQUARE: 43,
+  /** 得點類與**卡片格**的落地音（種類 10..13）@source 同上表 idx16 ⇒ Effect **48** */
+  CARD_SQUARE: 48,
+  /**
+   * **買地 / 買現成設施成功**那一声音 —— 音效 **49**。
+   *
+   * ★ 两条路**共用**同一个号（全 exe 里 `push 0x4823d2` 只有这两处）：
+   *
+   * | 调用点 VA | 何时响 |
+   * |---|---|
+   * | `0x0041a0f1`（`call 0x4542ce` 在 `0x0041a0f6`）| 落点「買地」成功：`_rich4_handle_player_land_on_node` 的地块分支 |
+   * | `0x0041a939`（同形）| 落点「買現成設施」成功 |
+   *
+   * ```asm
+   * 0041a0f1  push 0x4823d2          ; ★ 表项地址
+   * 0041a0f6  call 0x4542ce          ; rich4_play_sound_effect
+   * ```
+   *
+   * ★ **表项 `0x4823d2` → 资源号 49 的换算**：与 `PLACE_*` / `DOLL` / `GOD_MANIFEST`
+   *   **同一张表** —— 基址 `0x48231a`、每项 **8 字节**（+0 = `Effect.mkf` 资源号、
+   *   +4 = 运行时声音对象）：
+   *   `0x4823d2 − 0x48231a = 0xb8 = 23 × 8` ⇒ **表项 23**，`[表项] = 49`。
+   *   下一项 `0x4823da` 就是 `GOD_MANIFEST` 的 50（`(0x4823da − 0x48231a) / 8 = 24`）
+   *   —— 两条换算互相印证。
+   *
+   * ⚠️ **衰神／死神拦下时不响**：那两处的 `purchase` 被 `godBlockedPurchase` 挡回，
+   *   归属根本不写 ⇒ 表现层按「归属是否真变了」判定，自然不响（与原版一致）。
+   */
+  BUY_PROPERTY: 49,
 } as const;
 
 /**

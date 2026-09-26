@@ -142,7 +142,8 @@ export function interactionUi(
         ],
       };
 
-    // ★ 建設公司：原版是点地图选一处自己的地（0x446ae8）；先用按钮列出可选项，画面属 P2
+    // ★ 建設公司：原版是点地图选（0x446ae8，参数 0x2090086）—— 棋盘上走 main.ts 的拾取模式（`tickBuildPick`），
+    //   `currentDialog` 不摆这份；这份按钮只留给 HTML 调试抽屉
     case 'chooseBuildTarget':
       return {
         title: pending.name,
@@ -163,27 +164,9 @@ export function interactionUi(
           `${FIELD.totalAssets.text} ${money(pending.wealth)}　${BANK.creditLeft.text} ${money(pending.loanCapacity)}` +
           `　${FIELD.cash.text} ${money(cash)}　${FIELD.deposit.text} ${money(me?.moneyInBank ?? 0)}` +
           `　${FIELD.loan.text} ${money(me?.loan ?? 0)}`,
+        // ★ 没有「存款 / 取款」：原版貸款屏（`fcn_00435062`，命中表 `0x4757f8`）只有 EXIT / 申請貸款 /
+        //   償還貸款 / 特別融資四颗；存提在它前面那台 ATM（`pending.kind === 'atm'`）里办。
         choices: [
-          {
-            label: '存款',
-            action: { type: 'bank', op: 'deposit', amount: cash },
-            amount: {
-              label: '存多少',
-              max: cash,
-              step: 1000,
-              fill: (n) => ({ type: 'bank', op: 'deposit', amount: n }),
-            },
-          },
-          {
-            label: '取款',
-            action: { type: 'bank', op: 'withdraw', amount: me?.moneyInBank ?? 0 },
-            amount: {
-              label: '取多少',
-              max: me?.moneyInBank ?? 0,
-              step: 1000,
-              fill: (n) => ({ type: 'bank', op: 'withdraw', amount: n }),
-            },
-          },
           {
             label: BANK.applyLoan.text,
             action: { type: 'bank', op: 'borrow', amount: pending.loanCapacity },
@@ -363,6 +346,34 @@ export function interactionUi(
         detail: `${BAIL.bailPoints.text} ${formatOriginal(BAIL.pointsN.text, pending.points)}`,
         choices: [{ label: BUTTON.cancel.text, action: { type: 'declineDecision' } }],
       };
+
+    // ★ 第十四份（D-008 收口）：收費那一段真人的被动卡 —— 原版 YES/NO 框（`fcn_00440ba8`），
+    //   问句逐字取 exe（不补別的字）。NO / 右键 = `declineDecision`（core 当「不用」接着收費）。
+    case 'freeCard':
+      // @source 0x00444adf push 0x465388 / 0x00444af4 call 0x440ba8
+      return {
+        title: '',
+        detail: formatOriginal(PROMPT.freeCard.text, pending.name),
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'answerFreeCard', use: true } },
+          { label: BUTTON.cancel.text, action: { type: 'answerFreeCard', use: false } },
+        ],
+      };
+
+    case 'scapegoat': {
+      // 恰好一位候选 ⇒ YES/NO「是否嫁禍給%s？」（@source 0x00444834 push 0x46534e / 0x00444849 call 0x440ba8）；
+      // 两位以上 ⇒ 选人窗（`scapegoat-picker.ts`，`0x004448a1 call 0x440e1a`），不走这扇框
+      if (pending.candidates.length !== 1) return null;
+      const target = pending.candidates[0]!;
+      return {
+        title: '',
+        detail: formatOriginal(PROMPT.frameUp.text, pending.names[0] ?? ''),
+        choices: [
+          { label: BUTTON.ok.text, action: { type: 'answerScapegoat', target } },
+          { label: BUTTON.cancel.text, action: { type: 'answerScapegoat', target: -1 } },
+        ],
+      };
+    }
 
     case 'unimplemented':
       return {

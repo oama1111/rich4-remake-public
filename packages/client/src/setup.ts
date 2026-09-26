@@ -47,6 +47,7 @@ import {
   setupWalkResource,
 } from './assets.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 画面尺寸 —— 与原版一致 */
 const SCREEN_W = 640;
@@ -483,7 +484,7 @@ type Need = (
 /** 原地不动地画一张图（原版是以图自己的锚点对齐的 `graph_st`） */
 function sprite(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
+  drawSprite(ctx, s, Math.round(x - s.anchorX), Math.round(y - s.anchorY));
 }
 
 /** 逐分量乘一个系数（原版的「调色表换算」就是干这个） */
@@ -709,7 +710,7 @@ function drawBoard(
 ): void {
   const dx = outro === null ? 0 : outroOffsets(outro.tick).boardDx;
   const board = need('jump.mkf', SETUP_UI_RESOURCE, SETUP_UI.board);
-  if (board !== null) ctx.drawImage(board.bitmap, BOARD.x + dx, BOARD.y);
+  if (board !== null) drawSprite(ctx, board, BOARD.x + dx, BOARD.y);
 
   for (let i = 0; i < CHARACTER_COUNT; i++) {
     const col = i % GRID.cols;
@@ -724,7 +725,7 @@ function drawBoard(
     const portrait = need('Data.mkf', SETUP_PORTRAIT_RESOURCE, i);
     if (portrait === null) continue;
     // 头像的锚点是 (0,0)，按左上角贴
-    ctx.drawImage(portrait.bitmap, x, y);
+    drawSprite(ctx, portrait, x, y);
     // 已被选走的压暗一半（原版查 0x485b68 那张表，正好是 ×0.5）
     if (seated >= 0) multiply(ctx, { x, y, w: PORTRAIT, h: PORTRAIT }, TAKEN_MULTIPLY);
   }
@@ -762,15 +763,16 @@ function drawPanel(
   // 图、红勾、六条标签与数值、按下图**一起**右移。
   const px0 = PANEL.x + dx;
   const panel = need('jump.mkf', SETUP_UI_RESOURCE, setupPanelImage(stage));
-  if (panel !== null) ctx.drawImage(panel.bitmap, px0, PANEL.y);
+  if (panel !== null) drawSprite(ctx, panel, px0, PANEL.y);
 
   // ① 地图行上的红勾。★ 画进竖栏缓冲、锚点 (0,0)：
   //    竖栏内 (150, 20/52/84/116) —— 后者正是 0x46cc80 那张表，也就是各行上沿。
   //    竖栏缓冲贴到屏幕 (445,10)，所以屏幕坐标要**加上竖栏原点**。
   const mark = need('jump.mkf', SETUP_UI_RESOURCE, SETUP_UI.tick, true);
   if (mark !== null) {
-    ctx.drawImage(
-      mark.bitmap,
+    drawSprite(
+      ctx,
+      mark,
       px0 + TICK_X - mark.anchorX,
       PANEL.y + TICK_Y[mapInStage]! - mark.anchorY,
     );
@@ -792,7 +794,7 @@ function drawPanel(
   if (downImg >= 0) {
     const rect = CONTROL_RECTS[s.pressed]!;
     const down = need('jump.mkf', SETUP_UI_RESOURCE, downImg);
-    if (down !== null) ctx.drawImage(down.bitmap, rect.x + dx, rect.y);
+    if (down !== null) drawSprite(ctx, down, rect.x + dx, rect.y);
   }
 
   // ④ 弹开的下拉（拉幕时不可能开着 —— 按 OK 那一下已经把它收掉）
@@ -811,7 +813,7 @@ function drawPopup(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
   const menu = s.openMenu;
   const rect = POPUP_RECTS[menu]!;
   const bg = need('jump.mkf', SETUP_UI_RESOURCE, POPUP_IMAGES[menu]!);
-  if (bg !== null) ctx.drawImage(bg.bitmap, rect.x, rect.y);
+  if (bg !== null) drawSprite(ctx, bg, rect.x, rect.y);
 
   const items = menuItems(s, menu);
   const barW = rect.r - rect.x - 3;
@@ -827,7 +829,8 @@ function drawPopup(ctx: CanvasRenderingContext2D, s: SetupState, need: Need): vo
 }
 
 /** 六条下拉的标题 @ 0x463138..0x463165 */
-const CONFIG_TITLES: readonly string[] = [
+/** 六条开局设置的标题 —— 联机大厅的「開局設定」那一栏**共用同一批串**（同一个屏的两处）*/
+export const CONFIG_TITLES: readonly string[] = [
   '遊戲人數',
   '總 資 金',
   '行進方式',

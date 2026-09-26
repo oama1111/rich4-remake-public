@@ -127,27 +127,36 @@ describe('破产状态转换', () => {
 });
 
 describe('破产的两条路径', () => {
-  it('剩余 > 1 人 → 正常清算', () => {
-    expect(resolveBankruptcyOutcome(2, 1)).toEqual({ kind: 'liquidate' });
-    expect(resolveBankruptcyOutcome(3, 4)).toEqual({ kind: 'liquidate' });
+  it('剩余 > 1 人且还有真人 → 正常清算', () => {
+    expect(resolveBankruptcyOutcome(2, 1, 1)).toEqual({ kind: 'liquidate' });
+    expect(resolveBankruptcyOutcome(3, 4, 2)).toEqual({ kind: 'liquidate' });
   });
 
-  it('★ 只剩 1 人 → 对局结束，清算被跳过', () => {
-    expect(resolveBankruptcyOutcome(1, 1)).toEqual({ kind: 'gameOver', code: GAME_OVER_SINGLE_HUMAN });
-    expect(resolveBankruptcyOutcome(1, 2)).toEqual({ kind: 'gameOver', code: GAME_OVER_MULTI_HUMAN });
+  it('★ 只剩 1 人（必是真人）→ 对局结束，清算被跳过', () => {
+    expect(resolveBankruptcyOutcome(1, 1, 1)).toEqual({ kind: 'gameOver', code: GAME_OVER_SINGLE_HUMAN });
+    expect(resolveBankruptcyOutcome(1, 2, 1)).toEqual({ kind: 'gameOver', code: GAME_OVER_MULTI_HUMAN });
   });
 
   it('全员出局 → 结束码 1', () => {
-    expect(resolveBankruptcyOutcome(0, 1)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
-    expect(resolveBankruptcyOutcome(0, 4)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
+    expect(resolveBankruptcyOutcome(0, 1, 0)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
+    expect(resolveBankruptcyOutcome(0, 4, 0)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
+  });
+
+  it('★ 审计订正：真人一个不剩 → 结束码 1，电脑还剩几家都一样 @source 0x0040d029 test esi, esi', () => {
+    // 1 真人 + 3 电脑，真人破产：原版 0x0040cff0 弹「輸了」框直接收局（码 1）；先前这里继续清算、电脑自己打到底
+    expect(resolveBankruptcyOutcome(3, 1, 0)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
+    // 真人输给最后一家电脑：先前报成「真人胜」码 2
+    expect(resolveBankruptcyOutcome(1, 1, 0)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
+    // 2 真人都破产、2 电脑还在
+    expect(resolveBankruptcyOutcome(2, 2, 0)).toEqual({ kind: 'gameOver', code: GAME_OVER_ALL_OUT });
   });
 
   it('结束码按人类玩家数区分 2 / 3', () => {
     expect(GAME_OVER_SINGLE_HUMAN).toBe(2);
     expect(GAME_OVER_MULTI_HUMAN).toBe(3);
     // @source cmp dword [_num_human_players], 1 / jne → 3
-    expect((resolveBankruptcyOutcome(1, 1) as { code: number }).code).toBe(2);
-    expect((resolveBankruptcyOutcome(1, 3) as { code: number }).code).toBe(3);
+    expect((resolveBankruptcyOutcome(1, 1, 1) as { code: number }).code).toBe(2);
+    expect((resolveBankruptcyOutcome(1, 3, 1) as { code: number }).code).toBe(3);
   });
 });
 

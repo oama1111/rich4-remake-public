@@ -196,6 +196,8 @@ export interface AuctionResult {
    *   「该写多少」算好放在这里 —— 见 `AuctionSettlementOptions.expiry`。
    */
   tenure: number;
+  /** 流拍且是拍賣卡（`clearOnPassIn`）⇒ 到期日清零（`0x0044335f` / `0x0044348a`） */
+  clearTenure?: boolean;
 }
 
 export interface FacilityAuctionResult {
@@ -206,6 +208,7 @@ export interface FacilityAuctionResult {
   bankrupted: boolean;
   /** 同 `AuctionResult.tenure`，写进 `facilityTenure[設施号]` @source `0x43c7fe` */
   tenure: number;
+  clearTenure?: boolean;
 }
 
 /**
@@ -246,6 +249,15 @@ export interface AuctionSettlementOptions {
    * 本函数再叠上「原为无主 ∧ 得标者 ≠ 原地主」两道闸门，决定结果里的 `tenure`。
    */
   expiry?: number;
+  /**
+   * ★ 2026-09-24 审计补：**流拍之后清不清归属**，由调用方决定 —— `run_auction`（0x43bde5）自己流拍时
+   *   什么都不写（`0x43c71d cmp esi,-1 / je 0x43c868`），清归属是**拍賣卡**那一个调用点收尾做的：
+   *   `0x00443357 test eax,eax / jne` → `0x0044335b mov byte [land+0x19],0` / `0x0044335f mov [land+0x30],eax(=0)`
+   *   （設施 `0x00443486` / `0x0044348a mov [fac+0x34],eax`）。魔法屋 `0x004324da` 直接丢掉返回值、
+   *   新聞 7 `0x004498a6` / 破产 `0x0040d1e8` 也丢（那两处的地本来就无主）。
+   *   `true` = 拍賣卡（调用方按 `AuctionRequest.fromCard` 传）：流拍 ⇒ 无主 + 到期日清零；缺省 = 原样不动。
+   */
+  clearOnPassIn?: boolean;
 }
 
 /**
@@ -280,13 +292,14 @@ export function settleAuction(
   if (outcome.winner < 0) {
     return {
       players: [...players],
-      // @source mov byte [land + 0x19], 0
-      land: { ...land, owner: 0 },
+      // @source 拍賣卡 0x0044335b mov byte [land + 0x19], 0（只有拍賣卡这个调用点清，见 `clearOnPassIn`）
+      land: options.clearOnPassIn === true ? { ...land, owner: 0 } : land,
       pool,
       passedIn: true,
       bankrupted: false,
-      // @source 0x43c71d：窗口返回 -1 ⇒ 直接跳过整个结算段（含到期日）
+      // @source 0x43c71d：窗口返回 -1 ⇒ 直接跳过整个结算段（含到期日）；拍賣卡另清 +0x30 见 `clearTenure`
       tenure: 0,
+      clearTenure: options.clearOnPassIn === true,
     };
   }
 
@@ -342,12 +355,13 @@ export function settleFacilityAuction(
   if (outcome.winner < 0) {
     return {
       players: [...players],
-      // @source mov byte [fac + 0x19], 0
-      facility: { ...facility, owner: 0 },
+      // @source 拍賣卡設施支 0x00443486 mov byte [fac + 0x19], 0 / 0x0044348a mov [fac + 0x34], 0
+      facility: options.clearOnPassIn === true ? { ...facility, owner: 0 } : facility,
       pool,
       passedIn: true,
       bankrupted: false,
       tenure: 0,
+      clearTenure: options.clearOnPassIn === true,
     };
   }
 
@@ -553,19 +567,25 @@ export function auctionAiLimit(input: AuctionAiInputs, rnd: () => number): numbe
   const rand = (): number => rnd() * 32768;
 
   // @source fdiv rand() / 32767.0（0x465014 = 32767.0f）、×0.3（0x465018）、+0.5（0x465020）
+  // ★ 审计订正：`0x00439f3b fstp dword [esp+8]` —— 系数存成 **f32**（先前按 f64 用）
   // eslint-disable-next-line no-restricted-syntax -- 原版这一段就是浮点（`fdiv`/`fmul`/`fadd`），产出的是**心理价位**不是账目金额
-  const factor = (rand() / AUCTION_LIMIT_RAND_DIVISOR) * 0.3 + 0.5;
+  const factor = Math.fround((rand() / AUCTION_LIMIT_RAND_DIVISOR) * 0.3 + 0.5);
 
   // @source fdivp（无主数 / 总数）、×4.0（0x465028）、fsubr 6.0（0x46502c）
+  // ★ 审计订正：`0x00439fc7 fstp dword [esp]` —— 缺地系数同样存成 **f32**
   // eslint-disable-next-line no-restricted-syntax -- 同上，这是「缺地系数」而非金额
-  const scarcity = 6 - 4 * (input.total === 0 ? 0 : input.unowned / input.total);
+  const scarcity = Math.fround(6 - 4 * (input.total === 0 ? 0 : input.unowned / input.total));
 
-  const scale = (Math.floor(input.level / 2) + 1 + (input.sameNameOwned ?? 0)) *
-    input.basePrice * input.priceIndex;
+  // @source 0x00439fd8 / 0x00439fe5 两次 `imul`（32 位，只留低 32 位）
+  const scale = Math.imul(
+    Math.imul(Math.floor(input.level / 2) + 1 + (input.sameNameOwned ?? 0), input.basePrice),
+    input.priceIndex,
+  );
   const v1 = truncTowardZero(scale * scarcity * factor);
 
   // @source `imul eax, ecx`（地价 × 物价指数）后 `fmul (rand()/65536 + 3.0)`
-  const landValue = input.landPrice * input.priceIndex;
+  // ★ 审计订正：`0x0043a011 fstp dword [esp+4]` —— 地价 × 物价先过一趟 f32 再乘
+  const landValue = Math.fround(Math.imul(input.landPrice, input.priceIndex));
   // eslint-disable-next-line no-restricted-syntax -- 原版 `rand()` 直接除以 65536.0 再乘地价
   const v2 = truncTowardZero(landValue * (3 + rand() / 65536));
 
@@ -698,11 +718,27 @@ export type AuctionSeatStatus = 'active' | 'passed' | 'givenUp';
  * - **出不起底价**（`cmp 现金, 底价 / jg`，即 `现金 <= 底价`）→ 状态 8；
  *   本引擎把 8 与「不可出价」合并成 `'givenUp'`——原版之所以分开，
  *   只是因为 8 要画另一张图（`giveUp` 那张），规则上是同一档（非 0）；
+ *   ⚠️ 只看**现金** `+0x1c`（`0x0043c12c mov eax, [eax+0x496b84]`），存款不算；
+ * - ★ 第十八份：**不在场**（住宿 / 消失 / 坐牢 / 住院 / 冬眠 / 夢遊，`+0x32..+0x37` 任一非 0）
+ *   → 状态 1..6（`0x0043c155`..`0x0043c220` 六次 `cmp byte [...], 0 / je` 各写一次，后写的盖前写的）；
+ *   同样非 0 ⇒ 不可出价：`0x0043c62e cmp word [座位+2], 0` 只给 0 号座位算心理价位 / 计入开场可出价数，
+ *   出价循环也只停在 0 号座位上。先前这里漏了这一条 ⇒ 坐牢 / 住院的人照样举牌；
  * - 其余 → 0（可出价）。
  *
  * ⚠️ 原版建表在 `fcn_00439f0d` **之前**（0x43c5d9 复查状态），故「出不起底价」
  *   的座位拿到的是心理价位 0。
  */
+/**
+ * 不在场（原版座位状态 1..6）：住宿 `+0x32` / 消失 `+0x33` / 坐牢 `+0x34` / 住院 `+0x35` /
+ * 冬眠 `+0x36` / 夢遊 `+0x37` 任一非 0。@source `0x0043c155`..`0x0043c220`（逐字节 `cmp byte, 0`）
+ */
+export function auctionAway(p: Player): boolean {
+  const b = p.blocking;
+  return (
+    b.inHotel !== 0 || b.disappearing !== 0 || b.inPrison !== 0 || b.inHospital !== 0 || b.sleeping !== 0 || b.sleepWalking !== 0
+  );
+}
+
 export function auctionSeatStatus(
   players: readonly Player[],
   bidders: readonly number[],
@@ -713,7 +749,9 @@ export function auctionSeatStatus(
     if (p.whoPlays === 0) return 'givenUp';
     if (!want.has(i)) return 'givenUp';
     // @source 0x43c140 `cmp 现金, 底价 / jg` —— 恰好等于底价也出不起
-    return p.cash <= basePrice ? 'givenUp' : 'active';
+    if (p.cash <= basePrice) return 'givenUp';
+    // @source 0x0043c155..0x0043c220：`+0x32..+0x37` 任一非 0 ⇒ 状态 1..6（不在场，不可出价）
+    return auctionAway(p) ? 'givenUp' : 'active';
   });
 }
 
@@ -797,7 +835,7 @@ export function auctionAdvanceSeat(
  *        `status[卖家] === 'active'`，开场席位就落回**卖家**身上 ——
  *        真人卖家在屏上等自己点钮、三台电脑一口不出。
  *
- * ⇒ 现在：从 slot 0 起找第一个 **`'active'` 且不是卖家** 的座位；
+ * ⇒ 现在：找**下标最大**的 **`'active'` 且不是卖家** 的座位（见函数体里 2026-09-24 的订正）；
  *   都没有返回 **-1**（此时 `auctionFinished` 已判流标/成交，调用方不该再拿它当座位）。
  *
  * @param seller 卖家（= 待拍实体的现主，取不到就传当前行动者）的**玩家下标**；
@@ -809,7 +847,11 @@ export function auctionFirstSeat(
   seller = -1,
 ): number {
   const n = bidders.length;
-  for (let i = 0; i < n; i++) {
+  // ★ 2026-09-24 审计订正：从**最后**一个座位往前找 —— 原版状态 1 那段（`0x0043af13 xor ebx,ebx /
+  //   0x0043af15 mov esi,-1 / 0x0043af1a mov [0x48c4a4],esi / 0x0043af20 mov esi,[0x48c4a4]`）把 −1 缓存进
+  //   `esi` 后**再也不更新**，于是 `0x0043af40 cmp esi,-1 / jne` 恒不跳、每个非空座位都 `0x0043af45` 覆盖一遍
+  //   ⇒ 起拍落在**下标最大**的在场座位上（非在场与卖家的座位已在 `0x43c4de` 删掉），之后才 `(座位+1)&3` 绕回 0。
+  for (let i = n - 1; i >= 0; i--) {
     const player = bidders[i];
     if (player === undefined || player === seller) continue;
     if ((status[player] ?? 'active') === 'active') return i;
@@ -1096,6 +1138,18 @@ export function auctionAllBlocked(pending: {
   return pending.bidders.every((i) => (pending.status[i] ?? 'active') !== 'active');
 }
 
+/**
+ * 轮到这一席时是不是**等真人点钮**。
+ *
+ * @source `0x0043b001 cmp byte [p+0x15], 1 / jne 0x43b0a0`（整字节 == 1 才是真人支）→
+ *   `0x0043b06c mov edx,[0x48c488] / cmp edx,[p+0x1c] / jle 0x43b08a`（现价 ≤ 現金才等他点；
+ *   否则 `0x0043b07a` 直接替他按钮 6「放棄」）。其余（电脑 / 託管 / 带 0x10、0x20 位的真人）走电脑支。
+ *   core（`auctionNextBid`）、客户端拍賣屏、服务器驱动都按这一条分流。
+ */
+export function auctionSeatWaitsForHuman(who: { whoPlays: number; cash: number }, price: number): boolean {
+  return who.whoPlays === 1 && price <= who.cash;
+}
+
 /** 终局：`winner < 0` = 流拍 */
 export function auctionOutcome(pending: {
   bidders: readonly number[];
@@ -1105,11 +1159,10 @@ export function auctionOutcome(pending: {
   basePrice: number;
 }): { winner: number; price: number } {
   if (pending.top < 0) return { winner: -1, price: 0 };
-  // ★★ N3（第 161 条）：原版 `0x43b2c9 cmp esi,edi / jne 0x43b2e6` 先于成交判据 ——
-  //   全场座位都被挡住时**先**走到 `0x43b2cd`「無人出價，宣佈流標」，
-  //   于是「有人出过价但之后所有人都 PASS/放棄」= **流拍**（地主被清 0），
-  //   而不是把地判给最后一个出价的人。
-  if (auctionAllBlocked(pending)) return { winner: -1, price: 0 };
+  // ★★ 2026-09-25 审计订正（N3 推翻）：全场都被挡住时走的 `0x0043b2cd` 只是**说**一句「無人出價，宣佈流標」
+  //   （`push 0x465063 / call 0x44ecb6`）再进状态 0xb；状态 0xb（`0x0043aee2 cmp al,0xb / je 0x43b5b5`）收尾是
+  //   `0x0043b5ce mov ecx, [0x48c4a8] / push ecx / call 0x401966` —— 窗口交回的是**最高出价者**，不是 −1。
+  //   ⇒ 有人出过价就按现价成交（台词归台词）；只有 `top == −1`（开场就没人能出，`0x0043af61` 同一个状态 0xb）才流拍。
   return { winner: pending.top, price: pending.price };
 }
 

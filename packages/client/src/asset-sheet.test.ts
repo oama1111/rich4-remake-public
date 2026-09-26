@@ -43,6 +43,8 @@ import {
   sheetCell,
   sheetCounts,
   sheetValues,
+  sheetGodDays,
+  SHEET_GOD_ICON,
   stockRows,
   tenureText,
 } from './asset-sheet.ts';
@@ -163,6 +165,19 @@ describe('按现场算出来的字（数据全部来自 core）', () => {
     expect(v[5]).toBe('3'); // 點卷：**纯数字**，没有 × 号（原版走 itoa）
     expect(v[6]).toBe('5天'); // 保險期
     expect(v[7]).toBe('×0'); // 企業
+  });
+
+  it('★ 神明图标下的「N天」= 神明物件的剩余任期，不是保險期（第十二份試玩回報 @source 0x00423183）', () => {
+    const objects = Array.from({ length: 12 }, () => ({ type: 0, nodeId: 0, state: 0, attached: 0 }));
+    objects[6] = { type: 7, nodeId: 0, state: 1, attached: 1 };
+    const state = stateOf([player({ index: 0, godInfo: 7, insuranceDays: 0 })], { objects } as Partial<GameState>);
+    expect(sheetGodDays(state, 0)).toBe(1);
+    // 没附身 ⇒ 整块不画
+    expect(sheetGodDays(stateOf([player({ index: 0, godInfo: 0, insuranceDays: 9 })]), 0)).toBeNull();
+  });
+
+  it('★ 神明图标按 godInfo 查表 0x475464（槽 11 以后不再是 13+godInfo−1）', () => {
+    expect(SHEET_GOD_ICON.slice(0, 17)).toEqual([0, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 0, 23, 0, 0, 24, 24]);
   });
 
   it('★ 中列四条计数带 × 号', () => {

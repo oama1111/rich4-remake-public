@@ -85,7 +85,13 @@ export type CompanyFee =
   /** 什么也不发生（行業 2、7..10，或走路的人踩汽車/石油、航空轉盤轉到 0） */
   | { kind: 'none' }
   /** 付一笔費给公司 */
-  | { kind: 'fee'; amount: number; name: string }
+  | {
+      kind: 'fee';
+      amount: number;
+      name: string;
+      /** 航空那一路转出来的旅遊天数（`[esp+0xd0]`）—— 死神那道闸要看它（`0x0041af8e`）*/
+      days?: number;
+    }
   /** 保險：付費并投保 `days` 天 */
   | { kind: 'insurance'; amount: number; days: number }
   /** 建設：先选一处自己的地免费加蓋一级，再付那块地地價 × 物價的工程費 */
@@ -121,7 +127,7 @@ export function companyFeeOnLanding(
     case INDUSTRY.airline: {
       const n = spinWheel(WHEEL.travel, randValue);
       if (n === 0) return { kind: 'none' };
-      return { kind: 'fee', amount: n * landPrice * priceIndex, name: feeNameOf(industry) };
+      return { kind: 'fee', amount: n * landPrice * priceIndex, name: feeNameOf(industry), days: n };
     }
     case INDUSTRY.electronics:
       return { kind: 'fee', amount: landPrice * totalDays, name: feeNameOf(industry) };
@@ -170,41 +176,33 @@ export const MAX_SHARES_PER_PURCHASE = 0x3e8; // 1000
  *
  * @source VA 0x0041d1a9，进「訊息框／填数窗」之前那一段：
  * ```asm
- * 0041d845  mov  ecx, 0x2710                  ; 10000
- * 0041d857  mov  eax, [ebx + 0x24]            ; 企業資產額
- * 0041d860  idiv ecx                          ; ecx = 每股售價 = 資產額 ÷ 10000（向零取整）
- * 0041d86a  mov  edx, [esi + 0x496b84]        ; ★ 買家**現金**（player + 0x1c，不是存款）
- * 0041d88e  idiv ecx                          ; eax = 現金 ÷ 每股售價
- * 0041d857  mov  esi, eax
- * 0041d85d  cmp  eax, 0x3e8
- * 0041d863  jle  loc_0041d216
- * 0041d865  mov  esi, 0x3e8                   ; ★ 一律夹到 1000 股
+ * 0041d1ea  mov  ecx, 0x2710                  ; 10000
+ * 0041d1ef  mov  eax, [ebx + 0x24]            ; 企業資產額
+ * 0041d1f7  idiv ecx                          ; ecx = 每股售價 = 資產額 ÷ 10000（向零取整）
+ * 0041d1fb  mov  eax, [esi + 0x496b84]        ; ★ 買家**現金**（player + 0x1c，不是存款）
+ * 0041d206  idiv ecx                          ; eax = 現金 ÷ 每股售價
+ * 0041d208  mov  esi, eax
+ * 0041d20a  cmp  eax, 0x3e8
+ * 0041d20f  jle  0x41d216
+ * 0041d211  mov  esi, 0x3e8                   ; ★ 一律夹到 1000 股
  * 0041d216  mov  eax, [ebx + 0x30]            ; 企業還剩多少股
- * 0041d21a  cmp  esi, eax
- * 0041d21c  jle  loc_0041d21f
- * 0041d21e  mov  esi, eax                     ; ★ 再夹到企業餘量
+ * 0041d219  cmp  esi, eax
+ * 0041d21b  jle  0x41d21f
+ * 0041d21d  mov  esi, eax                     ; ★ 再夹到企業餘量
  * 0041d21f  test esi, esi
  * 0041d221  je   near loc_0041d2bb            ; ★ 算出来是 0 → 連問都不問
  * ```
  *
  * ⇒ `min(1000, 現金 ÷ 每股售價, 企業餘量)`；`0` 表示「问都别问」。
  *
- * ⚠️ **只有这条（真人問句 + 填数窗）用这个上限**。电脑那一条走的是
- *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839），**没有 1000 这层闸**
- *   —— 所以 AI 策略层照旧用 `available` 自己算，不要拿这个函数的结果去卡电脑。
+ * ★★ **真人、电脑共用这个上限**（2026-09-25 订正，pt27-stock「忍太郎一下买了 3000 股」）：
+ *   先前这里写「电脑那条走 `0x41d839`，没有 1000 这层闸」——**读反了**。三道夹在
+ *   `0x0041d20a..0x0041d21d` 算进 `esi`，**早于** `0x0041d22a cmp byte [p+0x15],1` 的真人/电脑分叉；
+ *   电脑那支 `0x0041d267 push esi / 0x0041d268 push ecx / call 0x41d839` 把**夹好的 esi**
+ *   当第二参（上限）传进去 ⇒ 电脑一次同样**最多 1000 股**，再按 `aiCommercialShareCount` 留安全垫。
  *
  * ★ **订正（第 159 条；通道 2 差分 `test_small_helpers2.py` 的 [B] 组 33/33）**：
- *   这里原来写「VA 0x0041d839：資產 × 物價」是**口径错**（系数读成了 1.0）。
- *   逐条驱动 `0x41d839` 得到的真值是 **30% 的安全垫**：
- * ```asm
- * 0041d839  fild  dword [0x49908c]     ; 開資
- * 0041d83f  fmul  qword [0x463cd0]     ; ★ 常量 = 0.30（不是 0.05、也不是 1.0）
- * 0041d845  fmul  dword [0x4990e8]     ; × 物價
- * 0041d84b  fistp …                    ; r = trunc(0.30 × 開資 × 物價)
- *           d = 買家現金 − r；d <= 0 ⇒ 0；否则 min(上限, d ÷ 單價)（idiv 向零）
- * ```
- *   ★ `0x41d1a9` 才是上面这个 `shareWindowLimit` 的对应支（真人），别把两者混起来。
- *   行为本身没有 bug —— 该注释只影响"以后谁按它接线"。
+ *   `0x41d839` 的安全垫是 **30%**（f64 `0x463cd0` = 0.30），见 `aiCommercialShareCount`。
  */
 export function shareWindowLimit(unitPrice: number, cash: number, available: number): number {
   // 原版这里 `idiv` 一个可能为 0 的单价（資產額 < 10000 时）会当场除零；
@@ -213,6 +211,48 @@ export function shareWindowLimit(unitPrice: number, cash: number, available: num
   const byCash = Math.trunc(cash / unitPrice);
   const byStock = Math.trunc(available);
   return Math.max(0, Math.min(MAX_SHARES_PER_PURCHASE, byCash, byStock));
+}
+
+/** 电脑认购的安全垫比例 @source f64 `0x463cd0` = 0.30（`333333333333d33f`） */
+export const AI_SHARE_RESERVE_RATIO = 0.3;
+
+/**
+ * 电脑踩到上市企業时认购几股 —— `_rich4_calculate_max_purchase_count(單價, 上限)`。
+ *
+ * @source 调用点 `0x0041d267 push esi（上限 = shareWindowLimit）/ push ecx（單價）/ call 0x41d839`，
+ *   返回值 `0x0041d26e mov edi, eax`；`0x0041d273 test edi, edi / je` ⇒ 0 = 不买。
+ * ```asm
+ * 0041d840  fild  dword [0x49908c]          ; 開局資金
+ * 0041d846  fmul  qword [0x463cd0]          ; × 0.30
+ * 0041d84c  call  0x457dbc                  ; frndint，RC=11 ⇒ 向零
+ * 0041d851  fistp dword [esp]               ; r = trunc(開局資金 × 0.30)   ★ 没有 [A] 支的 7000 封顶
+ * 0041d857  mov   edx, [0x4990e8] / imul eax, edx      ; r ×= 物價指數（整数）
+ * 0041d863  edx = [當前玩家 + 0x1c]（現金，**存款不算**）
+ * 0041d870  sub   edx, eax / test / jle → 返回 0    ; d = 現金 − r；d ≤ 0 ⇒ 0
+ * 0041d87e  imul  eax(單價), edi(上限) / cmp edx, eax / jle
+ * 0041d885  mov   ecx, edi                  ; d > 單價 × 上限 ⇒ 上限
+ * 0041d892  idiv  ebp                       ; 否则 d ÷ 單價（向零）
+ * ```
+ * ⚠️ **没有性格、没有随机数** —— 电脑只看「现金扣掉 30% 开局资金之后还够买几股」，
+ *   上限就是真人填数窗那一个（`min(1000, 現金 ÷ 單價, 企業餘量)`）。
+ *
+ * @param limit `shareWindowLimit(...)`（`esi`）
+ * @param initialFund 開局資金 `[0x49908c]`
+ * @param priceIndex 物價指數 `[0x4990e8]`
+ */
+export function aiCommercialShareCount(
+  unitPrice: number,
+  limit: number,
+  cash: number,
+  initialFund: number,
+  priceIndex: number,
+): number {
+  if (unitPrice <= 0 || limit <= 0) return 0;
+  const reserve = Math.trunc(initialFund * AI_SHARE_RESERVE_RATIO) * priceIndex;
+  const d = cash - reserve;
+  if (d <= 0) return 0;
+  if (d > unitPrice * limit) return limit;
+  return Math.trunc(d / unitPrice);
 }
 
 // ============================================================
@@ -331,7 +371,10 @@ export function companyDividends(
     //   0x0042bc90 `fild 盈餘` / 0x0042bc93 `fmul ratio` / 0x0042bc9a
     //   `call 0x457dbc`（`__round_toward_zero`：**向零截断**，不是就近/四舍五入）
     const ratio = Math.fround(held / total);
-    const amount = truncTowardZero(Math.fround(funds * ratio));
+    // ★ 2026-09-24 审计订正：乘积**不**压回 float32 —— `fmul dword` 之后紧接 `call 0x457dbc` / `fistp`，
+    //   没有 `fstp dword`。例：盈餘 6、持股 5:1 ⇒ 比例 fround(5/6)=0.83333331，6×它 = 4.99999988 → 原版 4
+    //   （旧式先 fround 成 5.0 再截断 → 5）。int32 × float32 在 double 里精确。
+    const amount = truncTowardZero(funds * ratio);
     if (amount !== 0) rows.push({ player: p, amount });
   }
   return { rows, cleared: true };

@@ -205,6 +205,53 @@ describe('★ 地块类卡片的候选同样跟地块走', () => {
   });
 });
 
+/*
+ * ★★ 2026-09-25（本分支，T09-2 结案）：**候选集**就是「任意地產 / 設施」——
+ *   不看归属、也不看等级。原版拾取的判据只有那两位类别位
+ *   （`0x44624e` `test byte [0x48c594],2` → `0x7d0 < 实例 < 0xfa0`；
+ *     `0x44627d` 同上 bit 2 → `0xfa0 < 实例 < 0x1770`），
+ *   没有任何 owner / level 判断 —— 盖不动的格子照样点得下去、道具照样扣
+ *   （`0x004472fb call 0x445aa2` 在 `0x00447345 call 0x40b110` 之前）。
+ *   本引擎的候选集由 core 的 `canUseTool`（= 这一次用会不会改状态）算出来，
+ *   故这里钉住两者**同一集合**：5 级地 + 0 级設施都还在，路面上一个都没有。
+ */
+describe('★★ 機器工人（9）的候选集 = 任意地產 / 設施（T09-2）', () => {
+  run('★ 5 级地块、0 级 / 满级設施全都算候选；路面 / 企業都不算', () => {
+    const { topo, state } = setup();
+    // 地块全推到 5 级（盖不动）、設施全压到 0 级（还没盖起来）、0 号改成真人
+    const s2: GameState = {
+      ...state,
+      landLevel: state.landLevel.map(() => 5),
+      facilityLevel: state.facilityLevel.map(() => 0),
+      players: state.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 1 } : p)),
+    };
+    const session = startPick(s2, topo, { kind: 'tool', toolId: TOOL_ROBOT_WORKER }, 'none', PARAM.worker);
+    const got = [...new Set(session.candidates.map((c) => c.nodeId))].sort((a, b) => a - b);
+    const want = topo.nodes
+      .filter((n) => n.ref.kind === 'land' || n.ref.kind === 'facility')
+      .map((n) => n.id)
+      .sort((a, b) => a - b);
+    expect(want.length).toBeGreaterThan(0);
+    expect(got).toEqual(want);
+  });
+
+  run('★ 别人的地也点得下去（原版 `0x40b110` 从头到尾不碰 `+0x19` owner）', () => {
+    const { topo, state } = setup();
+    const landNode = topo.nodes.find((n) => n.ref.kind === 'land')!;
+    const landId = (landNode.ref as { kind: 'land'; index: number }).index;
+    const landOwner = state.landOwner.map((o, i) => (i === landId ? 3 : o)); // 3 号的地
+    const landLevel = state.landLevel.map((l, i) => (i === landId ? 3 : l));
+    const session = startPick(
+      { ...state, landOwner, landLevel, players: state.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 1 } : p)) },
+      topo,
+      { kind: 'tool', toolId: TOOL_ROBOT_WORKER },
+      'none',
+      PARAM.worker,
+    );
+    expect(session.candidates.some((c) => c.nodeId === landNode.id)).toBe(true);
+  });
+});
+
 describe('★ 为什么「挂在节点上」一定点不动（Q-TOOL-4 的量化依据）', () => {
   run('地图 1 的每一块地 × 8 个视角：节点与地块的**屏幕**距离都大于命中半径 24', () => {
     const { topo } = setup();

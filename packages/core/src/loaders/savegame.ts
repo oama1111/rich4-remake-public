@@ -400,6 +400,8 @@ function importedSpecialActors(save: SaveGame): SpecialActor[] {
       singleStep: rec.singleStep,
       hibernating: rec.hibernating,
       sleepwalkDays: rec.sleepwalkDays,
+      // +11 = 「老家」（`0x0041c7b1` 读它决定回哪儿），见 `SpecialActor.home`
+      ...(rec.nodeId > 0 ? { home: rec.f11 } : {}),
       place: rec.nodeId > 0 ? ACTOR_PLACE.board : initialPlace,
     };
   });
@@ -510,6 +512,15 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     hostility: p.hostility.slice(0, 4),
     monthlyPaid: p.hostility[4] ?? 0,
     monthlyReceived: p.hostility[5] ?? 0,
+    // ★ `+0x64`：落地时抄进 `who_plays` 的那一份（`0x00418d07`）。第一輪里存的档
+    //   （实测 SAVE1.DAT：玩家 1..3 `who_plays = 0`、坐标 / 节点全 0、`+0x64 = 2`）
+    //   靠它在各自回合开头落地；破产者这一格是 0（Save0.dat 玩家 0/2/3）。
+    landingWhoPlays: p.f100,
+    // ★ 审计 2026-09-25（loop）：开着工程車（`+0x11 & 3 == 3`）时 `+0x64/+0x65` 是開車前的交通方式 / 骰子数
+    //   （`0x00447a49` / `0x00447a55` 写，`0x0041ccd0` / `0x0041cd26` 到期还原时读）。
+    ...((p.trafficMethod & 3) === 3 ? { engineSavedTraffic: p.f100, engineSavedDice: p.f101 } : {}),
+    // ★ `+0x1b`：住店 / 关押前的朝向后备（`0x00418f2e` 走回棋盘收尾还原，0xf = 不还原）
+    savedFacing: p.f27,
   }));
 
   // 道具：原版存的是「每人每种道具的数量」，本引擎用一张扁平表
@@ -654,8 +665,11 @@ export function importOriginalSave(save: SaveGame, fallbackMap: Rich4Map): Impor
     // 纯表现提示：读档后不播「上一局那趟」（见 state/types.ts 的 GameState.lastNpcWalks）
     lastNpcWalks: [],
     lastCardPlay: null,
+    lastToolUsed: null,
     // 纯表现提示：读档后不闪「上一局那笔过路费」（见 state/types.ts 的 GameState.lastTollLands）
     lastTollLands: null,
+    // 纯表现提示：读档后不重演「上一期开奖」（见 state/types.ts 的 GameState.lastLotteryDraw）
+    lastLotteryDraw: null,
     // 纯表现提示：读档后不弹「上一局那一笔」（见 state/types.ts 的 GameState.notices）
     notices: [],
     lastViewTarget: null,

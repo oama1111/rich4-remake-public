@@ -40,11 +40,13 @@
  *   （8 个视角各一项，与棋盘旋转共用）—— 见下面的 `PICK_SCROLL_*`。
  */
 
+import { cursorShape, type CursorShape } from './soft-cursor.ts';
 import {
   ACTOR_MIN,
   canUseCard,
   canUseTool,
   isAlive,
+  TOOL_TELEPORTER,
   type CardTarget,
   type GameState,
   type MapTopology,
@@ -54,7 +56,16 @@ import {
 /** 这一次拾取是为了用什么 */
 export type PickSource =
   | { kind: 'card'; cardId: number }
-  | { kind: 'tool'; toolId: number };
+  /**
+   * `teleportFrom`：傳送機（11）的**第二段**拾取 —— 第一段选中的来源编码（见 core `decodeTeleportSource`）。
+   * 缺席 = 第一段（选来源）。
+   */
+  | { kind: 'tool'; toolId: number; teleportFrom?: number }
+  /**
+   * 建設公司选地（`pending.chooseBuildTarget`）—— `choices` 是 core 给的候选编码（地块 0x7d0+ / 設施 0xfa0+）。
+   * 选中发 `buildTarget`，右键发 `declineDecision`（窗交回 0）。
+   */
+  | { kind: 'build'; choices: readonly number[] };
 
 /** 一个候选目标 */
 export interface PickCandidate {
@@ -70,6 +81,8 @@ export interface PickCandidate {
   target: CardTarget;
   /** 发 `useTool` 时要带的 `nodeId`（0 = 不带）—— 引擎的 target 契约一直是**节点号** */
   nodeId: number;
+  /** 傳送機：这个候选的实例编码（来源 = 精灵码 / 地块 0x7d0+ / 設施 0xfa0+；目标 = 地块 / 設施 / 节点号）*/
+  code?: number;
 }
 
 /** 一次拾取会话 */
@@ -89,10 +102,11 @@ export interface PickSession {
 }
 
 /**
- * 光标底下的目标**不能选**时的指针 —— **红叉**（图 5）
- * @source VA 0x4465f4 `fcn_004021f8(5, 1, 0)`
+ * 光标底下的目标**不能选**时的指针 —— **红叉**（图 5，热点 = 锚点 (16,16) 正中）
+ * @source VA 0x00446602 `push 1` / 0x00446604 `push 5` / 0x00446606 `call fcn_004021f8`（前一句 `push 0`）
+ *   = `fcn_004021f8(5, 1, 0)`；另一处 0x00446637 同一组数。
  */
-export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
+export const PICK_CURSOR_INVALID: CursorShape = cursorShape(5, 1, 0);
 
 /**
  * 光标底下的目标**能选**时的指针 —— 形状由**选择参数**算出来。
@@ -102,11 +116,21 @@ export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
  * mov edx, ecx ; shr edx, 0x10      ; edx = 选择参数的高 16 位
  * mov eax, edx ; xor ah, dh         ; ★ ah ^= dh（两个字节本来就相等）→ 把次高字节清掉
  * and eax, 0xffff
- * mov [0x48c588], eax               ; → 形状 = 高 16 位的**低字节**
+ * mov [0x48c588], eax               ; → 起始图 = 高 16 位的**低字节**
  * xor bl, dl ; xor eax,eax ; mov ax,bx ; sar eax,8 ; inc eax
- * mov [0x48c58c], eax               ; → 热点 x = 高 16 位的**高字节 + 1**
- *                                   ;   （热点 y 固定 0xa，见 VA 0x4465ba 的 `push 0xa`）
+ * mov [0x48c58c], eax               ; → **帧数** = 高 16 位的**高字节 + 1**
  * ```
+ * 两个全局只在悬停到候选上那一拍用（VA 0x004465d3）：
+ * ```asm
+ * 004465d3  push 0xa                ; 每帧 10 拍（× 20 ms = 200 ms）
+ * 004465d5  mov ecx, [0x48c58c]     ; 帧数
+ * 004465db  push ecx
+ * 004465dc  push edx                ; 起始图（= [0x48c588]）
+ * 004465dd  call fcn_004021f8       ; (图, 帧数, 每帧几拍)
+ * ```
+ * ⇒ `fcn_004021f8` 的第 2、3 个实参是**帧数 / 每帧几拍**，不是热点（热点一律取贴图锚点，
+ *   `soft-cursor.ts` 的 0x004022ac）。先前这里把 `[0x48c58c]` 读成「热点 x」、把 0xa 读成
+ *   「热点 y」（gap-audit #5），卡片指针于是成了静止的图 12、热点还偏在 (15,10)。
  * 于是「指针变成**那件道具自己的图标**」这件事是自动的：
  *
  * | 选择参数 | 形状 | 长什么样 |
@@ -115,15 +139,12 @@ export const PICK_CURSOR_INVALID = { image: 5, hotX: 1, hotY: 0 } as const;
  * | `0x10001`（地雷）| **1** | 尖刺球 |
  * | `0x20001`（定時炸彈）| **2** | 炸彈 |
  * | `0x300c0`（飛彈）/ `0x400c0`（核子飛彈）| **3 / 4** | — |
- * | `0xe0c0XYZ`（各张卡）| **12** | 「卡片」光标 |
+ * | `0xe0c0XYZ`（各张卡）| **12 起 15 帧**、每帧 200 ms | 翻转的「卡片」（= 紅卡/黑卡选股那一支，`CARD_CURSOR`）|
+ * | `0x2090006` / `0x2090001`（機器工人 / 傳送機）| **9 起 3 帧** | 与七彩氣球同一组准星图 |
  */
-export function pickCursorSpec(selectionParam: number): {
-  image: number;
-  hotX: number;
-  hotY: number;
-} {
+export function pickCursorSpec(selectionParam: number): CursorShape {
   const hi = (selectionParam >>> 16) & 0xffff;
-  return { image: hi & 0xff, hotX: ((hi >>> 8) & 0xff) + 1, hotY: 0xa };
+  return cursorShape(hi & 0xff, ((hi >>> 8) & 0xff) + 1, 0xa);
 }
 
 /**
@@ -143,8 +164,15 @@ export const TOOL_SELECT_PARAM: ReadonlyMap<number, number> = new Map([
   [7, 0x300c0], // 飛彈
   [13, 0x400c0], // 核子飛彈
   [9, 0x2090006], // 機器工人
-  [11, 0x2090001], // 傳送機
+  [11, 0x1200036], // 傳送機 —— 第一段选来源（`0x00447469`），第二段见 `teleportTargetParam`
 ]);
+
+/**
+ * 建設公司选地窗的选择参数 @source 自家 `0x0041aa6a` / 别人家 `0x0041acff push 0x2090086 / call 0x446ae8`：
+ *   低 16 位 `0x86` = 地块 | 設施 | 贴边推镜头（无 bit3 ⇒ 右键可取消）；高 16 位 `0x209` ⇒ 指针图 9 起 3 帧
+ *   （与機器工人同一组准星）。★ 原版是**点地图**选，不是列表（需求方 20260925-153539948）。
+ */
+export const COMPANY_BUILD_PARAM = 0x2090086;
 
 /**
  * 选择参数的**类别位** —— 决定「光标底下什么算数」。
@@ -240,10 +268,6 @@ export function instanceAnchor(
   return { x: node.x, y: node.y };
 }
 
-/** 指针图集 @source VA 0x4020fa 的 `read_mkf(data_mkf, 0, 0, 0)` */
-export const CURSOR_ARCHIVE = 'Data.mkf' as const;
-export const CURSOR_RESOURCE = 0;
-
 /**
  * 这类目标在这个引擎里**还没有能点的落点** —— 需要各自的列表 UI。
  *
@@ -283,8 +307,11 @@ export function pickCandidates(
 
   const ok = (target: CardTarget, nodeId: number): boolean =>
     source.kind === 'card'
-      ? canUseCard(state, topo, source.cardId, target)
-      : canUseTool(state, topo, source.toolId, nodeId);
+      ? canUseCard(state, topo, source.cardId, target) ||
+        // 天使卡打 0 级設施：种类要等选類別窗（`0x440aac(0)`）给，候选时先按「会选一种」预演
+        (target.kind === 'facility' && target.buildType === undefined &&
+          canUseCard(state, topo, source.cardId, { ...target, buildType: 0 }))
+      : source.kind === 'tool' && canUseTool(state, topo, source.toolId, nodeId);
 
   const at = (nodeId: number): { x: number; y: number } | undefined => {
     const n = nodes[nodeId - 1];
@@ -298,6 +325,10 @@ export function pickCandidates(
   //   → 候选挂在**白格/建筑**上，路面不算数；
   //   路障/地雷/定時炸彈/傳送機（`0x1` = 只认格子）→ 候选挂在路面上；
   //   飛彈/核子（`0xc0` → `pickClasses` 展开成 0x37）→ 两处都算。
+  if (source.kind === 'build') return buildCandidates(topo, source.choices);
+  if (source.kind === 'tool' && source.toolId === TOOL_TELEPORTER) {
+    return teleportCandidates(state, topo, source.teleportFrom);
+  }
   if (source.kind === 'tool') {
     const classes = pickClasses(param);
     for (const n of nodes) {
@@ -420,10 +451,7 @@ export function startPick(
 }
 
 /** 这一刻该用哪个指针（`hovering` = 光标底下有没有候选）*/
-export function pickCursorFor(
-  session: PickSession,
-  hovering: boolean,
-): { image: number; hotX: number; hotY: number } {
+export function pickCursorFor(session: PickSession, hovering: boolean): CursorShape {
   return hovering ? pickCursorSpec(session.param) : PICK_CURSOR_INVALID;
 }
 
@@ -657,3 +685,97 @@ export function pickScrollCamera(
 
 /** 推镜头的定时器周期（毫秒）@source `SetTimer(hwnd, id, 0x32, 0)` = 50 */
 export const PICK_SCROLL_TICK_MS = 0x32;
+
+/**
+ * 建設公司选地的候选 —— core 给的 `choices`（全图地块 / 設施，不看归属与等级，见 core `buildTargetCandidates`），
+ * 落点挂在各自的**实例**上（白格 / 建筑、設施），同 `instanceAnchor`；一处实例只收一次。
+ */
+function buildCandidates(topo: MapTopology, choices: readonly number[]): PickCandidate[] {
+  const want = new Set(choices);
+  const seen = new Set<number>();
+  const out: PickCandidate[] = [];
+  const none: CardTarget = { kind: 'none' };
+  for (const n of topo.nodes) {
+    const ref = n.ref;
+    let code: number;
+    let cls: number;
+    if (ref.kind === 'land') {
+      code = 0x7d0 + ref.index;
+      cls = PICK_CLASS.land;
+    } else if (ref.kind === 'facility') {
+      code = 0xfa0 + ref.index;
+      cls = PICK_CLASS.facility;
+    } else continue;
+    if (!want.has(code) || seen.has(code)) continue;
+    seen.add(code);
+    const p = instanceAnchor(topo, n, cls);
+    out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code });
+  }
+  return out;
+}
+
+/** 傳送機两段拾取的参数 @source `0x00447469 push 0x1200036`（来源）/ `0x004474f5 push 0x2090802`（地块）/
+ *  `0x00447598 push 0x2090804`（設施）/ `0x00447653`、`0x004478df push 0x2090001`（人 / 惡人 / 物件搬到一格）*/
+export const TELEPORT_SOURCE_PARAM = 0x1200036;
+export function teleportTargetParam(from: number): number {
+  if (from > 0x7d0 && from < 0xfa0) return 0x2090802;
+  if (from > 0xfa0 && from < 0x1770) return 0x2090804;
+  return 0x2090001;
+}
+
+/**
+ * 傳送機的候选。
+ * - 第一段（来源，`0x1200036`：地块 | 設施 | 玩家 / 惡人 | 物件，组字节 0 = 不设限）：所有地块、設施，
+ *   在场的玩家（`+0x15` ≠ 0）、在场的惡人 4..7、地上的物件（附身的物件画在附身者身上，点到的是附身者）；
+ * - 第二段：地块 / 設施来源 ⇒ 无主 0 级的同类（core 判），否则 ⇒ 空着的路面格（core 判）。
+ */
+function teleportCandidates(state: GameState, topo: MapTopology, from: number | undefined): PickCandidate[] {
+  const out: PickCandidate[] = [];
+  const at = (nodeId: number) => topo.nodes[nodeId - 1];
+  const none: CardTarget = { kind: 'none' };
+  if (from === undefined) {
+    for (const n of topo.nodes) {
+      const ref = n.ref;
+      if (ref.kind === 'land') {
+        const p = instanceAnchor(topo, n, PICK_CLASS.land);
+        out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code: 0x7d0 + ref.index });
+      } else if (ref.kind === 'facility') {
+        const p = instanceAnchor(topo, n, PICK_CLASS.facility);
+        out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code: 0xfa0 + ref.index });
+      }
+    }
+    for (const p of state.players) {
+      const n = at(p.nodeId);
+      if (n === undefined || (p.whoPlays & 0xff) === 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | (1 << p.index) });
+    }
+    for (let i = 0; i < 4 && i < state.specialActors.length; i++) {
+      const a = state.specialActors[i]!;
+      const n = at(a.nodeId);
+      if (n === undefined || a.place !== 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | (1 << (i + ACTOR_MIN)) });
+    }
+    for (let i = 0; i < state.objects.length; i++) {
+      const o = state.objects[i]!;
+      const n = at(o.nodeId);
+      if (n === undefined || o.attached !== 0) continue;
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: 0x8000 | ((i + 1) << 8) });
+    }
+    return out;
+  }
+  const land = from > 0x7d0 && from < 0xfa0;
+  const facility = from > 0xfa0 && from < 0x1770;
+  for (const n of topo.nodes) {
+    const ref = n.ref;
+    if (land || facility) {
+      if (ref.kind !== (land ? 'land' : 'facility') || !('index' in ref)) continue;
+      const code = (land ? 0x7d0 : 0xfa0) + ref.index;
+      if (!canUseTool(state, topo, TOOL_TELEPORTER, from, code)) continue;
+      const p = instanceAnchor(topo, n, land ? PICK_CLASS.land : PICK_CLASS.facility);
+      out.push({ wx: p.x, wy: p.y, target: none, nodeId: n.id, code });
+    } else if (canUseTool(state, topo, TOOL_TELEPORTER, from, n.id)) {
+      out.push({ wx: n.x, wy: n.y, target: none, nodeId: n.id, code: n.id });
+    }
+  }
+  return out;
+}

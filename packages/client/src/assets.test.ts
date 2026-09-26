@@ -6,6 +6,7 @@
  * ImageData 用最小替身补全局，位图工厂与 HD 来源走 SpriteCache 的注入口。
  * 于是「按图回退」「LRU」这些最容易写错的规矩可以逐条钉死。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { type DecodedImage, type MkfArchive } from '@rich4/assets-pipeline';
 // PNG 编解码走 Node 专用出口（用了 node:zlib，不能进前端包）—— 测试跑在 Node 下，够用
@@ -15,14 +16,20 @@ import {
   hdSourceFromManifest,
   loadGround,
   loadHdSource,
+  groundLogicalSize,
   SpriteCache,
+  HdFlicFrames,
+  HD_FLIC_LOOKAHEAD,
+  parseSpriteKey,
+  imageMimeOf,
   type HdSource,
   type LoadedArchives,
   type Sprite,
   characterSetBase,
   CHARACTER_POSE,
 } from './assets.ts';
-import { assetBase, hdBase } from './host.ts';
+import { assetBase, hdBase, hdTierDir } from './host.ts';
+import { flicFrame } from './hd-stage.ts';
 
 // ============================================================
 //  浏览器全局的最小替身
@@ -53,9 +60,9 @@ const fakeBitmapOf = async (source: ImageData | Blob): Promise<ImageBitmap> => {
   // ★ 把像素一并带上：换色（Q-LAYOUT-8）这类改像素的功能要靠它断言
   if (source instanceof Blob) {
     const img = decodePng(new Uint8Array(await source.arrayBuffer()));
-    return { width: img.width, height: img.height, rgba: img.rgba } as unknown as ImageBitmap;
+    return { width: img.width, height: img.height, rgba: img.rgba, close: () => undefined } as unknown as ImageBitmap;
   }
-  return { width: source.width, height: source.height, rgba: source.data } as unknown as ImageBitmap;
+  return { width: source.width, height: source.height, rgba: source.data, close: () => undefined } as unknown as ImageBitmap;
 };
 
 /** 取假位图里第 i 个像素的 RGB */
@@ -96,6 +103,34 @@ function spr2x2(): Uint8Array {
   view.setUint16(startOffset + 1 * 2, 0x7fff, true);
   // 像素
   buf.set([1, 0, 0, 1], startOffset + 512);
+  return buf;
+}
+
+/** 2×2 的 SMP（RGB555，无调色板）：左上一格纯黑（抠黑时透明），其余白 */
+function smp2x2Black(): Uint8Array {
+  const startOffset = 12 + 12;
+  const gsize = 2 * 2 * 2;
+  const buf = new Uint8Array(startOffset + gsize);
+  const view = new DataView(buf.buffer);
+  buf.set([0x53, 0x4d, 0x50]); // 'SMP'
+  view.setUint32(4, 1, true);
+  view.setUint32(8, startOffset, true);
+  view.setInt16(12, 2, true);
+  view.setInt16(14, 2, true);
+  view.setInt16(16, 1, true);
+  view.setInt16(18, 1, true);
+  view.setUint32(20, gsize, true);
+  for (const [i, v] of [0x0000, 0x7fff, 0x7fff, 0x7fff].entries()) view.setUint16(startOffset + i * 2, v, true);
+  return buf;
+}
+
+/** 2×2 的 SPR，带**换色槽**：调色板 #255 是占位青（0x03FF），一个像素用它 */
+function sprRing(): Uint8Array {
+  const buf = spr2x2();
+  const startOffset = 12 + 12;
+  const view = new DataView(buf.buffer);
+  view.setUint16(startOffset + 255 * 2, 0x03ff, true);
+  buf.set([1, 255, 0, 1], startOffset + 512);
   return buf;
 }
 
@@ -176,7 +211,7 @@ const pngOf = (width: number, height: number): Uint8Array =>
 
 /** 一个只认识给定几条记录的假 HD 来源 */
 function fakeHd(
-  entries: Record<string, { anchorX: number; anchorY: number }>,
+  entries: Record<string, { anchorX: number; anchorY: number; srcWidth?: number; srcHeight?: number }>,
   bytes: Record<string, Uint8Array | null> = {},
 ): HdSource {
   const idOf = (archive: string, resource: number, image: number): string =>
@@ -234,13 +269,23 @@ describe('HD 优先、按图回退原图', () => {
     expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
   });
 
-  it('有 HD 记录且产物可用 → 用 HD：尺寸与锚点都来自 HD 侧', async () => {
+  it('有 HD 记录且产物可用 → 先交原图，高清到货后**同一个对象**换成 HD 位图；逻辑尺寸与锚点不变', async () => {
     const c = cacheWith({
       hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
     });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
     const s = await c.get('Data.mkf', 0, 0);
+    // ★ 先原图：高清在路上时这张图照样画得出来（先前要等 HD，标题屏会黑一瞬）
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+    await c.settled();
     expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 }); // 2×2 的 4 倍
-    expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 4, y: 4 }); // 清单给的，不是自己乘的
+    expect(upgrades).toBe(1); // 换上来那一刻叫宿主重画
+    expect(await c.get('Data.mkf', 0, 0)).toBe(s); // 缓存里就是这一个对象
+    // ★ 高清舞台按逻辑坐标画（hd-stage.ts）：锚点若取清单里的 HD 像素值 (4,4)，
+    //   精灵会整体偏出去 4 倍
+    expect({ w: s!.width, h: s!.height }).toEqual({ w: 2, h: 2 });
+    expect({ x: s!.anchorX, y: s!.anchorY }).toEqual({ x: 1, y: 1 });
   });
 
   it('★ 有记录但产物拉不到 → 回退原图（不是报错、也不是空白）', async () => {
@@ -266,10 +311,76 @@ describe('HD 优先、按图回退原图', () => {
     });
     const zero = await c.get('Data.mkf', 0, 0);
     const one = await c.get('Data.mkf', 0, 1);
-    expect(bitmapSize(zero!)).toEqual({ w: 12, h: 8 }); // HD（3×2 的 4 倍）
-    expect({ x: zero!.anchorX, y: zero!.anchorY }).toEqual({ x: 8, y: 4 });
+    await c.settled();
+    expect(bitmapSize(zero!)).toEqual({ w: 12, h: 8 }); // HD 位图
+    expect({ x: zero!.anchorX, y: zero!.anchorY, w: zero!.width, h: zero!.height }).toEqual({ x: 2, y: 1, w: 3, h: 2 }); // 逻辑 = 原版表头
     expect(bitmapSize(one!)).toEqual({ w: 2, h: 2 }); // 原图
     expect({ x: one!.anchorX, y: one!.anchorY }).toEqual({ x: 1, y: 1 });
+  });
+
+  it('★ 高清在路上时被 LRU 淘汰了 → 不再往这个对象上换（持有者已丢掉它），也不叫重画', async () => {
+    const c = cacheWith({
+      resources: { 0: sprTwoFrames() },
+      maxSprites: 1,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 8, anchorY: 4 } }, { 'Data/0_0': pngOf(12, 8) }),
+    });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
+    const zero = await c.get('Data.mkf', 0, 0);
+    await c.get('Data.mkf', 0, 1); // 挤掉帧 0
+    await c.settled();
+    expect(bitmapSize(zero!)).toEqual({ w: 3, h: 2 });
+    expect(upgrades).toBe(0);
+  });
+
+  it('★ 要换色槽的图：有 HD 时用原图的换色槽位置当遮罩给 HD 上色（合成器收到的遮罩 = 原图尺寸）', async () => {
+    const seen: { w: number; h: number; lit: number; color: readonly number[]; alpha: boolean }[] = [];
+    const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      composeHd: async (hd, ops) => {
+        const mask = ops.ring!.mask;
+        let lit = 0;
+        for (let i = 3; i < mask.data.length; i += 4) if (mask.data[i] === 255) lit++;
+        seen.push({ w: mask.width, h: mask.height, lit, color: ops.ring!.color, alpha: ops.alpha !== undefined });
+        return { width: hd.width, height: hd.height, tinted: true, close: () => undefined } as unknown as ImageBitmap;
+      },
+    });
+    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
+    await c.settled();
+    expect(seen).toEqual([{ w: 2, h: 2, lit: 1, color: [255, 0, 0], alpha: false }]);
+    expect((s!.bitmap as unknown as { tinted?: boolean }).tinted).toBe(true);
+  });
+
+  it('★ 「黑即透明」的图（colorKeyBlack）：HD 套上原图抠黑后的形状 —— 试点里標題按钮顶着黑底就是缺这一步', async () => {
+    const seen: number[][] = [];
+    const c = new SpriteCache(fakeArchives({ 0: smp2x2Black() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      composeHd: async (hd, ops) => {
+        const a = ops.alpha!;
+        seen.push([a.width, a.height, ...[3, 7, 11, 15].map((i) => a.data[i]!)]);
+        return { width: hd.width, height: hd.height, keyed: true, close: () => undefined } as unknown as ImageBitmap;
+      },
+    });
+    const keyed = await c.get('Data.mkf', 0, 0, true);
+    const plain = await c.get('Data.mkf', 0, 0, false);
+    await c.settled();
+    // 只有要抠黑的那一份走合成；遮罩 = 原图 2×2，黑像素那格 alpha 0
+    expect(seen).toEqual([[2, 2, 0, 255, 255, 255]]);
+    expect((keyed!.bitmap as unknown as { keyed?: boolean }).keyed).toBe(true);
+    expect(bitmapSize(plain!)).toEqual({ w: 8, h: 8 }); // 不抠黑的那份直接用 HD
+  });
+
+  it('★ 合成器拿不到（Node 下没有 OffscreenCanvas）→ 留原图的结果，不给没上色 / 没抠形状的 HD', async () => {
+    const c = new SpriteCache(fakeArchives({ 0: sprRing() }), {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) }),
+      composeHd: async () => null,
+    });
+    const s = await c.get('Data.mkf', 0, 0, false, [255, 0, 0]);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
   });
 
   it('资源或图号不存在 → null（原版空槽很常见）', async () => {
@@ -408,9 +519,17 @@ describe('★ hdBase —— 桌面壳与浏览器各拼各的前缀，路由两�
     delete tauriGlobal.__TAURI__;
   });
 
-  it('浏览器：与 /assets/game 同源，换成 /assets/hd', () => {
+  it('浏览器：与 /assets/game 同源，默认读 2× 网页档 /assets/hd-2x', () => {
     expect(assetBase()).toBe('/assets/game');
-    expect(hdBase()).toBe('/assets/hd');
+    expect(hdBase()).toBe('/assets/hd-2x');
+  });
+
+  it('★ 分档：浏览器 `?hdtier=4` 读 4× 母版，其余一律 2×；桌面壳恒读母版', () => {
+    expect(hdTierDir('')).toBe('hd-2x');
+    expect(hdTierDir('?hdtier=4')).toBe('hd');
+    expect(hdTierDir('?hdtier=2&hd=1')).toBe('hd-2x');
+    tauriGlobal.__TAURI__ = { core: { invoke: async () => null } };
+    expect(hdTierDir('?hdtier=2')).toBe('hd');
   });
 
   it('★ 桌面壳：rich4://localhost/hd —— Rust 那条 is_hd_path 放行的正是它', () => {
@@ -437,6 +556,14 @@ describe('hdSourceFromManifest', () => {
       results: {},
     });
     expect(hd.entry('Data.mkf', 0, 0)).toBeNull();
+  });
+
+  it('★ 任务带源图尺寸 → 条目也带上（底图靠它知道 HD 是几倍）', () => {
+    const hd = hdSourceFromManifest('/assets/hd', {
+      tasks: [{ archive: 'map', resource: 6, image: 0, srcWidth: 2304, srcHeight: 2304 }],
+      results: { 'map/0006_000': { outAnchorX: 0, outAnchorY: 0 } },
+    });
+    expect(hd.entry('map.mkf', 6, 0)).toEqual({ anchorX: 0, anchorY: 0, srcWidth: 2304, srcHeight: 2304 });
   });
 
   it('有结果 → 给出锚点（已按实际输出尺寸缩放好）', () => {
@@ -467,6 +594,57 @@ describe('hdSourceFromManifest', () => {
       (globalThis as unknown as { fetch: unknown }).fetch = original;
     }
     expect(seen).toEqual(['https://x/assets/hd/Panel/23-7.png']);
+  });
+
+  it('★ 结果带 file（过场帧转成 WebP）→ 照它取；形状不对的 file 不认，退回 .png 命名', async () => {
+    const hd = hdSourceFromManifest('/assets/hd-2x', {
+      tasks: [
+        { archive: 'jump', resource: 50, image: 3 },
+        { archive: 'jump', resource: 50, image: 4 },
+      ],
+      results: {
+        'jump/0050_003': { outAnchorX: 0, outAnchorY: 0, file: 'jump/50-3.webp' },
+        'jump/0050_004': { outAnchorX: 0, outAnchorY: 0, file: '../../etc/passwd' },
+      },
+    });
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    (globalThis as unknown as { fetch: unknown }).fetch = (url: string) => {
+      seen.push(url);
+      return Promise.resolve({ ok: false } as Response);
+    };
+    try {
+      await hd.fetchBytes('jump.mkf', 50, 3);
+      await hd.fetchBytes('jump.mkf', 50, 4);
+    } finally {
+      (globalThis as unknown as { fetch: unknown }).fetch = original;
+    }
+    expect(seen).toEqual(['/assets/hd-2x/jump/50-3.webp', '/assets/hd-2x/jump/50-4.png']);
+  });
+
+  it('imageMimeOf：按文件头认 WebP / PNG', () => {
+    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+    expect(imageMimeOf(webp)).toBe('image/webp');
+    expect(imageMimeOf(pngOf(2, 2))).toBe('image/png');
+  });
+
+  it('★ 结果带 outHash → URL 拼上 `?v=<前 8 位>`（服务器据此长期缓存；产物重做 URL 就变）', async () => {
+    const hd = hdSourceFromManifest('/assets/hd-2x', {
+      tasks: [{ archive: 'Data', resource: 191, image: 0 }],
+      results: { 'Data/0191_000': { outAnchorX: 1, outAnchorY: 1, outHash: 'a341bbc2a552aadd' } },
+    });
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    (globalThis as unknown as { fetch: unknown }).fetch = (url: string) => {
+      seen.push(url);
+      return Promise.resolve({ ok: false } as Response);
+    };
+    try {
+      await hd.fetchBytes('Data.mkf', 191, 0);
+    } finally {
+      (globalThis as unknown as { fetch: unknown }).fetch = original;
+    }
+    expect(seen).toEqual(['/assets/hd-2x/Data/191-0.png?v=a341bbc2']);
   });
 
   it('产物缺失（404）→ null，交由调用方回退', async () => {
@@ -635,11 +813,24 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
   };
 
   it('★★ 清单里有 `map/6_0` ⇒ 走 HD（解码器收到的是 PNG 字节的 Blob）', async () => {
-    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([1, 2, 3]) });
+    const hd = fakeHd(
+      { 'map/6_0': { anchorX: 0, anchorY: 0, srcWidth: 2304, srcHeight: 2304 } },
+      { 'map/6_0': new Uint8Array([1, 2, 3]) },
+    );
     const { decode, calls } = spyDecode();
     const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
     expect(calls).toEqual(['blob']);
     expect(bmp!.width).toBe(9216);
+    // ★ 棋盘按逻辑尺寸数格子（32 像素一格），不按位图像素
+    expect(groundLogicalSize(bmp!)).toEqual({ width: 2304, height: 2304 });
+  });
+
+  it('★ 清单条目没有源图尺寸 ⇒ 不知道 HD 是几倍，宁可回退原图', async () => {
+    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([1, 2, 3]) });
+    const { decode, calls } = spyDecode();
+    const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, hd, decode);
+    expect(calls).toEqual(['imagedata']);
+    expect(groundLogicalSize(bmp!)).toEqual({ width: 32, height: 32 });
   });
 
   it('★ 清单里没有 ⇒ 现解 `.gnd`（解码器收到 ImageData，尺寸是原图的）', async () => {
@@ -659,7 +850,10 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
   });
 
   it('★ HD 解不开（坏图）也不致命：落到原图', async () => {
-    const hd = fakeHd({ 'map/6_0': { anchorX: 0, anchorY: 0 } }, { 'map/6_0': new Uint8Array([9]) });
+    const hd = fakeHd(
+      { 'map/6_0': { anchorX: 0, anchorY: 0, srcWidth: 32, srcHeight: 32 } },
+      { 'map/6_0': new Uint8Array([9]) },
+    );
     const calls: string[] = [];
     const decode = async (src: ImageData | Blob): Promise<ImageBitmap> => {
       calls.push(src instanceof Blob ? 'blob' : 'imagedata');
@@ -676,5 +870,149 @@ describe('★ loadGround：有 HD 就用 HD，缺了就按图回退原图', () =
     const bmp = await loadGround(fakeArchives({ 6: tinyGround() }), 3, null, decode);
     expect(calls).toEqual(['imagedata']);
     expect(bmp!.width).toBe(32);
+  });
+});
+
+// ============================================================
+//  ★ FLIC 影片的超分帧（W-80 §4.4）：先原帧，超分帧到一帧换一帧
+// ============================================================
+
+describe('★ getFlic：超分帧只留压缩字节、画到哪儿才解哪几帧（W-80 §8），逻辑尺寸仍是影片的', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('Panel.mkf #4（滚骰）：帧 0 有 HD、帧 1 没有 —— 各走各的；`frames[]` 始终是原帧；影片 width/height 不变', async () => {
+    const { MkfArchive } = await import('@rich4/assets-pipeline');
+    const panel = new MkfArchive(new Uint8Array(readFileSync(new URL('../../../assets/game/Panel.mkf', import.meta.url))));
+    const archives: LoadedArchives = { get: () => panel };
+    const first = await new SpriteCache(archives, { createBitmap: fakeBitmapOf }).getFlic('Panel.mkf', 4);
+    expect(first).not.toBeNull();
+    const { width, height } = first!;
+
+    const c = new SpriteCache(archives, {
+      createBitmap: fakeBitmapOf,
+      hd: fakeHd({ 'Panel/4_0': { anchorX: 0, anchorY: 0 } }, { 'Panel/4_0': pngOf(width * 4, height * 4) }),
+    });
+    let upgrades = 0;
+    c.addUpgradeListener(() => upgrades++);
+    const film = await c.getFlic('Panel.mkf', 4);
+    expect(flicFrame(film!, 0)!.width).toBe(width); // 先原帧
+    await c.settled();
+    await flush();
+    expect(flicFrame(film!, 0)!.width).toBe(width * 4);
+    expect(flicFrame(film!, 1)!.width).toBe(width);
+    // `frames[]` 不再被原地替换：帧数、最后一帧照旧按原帧算
+    expect(film!.frames[0]!.width).toBe(width);
+    expect({ w: film!.width, h: film!.height }).toEqual({ w: width, h: height });
+    expect(upgrades).toBeGreaterThanOrEqual(1);
+  });
+
+  it('★ 窗口：只留「身后一帧 + 往后 N 帧」的位图，其余关掉（开场过场 8 段 × 50 帧不会全解成 2× 位图）', async () => {
+    let closed = 0;
+    const make = async (): Promise<ImageBitmap> =>
+      ({ width: 8, height: 8, close: () => closed++ }) as unknown as ImageBitmap;
+    let decodedCalls = 0;
+    const frames = new HdFlicFrames(30, make, () => decodedCalls++);
+    for (let k = 0; k < 30; k++) frames.setBytes(k, new Blob([new Uint8Array([k])]));
+    await flush();
+    // 还没人画 ⇒ 预热开头那几帧
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 1);
+    expect(frames.get(0)).toBeDefined();
+    frames.get(20);
+    await flush();
+    // 跳到 20：开头那几帧全关掉，解 20..26（身后那一帧只「留」、不专门去解）
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 1);
+    expect(frames.get(20)).toBeDefined();
+    expect(closed).toBe(HD_FLIC_LOOKAHEAD + 1);
+    // 顺播一帧：20 留作身后那一帧，窗口往后挪一格
+    frames.get(21);
+    await flush();
+    expect(frames.decodedCount).toBe(HD_FLIC_LOOKAHEAD + 2);
+    // 定格在最后一帧（开场降落伞那几段放完后每帧都还画最后一帧）⇒ 只剩两帧
+    frames.get(29);
+    await flush();
+    expect(frames.decodedCount).toBeLessThanOrEqual(2);
+    expect(frames.get(29)).toBeDefined();
+    frames.close();
+    expect(frames.decodedCount).toBe(0);
+    expect(frames.get(29)).toBeUndefined();
+    expect(decodedCalls).toBeGreaterThan(0);
+  });
+
+  it('★ hdFlics: false（手机平板）→ 影片的超分帧一张都不拉', async () => {
+    const { MkfArchive } = await import('@rich4/assets-pipeline');
+    const panel = new MkfArchive(new Uint8Array(readFileSync(new URL('../../../assets/game/Panel.mkf', import.meta.url))));
+    let fetched = 0;
+    const hd: HdSource = {
+      entry: () => ({ anchorX: 0, anchorY: 0 }),
+      fetchBytes: () => {
+        fetched++;
+        return Promise.resolve(null);
+      },
+    };
+    const c = new SpriteCache({ get: () => panel }, { createBitmap: fakeBitmapOf, hd, hdFlics: false });
+    const film = await c.getFlic('Panel.mkf', 4);
+    await c.settled();
+    expect(film).not.toBeNull();
+    expect(fetched).toBe(0);
+  });
+
+  it('★ flicFrame：没有 frameAt 的轻量影片（测试替身）照旧读 frames[i]', () => {
+    expect(flicFrame({ frames: ['a', 'b'] }, 1)).toBe('b');
+    expect(flicFrame({ frames: ['a', 'b'], frameAt: (i: number) => (i === 1 ? 'B' : undefined) }, 1)).toBe('B');
+    expect(flicFrame({ frames: ['a', 'b'], frameAt: () => undefined }, 0)).toBe('a');
+  });
+});
+
+describe('★ setHd：门厅「高清畫面」勾选框 —— 已交出去的精灵原地换回 / 换上', () => {
+  it('接上 → 升级；撤掉 → 换回原图；再接上 → 又升级（同一个对象）', async () => {
+    const hd = fakeHd({ 'Data/0_0': { anchorX: 4, anchorY: 4 } }, { 'Data/0_0': pngOf(8, 8) });
+    const c = cacheWith({ hd });
+    const s = await c.get('Data.mkf', 0, 0);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 });
+    c.setHd(null);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+    c.setHd(hd);
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 8, h: 8 });
+    expect(await c.get('Data.mkf', 0, 0)).toBe(s);
+  });
+
+  it('★ 升级还在路上时撤掉 → 到货也不换上（代次作废）', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow: HdSource = {
+      entry: () => ({ anchorX: 4, anchorY: 4 }),
+      fetchBytes: async () => {
+        await gate;
+        return pngOf(8, 8);
+      },
+    };
+    const c = cacheWith({ hd: slow });
+    const s = await c.get('Data.mkf', 0, 0);
+    c.setHd(null);
+    release();
+    await c.settled();
+    expect(bitmapSize(s!)).toEqual({ w: 2, h: 2 });
+  });
+
+  it('parseSpriteKey：缓存键逆回取图参数', () => {
+    expect(parseSpriteKey('Data.mkf:191:3::')).toEqual({
+      archive: 'Data.mkf',
+      resource: 191,
+      index: 3,
+      colorKeyBlack: false,
+      ring: undefined,
+    });
+    expect(parseSpriteKey('map.mkf:40:2:k:255,0,16')).toEqual({
+      archive: 'map.mkf',
+      resource: 40,
+      index: 2,
+      colorKeyBlack: true,
+      ring: [255, 0, 16],
+    });
+    expect(parseSpriteKey('nope.mkf:1:2::')).toBeNull();
+    expect(parseSpriteKey('Data.mkf:x:2::')).toBeNull();
   });
 });

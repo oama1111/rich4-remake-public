@@ -17,6 +17,7 @@
 import { SPECIAL_KIND } from '../loaders/map.ts';
 import type { ConfinementKind } from './confinement.ts';
 import type { AuctionSeatStatus } from './auction.ts';
+import type { CardTarget } from '../cards/target.ts';
 
 /**
  * 落点要求玩家做的决定。
@@ -60,6 +61,11 @@ export type PendingInteraction =
        * 不收钱、不看归属。缺席 = 落点问出来的那个普通首建。
        */
       free?: true;
+      /**
+       * ★ 2026-09-25 审计：建設公司那一支选中了**等级 0 的設施**（真人，`0x40b110` 的 `0x0040b1e4 call 0x440aac`）——
+       *   选完种类还要接着走建設公司的收尾（自家：再蓋一次 `0x0041aafb`；别人家：付工程費 `0x0041adb9` 起）。
+       */
+      company?: { commercialId: number; charge: boolean };
     }
   /** 自己的設施（等级 ≥ 1）：加蓋一级。价 = 房價 × 物價指數 */
   | { kind: 'upgradeFacility'; facilityId: number; name: string; cost: number; level: number }
@@ -77,6 +83,18 @@ export type PendingInteraction =
    * `choices` 是可加蓋的实体编码（0x7d0 + 地块 / 0xfa0 + 設施）；`charge` 是选完要不要付工程費。
    */
   | { kind: 'chooseBuildTarget'; commercialId: number; name: string; choices: readonly number[]; charge: boolean }
+  /**
+   * ★ 第十四份（D-008 收口）：收費那一段问**真人**用不用免費卡（`fcn_00444a60` 真人支，
+   *   `0x00444a92 cmp byte [+0x15],1 / je 0x444ad8` → `0x00444af4 call 0x440ba8`，YES = 1 才用）。
+   *   `name` = 付款方名字（问句 `%s\n\n是否使用免費卡？` 的 `%s`）；`tail` = 答完接着走的那一段。
+   */
+  | { kind: 'freeCard'; name: string; tail: TollTailCtx | CardPassiveTail }
+  /**
+   * ★ 第十四份（D-008 收口）：真人嫁禍卡 —— 候选 = 在场、不是自己（`0x004447bf` / `0x004447c8`，按下标序）。
+   *   恰好 1 位 ⇒ YES/NO「是否嫁禍給%s？」（`0x00444849`）；否则 ⇒ 选人窗（`0x004448a1 call 0x440e1a`）。
+   *   答 −1（NO / 右键）⇒ 不嫁禍、卡留着。
+   */
+  | { kind: 'scapegoat'; candidates: readonly number[]; names: readonly string[]; tail: TollTailCtx | CardPassiveTail }
   /**
    * 银行：存、取、借、还，外加董事長专属的特別融資。
    *
@@ -101,8 +119,28 @@ export type PendingInteraction =
    *   真人 `who_plays == 1` 开 ATM 窗；电脑按 `cashRatio` 重分；拒絕往來期内只弹「銀行拒絕往來 還剩%d天！」）。
    *   窗是模态的：办完一笔（或右键取消）就关，走子接着走。
    * `phase` 保持 `moving`；`step` 见到它就不动，直到它被清掉。
+   *
+   * ★ 第十三份试玩回报 #2：**落在**銀行格上也是先开这台 ATM（`landing: true`），关掉之后才进貸款屏 ——
+   *   @source 落点分派 `0x0041b396 call 0x4379c9`（ATM 入口）→ `0x0041b39b cmp byte [0x46caf8],0 / jne`
+   *   （终局码非 0 就不往下）→ `0x0041b3af call 0x436668`（貸款屏入口）。
+   *   `landing` 缺省 = 路过（旧快照里的 `{ kind: 'atm' }` 照旧是路过那台）；落点那台 `phase` 是 `turnEnd`，
+   *   答掉（办一笔 / 关窗）之后 `pending` 换成 `kind: 'bank'`。
    */
-  | { kind: 'atm' }
+  | { kind: 'atm'; landing?: true }
+  /**
+   * ★ **还款提醒窗**（距还款日恰好 3 天、**恰好** `who_plays == 1` 的真人，回合开始时）。
+   *
+   * @source `0x0041c86d call 0x436a5a` → 跳表 `0x436a4a[3]` = `0x436b01 call 0x43695e` →
+   *   `0x00436969 cmp byte [player+0x15], 1 / jne 返回` → 读貸款屏的图（`read_mkf(panel, 0x17)`）、
+   *   `0x004369e2 call 0x4549cf(4)`（貸款屏配乐）→ `0x004369f1 call 0x4018e7(0x436034)`（**模态**窗）。
+   *   窗过程 `0x436034`：`0x401` 用 `0x434186(0)` 铺貸款屏（店員室 + 两块面板），三句依次挂在店員的气泡里
+   *   ——「%s您好」（`0x464aee`）→「您向銀行借貸的\n貸款即將到期。」（`0x464a2d`）→「請不要忘記喔！」（`0x464a4b`），
+   *   每句到点（`0x44ee18`，2000 ms）或左键就换下一句，右键直接跳到最后；第三句收了关窗。
+   *
+   * 相位留在 `turnStart`；答 `declineDecision`（= 关窗）之后 `0x41c84f` 才接着走完这一天的计数。
+   * 这扇窗**不改任何状态**（原版窗里只有店員的眨眼动画在掷 `rand()`，本引擎不复刻那段装饰动画）。
+   */
+  | { kind: 'loanReminder' }
   /**
    * 樂透：挑一个没被买走的号码。
    * @source 落点 VA 0x004315cc
@@ -159,6 +197,24 @@ export type PendingInteraction =
       seller?: number;
       /** 設施拍卖（拍賣卡踏在設施格上时挂出） */
       facility?: boolean;
+      /**
+       * 拍賣卡（8）挂出的这一场。**只有这条调用点**看 `run_auction` 的返回值：流拍（返回 0）⇒
+       * 该地/設施**变无主、到期日清零**（地块 `0x0044335b mov byte [esi+0x19],0` /
+       * `0x0044335f mov dword [esi+0x30],eax`(=0)；設施 `0x00443486` / `0x0044348a` `+0x34`）。
+       */
+      fromCard?: boolean;
+      /**
+       * ★ 2026-09-25 审计（AUC-45）：落槌之后回到哪个相位。拍賣卡在掷骰前打出，卡函数 `0x0044336b mov ebx,1` 返回成功，
+       *   回合照常往下走（电脑支 `0x00418e21 call 0x441baa` 之后 `0x00418e75 call 0x40dd1f` 掷骰走子；真人回到选单）
+       *   ⇒ 用卡者**不丢这一掷**。缺省 = `turnEnd`（落点 / 新聞 / 破产那几场本来就在回合收尾里）。
+       */
+      resumePhase?: 'awaitingRoll' | 'turnStart';
+      /**
+       * ★★ 2026-09-25（cards 审计 cross-area (d)）：魔法屋「拍賣當格土地」挂出的这一场 ——
+       *   `0x004324d5 call 0x43bde5` 之后**不看返回值**（直接 `0x004324dd push 1 / call 0x41906a`），
+       *   流拍时地主照旧（不变无主）。
+       */
+      keepOwnerOnPass?: boolean;
       /** 现价 `[0x48c488]`：每一口加价都改写它；还没人出价时 = `basePrice` */
       price: number;
       /** 当前最高出价者的**玩家下标**；-1 = 还没人出价 @source `[0x48c4a8]` */
@@ -224,8 +280,9 @@ export type PendingInteraction =
        * 通用填数窗的**上限** = `min(1000, 現金 ÷ 每股售價, available)`
        * —— 原版 `fcn_00453544(上限)` 吃到的就是这个数。
        *
-       * ⚠️ 电脑那条（`_rich4_calculate_max_purchase_count`，VA 0x0041d839）
-       *   **没有 1000 这层闸**，AI 策略层要买多少照旧用 `available` 自己算。
+       * ★ **电脑也吃这个上限**：`0x0041d267 push esi` 把同一个夹好的数交给
+       *   `_rich4_calculate_max_purchase_count`（VA 0x0041d839）当上限（见
+       *   `places/company.ts` 的 `aiCommercialShareCount`）；reducer 拒收超过它的股数。
        */
       max: number;
       /** 买家现金 —— 只在题面上显示；能买多少股已经由 `max` 定死 */
@@ -241,10 +298,17 @@ export type PendingInteraction =
       kind: 'shop';
       /** 手上的點數 —— 买得起什么由 UI/AI 自己算 */
       points: number;
-      /** 可买的卡片：编号与標價 */
-      cards: { id: number; name: string; price: number }[];
-      /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null） */
-      tools: { id: number; name: string; price: number; stock: number | null }[];
+      /**
+       * 货架上的卡片：编号与標價，**按行**（下标 = 货架第几行）。
+       *
+       * ★ `sold` = 本次进店已经买掉的那一行 —— **留在原位、不删**：原版买完把那一行的货名与价格
+       *   用灰字（`create_font(0x14, 0xa0a0a0, 0x101010, 3, 0)`）重画进货架栏那张图、再把货架字节
+       *   清 0（点上去 `je` 直接返回）@source 0x0042e236..0x0042e379（卡片）/ 0x0042e4ba..0x0042e5f6（道具）。
+       *   没买过的行不带这个字段（进店时的形状与先前一样）。
+       */
+      cards: { id: number; name: string; price: number; sold?: true }[];
+      /** 可买的道具：编号、標價、全局库存（编号 > 8 不限量，给 null）；`sold` 同上 */
+      tools: { id: number; name: string; price: number; stock: number | null; sold?: true }[];
       /**
        * **自己手上**的卡片与道具 —— 这一屏能卖，退九成點數。
        *
@@ -321,7 +385,37 @@ export type PendingInteraction =
       kind: 'birthdayCard';
       /** 还没处理的座位（升序）；空数组不会挂出来（那一位都不合格时当场收尾）*/
       seats: readonly number[];
+      /**
+       * ★★ FU-3：收卡的寿星（`0x0044c517 mov eax,[0x49910c]` = 抽命運的那一位）。缺省 = `currentPlayer`
+       *   （旧存档 / 普通命運格）。魔法屋「抽取命運三張」里是**中签者**，不是施法者。
+       */
+      receiver?: number;
+      /**
+       * ★★ FU-3：这一窗是魔法屋「抽取命運三張」（`0x00431dbc` 循环）里抽出来的 —— 挑完之后回到那个循环：
+       *   `targets[0]`（= 寿星）还剩 `drawsLeft` 张，然后才轮到其余中签者；`caster` 最后还原成当前玩家。
+       */
+      magicResume?: {
+        caster: number;
+        criterion: number;
+        option: number;
+        targets: readonly number[];
+        drawsLeft: number;
+      };
     }
+  /**
+   * 魔法屋（**真人**那一支）：目标转盘已经转完，等玩家在女巫窗口里**点一个效果**。
+   *
+   * @source 入口 `0x0043380a`：`0x0043381b cmp byte [player+0x15], 1 / jne 0x43390b`
+   *   —— `who_plays == 1` 开女巫窗口 `0x4325c2`（`0x004338af`），**窗口返回值就是效果号**
+   *   （`0x004338b7 mov esi, eax` → `0x004339c5 push esi / call 0x431caa`）。
+   *   目标转盘在窗口里转（状态 4，`loc_00432719`：`rand() % 12` 选不出人就重抽），
+   *   玩家在状态 7 点 1..12 格（`loc_00432e8e`），返回 `格号 − 1`（`0x00432a74`）。
+   *   电脑（`who_plays != 1`）不开窗，两个转盘都 `rand()`（`0x0043390b`），不挂本交互。
+   *
+   * 答 `{type:'magicHouse', option}`：`option` = 0..11（全部 12 项都点得到）；
+   *   `null` = 真人被託管、由电脑那一支替他掷（`rollMagicOption`）。
+   */
+  | { kind: 'magicHouse'; criterion: number; targets: readonly number[] }
   | { kind: 'unimplemented'; place: string; specialKind: number; options?: readonly string[] };
 
 /**
@@ -333,11 +427,34 @@ export type PendingInteraction =
  */
 export type AuctionRequest = Pick<
   Extract<PendingInteraction, { kind: 'auction' }>,
-  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller'
+  'kind' | 'entityId' | 'basePrice' | 'bidders' | 'facility' | 'seller' | 'fromCard' | 'resumePhase' | 'keepOwnerOnPass'
 >;
 
 /** `auction` 的**完整**形状（竞价循环进行中，字段一定齐） */
 export type AuctionPending = Extract<PendingInteraction, { kind: 'auction' }>;
+
+/** 破产清算拍卖的候选表里的一格（地块 `i + 0x7d0` / 設施 `i + 0xfa0`）；`0` = 已被划掉 */
+export type BankruptcySlot = { kind: 'land' | 'facility'; index: number };
+
+/**
+ * `state.pendingQueue` 里的一项 —— **前一场拍卖落槌之后**接着要做的事。
+ *
+ * ★ 原版的 `0x43bde5`（开一场拍卖）是**阻塞调用**：它返回时那一场已经打完了。
+ *   所以原版可以在一条流程里「开一场 → 接着干别的 → 再开一场」，
+ *   而本引擎的拍卖是待决交互（跨 action），只能把这些「接着要干的事」排进队列。
+ *
+ * | 项 | 出处 |
+ * |---|---|
+ * | 一场排队的拍卖 | 拍賣卡 / 魔法屋 / 新聞 7 / 破产清算，见 `AuctionRequest` |
+ * | `bankruptcyDraw` | 破产清算的**下一抽** —— 原版抽一处就开一场、回来再抽下一处（`0x40d1f7` ↔ `0x40d1e3`，AUC-43） |
+ * | `credit` | `pay_money` 里收款人的入账，要等付款人的清算拍卖打完（`0x0041d376` 早于 `0x0041d387`，PAY-05） |
+ * | `dayRolloverTail` | 推日期被分紅破产打断之后剩下的半段（開獎 / 月结 / 地契到期，`0x0042beba`，STK-57） |
+ */
+export type QueuedStep =
+  | AuctionRequest
+  | { kind: 'bankruptcyDraw'; slots: readonly (BankruptcySlot | 0)[]; rounds: number }
+  | { kind: 'credit'; payee: number; amount: number; toCash: boolean }
+  | { kind: 'dayRolloverTail'; dividend: readonly number[] | null; next: number; newMonth: boolean };
 
 /** 各特殊格对应的场所名 —— 仅用于 `unimplemented` 的可读性 */const PLACE_NAMES: Readonly<Record<number, string>> = {
   // ★ **空的** —— 17 种特殊格已全部接上规则：
@@ -426,7 +543,55 @@ export type InteractionResponse =
    * 命運 5 生日收卡：挑一位手里的一张（T-055）。
    * `cardId = 0` = 跳过这位（原版选牌窗右键取消）。
    */
-  | { kind: 'birthdayCard'; seat: number; cardId: number };
+  | { kind: 'birthdayCard'; seat: number; cardId: number }
+  /** 魔法屋：真人点的效果号 0..11（`null` = 託管，电脑替他掷）*/
+  | { kind: 'magicHouse'; option: number | null }
+  | { kind: 'freeCard'; use: boolean }
+  | { kind: 'scapegoat'; target: number };
+
+/**
+ * ★ 第十四份：收費那一段「神明调整之后、付钱之前」的被动卡尾巴走到哪了 —— 答完真人那一问好接着走。
+ *   三条路（住宅 `0x00419e01`、設施 `0x0041a648`、企業 `0x0041aed7`）同一个形状。
+ */
+export interface TollTailCtx {
+  route:
+    | { path: 'rent'; landId: number }
+    | { path: 'facility'; facilityId: number; hotelDays: number }
+    | { path: 'company'; commercialId: number; travelDays: number };
+  /** 当前玩家（问的人、免費卡 / 嫁禍卡的持有人）*/
+  payer: number;
+  /** 最后付钱的人（嫁禍 / 死神会换）*/
+  who: number;
+  /** 当前金额（神明调整之后；用了免費卡就是 0）*/
+  toll: number;
+  feeName: string;
+  /** 免費卡那一步已经走过 */
+  freeDone: boolean;
+}
+
+/**
+ * ★★ 卡片路径（夢遊 16 / 陷害 17 / 查稅 26）里**真人持有者**的被动卡那一问 —— 挂起卡片效果、答完续跑。
+ *
+ * 原版这两问是卡片函数**中途**的模态框（`0x444a60` 真人支 `0x00444af4 call 0x440ba8`；
+ * `0x44476a` 真人支 `0x00444849 call 0x440ba8` / `0x004448a1 call 0x440e1a`），问的是**被打的那一位**
+ * （持卡人），不是出牌者。这两问之前卡片函数只做了扣卡 / 台词 / 记敌意（都在 core 里一步算完），
+ * 之后的一切都取决于回答 ⇒ 本引擎挂起时**什么都不落**（卡也不扣），答完用同一张卡、同一个目标
+ * 把 `playCard` 从头再跑一遍，把已经答过的那几问喂进去（`answers`）。中间不掷随机数，所以重跑与原版逐步一致。
+ */
+export interface CardPassiveTail {
+  /** 被挂起的那一手：卡号与目标（回合主人 = 出牌者）*/
+  card: { cardId: number; target: CardTarget };
+  /** 持卡人（被打的那一位；这一问由他答）*/
+  holder: number;
+  /** 已经答过的：免費卡用不用（查稅卡先问它）*/
+  free?: boolean | null;
+}
+
+/** 这个待决交互是不是「卡片路径里持卡人那一问」—— 是就返回持卡人下标，否则 −1 */
+export function cardPassiveHolder(pending: PendingInteraction | null): number {
+  if (pending === null || (pending.kind !== 'freeCard' && pending.kind !== 'scapegoat')) return -1;
+  return 'card' in pending.tail ? pending.tail.holder : -1;
+}
 
 /** 答复与待决交互是否配套——防止 UI 送回驴唇不对马嘴的 action */
 export function responseMatches(
@@ -467,6 +632,12 @@ export function responseMatches(
       return response.kind === 'bail';
     case 'birthdayCard':
       return response.kind === 'birthdayCard';
+    case 'magicHouse':
+      return response.kind === 'magicHouse';
+    case 'freeCard':
+      return response.kind === 'freeCard';
+    case 'scapegoat':
+      return response.kind === 'scapegoat';
     default:
       return false;
   }

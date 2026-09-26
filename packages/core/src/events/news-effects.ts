@@ -26,6 +26,8 @@ import {
 import type { CommercialInfo } from '../loaders/map.ts';
 import { RELEASE_PENDING } from '../rules/blocking.ts';
 import { WHO_PLAYS_HUMAN, isAlive } from '../state/types.ts';
+// ★ Q-TOOL-1：爆炸范围 = 原版那张 440×440 id 图里的屏幕方窗（見 rules/board-window.ts）
+import { boardInstancePresent, inBoardWindow } from '../rules/board-window.ts';
 /*
  * ★ 新聞 29 的「免罪(21) → 嫁禍(19)」二级判定**复用** `0x441210` 那一段的既有镜像
  *   —— `cards/passive.ts` 的 `applyDefensiveCards`（顺序、扣卡点都在那里钉过）。
@@ -45,6 +47,7 @@ import {
 // ★ 新聞 4 与飛彈/核彈/颱風走的是**同一个** `damage_area`（`0x40ac7b`），
 //   逐块地的重击效果直接复用 `rules/tool-effects.ts` 的 `blastLand`。
 import { blastLand } from '../rules/tool-effects.ts';
+import { ESTATE_FACILITY_BASE, ESTATE_LAND_BASE } from '../places/notice-board.ts';
 
 /**
  * 新聞拆屋类效果尾部的**全场释放** `0x0040dffa()`（见 `rules/blocking.ts`）。
@@ -115,6 +118,28 @@ export interface NewsEffectResult {
    */
   shares?: readonly { player: number; amount: number }[];
   /**
+   * ★ 「随机挑一处建筑」那一族（5 / 15 / 19 / 20 / 21，外加 18 地震）**挑中的那一处**
+   *   —— 实体编码 + 改之前的主人（1 基）。**挑中了就带**，与改没改动无关：
+   *   原版 pass 0 就把名字填进訊息框、pass 1 照样移镜头、播影片（新聞 21 挑到
+   *   一块空地时 `mutate_land` 什么都不改，但前后那几步一步不少）。
+   *   纯表现（见 `GameState.lastEvent.place`）；规则只看 `landMutations` / `facilityMutations`。
+   */
+  place?: { entity: number; owner: number };
+  /**
+   * ★ 新聞 18「強烈地震」/ 19「山洪」：pass 1 在 id 图上**标白**（`0x456c0a(id 图, 0x2f440, 实体, 0xffff)`）
+   *   然后一起闪一遍（`fcn_00451985`，与過路費同一支）的那几处 —— 实体编码（`0x7d0 + 地块 id` /
+   *   `0xfa0 + 設施 id`），顺序 = 原版标记顺序。纯表现（见 `GameState.lastEvent.flashLots`）。
+   *
+   * @source 18 `fcn_0044a6e0` pass 1：挑中地块 ⇒ `0x0044a7ef view_to(x, y, 2)` → `0x0044a7f9 0x409b18(1)`
+   *   → `0x0044a80c..0x0044a86b` 逐块 `strcmp(名字)`，**同名的每一块都标**（`0x0044a846`，等级 0 的也标，
+   *   标完才看 `+0x1a` 拆一级）；挑中設施 ⇒ `0x0044a8aa view_to` → `0x0044a8d3` 只标它自己
+   *   → `0x0044a8f3 0x451985` 闪 → `0x0044a8fe view_to(0, 0, 1)` 重画 → `0x0044a90b sleep(0x1f4)`。
+   * @source 19 `fcn_0044a91e` pass 1：`0x0044aa75 view_to` → `0x0044aa7f 0x409b18(1)` →
+   *   `0x0044aa9f` 标挑中那一处 → `0x0044aaaf mutate_land(实体, 1)` → `0x0044aab7 0x451985` 闪 →
+   *   `0x0044aac2 view_to(0, 0, 1)` → `0x0044aacf sleep(0x12c)` → 房主台词。
+   */
+  flashLots?: readonly number[];
+  /**
    * ★ 新聞 4：**被这发爆炸送进医院的玩家**（原版尾巴那个 `push 3 / call 0x43ec3f`
    *   的落点，VA 0x00449285）。排序 = 原版 `for (i = 0; i < num_players; i++)` 的下标序。
    *
@@ -124,6 +149,19 @@ export interface NewsEffectResult {
    *   `docs/gaps` 与报告里的「待接线」补丁。
    */
   blastedHospital?: readonly number[];
+  /**
+   * ★ 新聞 4：**爆心**的地图坐标（挑中那一处地块/設施的 `+0/+2`）—— 纯表现，交给
+   *   `GameState.lastViewTarget` 让镜头移过去。
+   *
+   * @source `fcn_0044913d` VA 0x00449203 `call 0x40af12`（取挑中实体的 (x, y)）→
+   *   VA 0x0044920b..0x0044921d `push 2 / push y / push x / call 0x41d476`（`view_to(x, y, 2)`，
+   *   flags 无 bit0 ⇒ **真的移镜头**）→ 之后才 `damage_area`（0x0044922d）与飛碟影片（0x0044925b）。
+   *   ★ 第二十一份試玩回報「外星人攻打地球，射到我自己为什么不会进医院」：先前这一支**不交**爆心，
+   *     镜头留在刚踩上新聞格的行动者身上，而那段 440×440 的飛碟影片固定盖在整块棋盘上
+   *     （`alien-news-fx.ts`）⇒ 画面看着像是射中了行动者本人；实际爆心在别处，
+   *     他不在半径 0x64 的窗里，当然不住院。候选集为空（原版 idiv 除零）时不带。
+   */
+  blastOrigin?: { x: number; y: number };
   /**
    * ★ 新聞 4：被 `0x40cd07` 毁掉的座驾要回**全局库存**（道具 5 機車 / 6 汽車）。
    *   与 `fortune-effects.ts` 的事件 10/11 同一个约定（`inc byte [0x497324]` /
@@ -178,10 +216,22 @@ export interface LandMutation {
   level: number;
   type: number;
   owner: number;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：地契到期日（住宅 `+0x30` / 設施 `+0x34`）也被清的那几条带 0：
+   *   `mutate_land` mode 1（`0x0040abba mov [eax+0x30], edx(=0)` / 設施 `0x0040ac46 mov dword [eax+0x34], 0`，
+   *   新聞 5/19）与 `damage_area` 重击（住宅 `0x0040ad77` / 設施 `0x0040ae51`，新聞 4）。
+   *   缺省 = 不动。先前没有这一项 ⇒ 旧的到期日留着，日后在别人名下「到期」把地收走。
+   */
+  tenure?: number;
 }
 
 export interface EffectRng {
   below(n: number): number;
+}
+
+/** `rand()` 本身（0..0x7fff）—— `below(0x8000)` 与 `next()` 同值（`rand() % 0x8000`） */
+function nextOf(rng: EffectRng): { next(): number } {
+  return { next: () => rng.below(0x8000) };
 }
 
 /**
@@ -396,6 +446,13 @@ export interface NewsEffectContext {
    *   且与「演出不许碰引擎随机」那条规矩不冲突（这里是 core）。
    */
   rng?: EffectRng;
+  /**
+   * ★★ 2026-09-24（provenance 审计）：稅類（11/12/13）的**第二趟收钱交给调用方**逐人做。
+   *   原版 `pay_money` 付不出当场 `0x41d375 call 0x40cd87` 破产（拍卖地产要掷 `rand()`），
+   *   而第二趟循环每一人之前查终局码（`0x00449dad cmp byte [0x46caf8],0 / jne 出去`）——
+   *   破产要动整局状态，效果层做不了。为 true 时只交出 `shares`、一分不收。
+   */
+  deferTaxPayments?: boolean;
   /** 覆盖天数；通常取自事件表的 literal */
   days?: number;
   /** 神明加持倍率档位：2 加倍、1 归零、0 不变（见 rules/blessing.ts） */
@@ -741,6 +798,8 @@ export function applyNewsEffect(
       days,
       hospitalOccupancy,
       ctx.landscapes,
+      // ★ 首次入獄 5 天 ⇒ 倒霉台词掷一次 rand（`0x0043d5f9 call 0x44f2c2`），在二级判定之后
+      nextOf(rng),
     );
     return {
       ...base,
@@ -774,24 +833,29 @@ export function applyNewsEffect(
       for (const l of lands) {
         // 同名的都改（原版逐块 `strcmp(name)`）；顺序 = 表序
         if (l.name !== target.name) continue;
-        landPrice.push({ id: l.id, price: Math.trunc(l.landPrice * factor) });
+        // ★★ 2026-09-24（provenance 审计）：存回是 `0x0044967b mov word [ebx+0x1c], ax` ⇒ 16 位回绕
+        landPrice.push({ id: l.id, price: Math.trunc(l.landPrice * factor) & 0xffff });
       }
       const changed = landPrice.find((c) => c.id === target.id);
       return { ...base, amount: changed?.price ?? 0, landPrice };
     }
     const fac = facilities[pick - lands.length]!;
+    // 同上：設施 `0x00449721 mov word [ebx+0x22], ax`
+    const facPrice = Math.trunc(fac.landPrice * factor) & 0xffff;
     return {
       ...base,
-      amount: Math.trunc(fac.landPrice * factor),
-      facilityPrice: [{ id: fac.id, price: Math.trunc(fac.landPrice * factor) }],
+      amount: facPrice,
+      facilityPrice: [{ id: fac.id, price: facPrice }],
     };
   }
 
   // ── 新聞 20「超級颱風侵襲，多處房屋受損」────────────────────────
   //   挑一处 → 以它为心打一发 `damage_area(半径 100, flags 6, 轻重 0, 攻击者 -1)`：
   //   范围内的**住宅与設施**各拆一级，**不打人、不记敌意**。
-  //   ⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440 视图空间的方窗
-  //     （要镜头与等距投影），这里改用**地图坐标**的方窗，半径同为 100。
+  //   ⚠️ 范围口径 = 原版那套**屏幕方窗**（见 `rules/board-window.ts`，Q-TOOL-1 已按 exe 改）：
+  //     镜头由 `0x0044ac33 call 0x41d476(x, y, 2)` 先挪到挑中的那一处（`0x40af12` 的锚点），
+  //     窗心 = 它的坐标；地块/設施的锚点也是它们**记录自己的 x/y**。
+  //     先前用的是地图坐标的方窗（半径同为 100）。
   if (entry.effects.includes('typhoonBlast')) {
     const rng = ctx.rng;
     const lands = ctx.lands ?? [];
@@ -800,38 +864,49 @@ export function applyNewsEffect(
       return { ...base, unimplemented: true };
     }
     const pick = rng.below(lands.length + facilities.length);
-    const origin =
-      pick < lands.length
-        ? { x: lands[pick]!.x, y: lands[pick]!.y }
-        : { x: facilities[pick - lands.length]!.x, y: facilities[pick - lands.length]!.y };
+    const picked = pick < lands.length ? lands[pick]! : facilities[pick - lands.length]!;
+    const origin = { x: picked.x, y: picked.y };
+    // ★ 挑中的那一处（表现层：訊息框的地名 / 镜头）@source `fcn_0044ab2c`
+    //   pass 0 `0x0044abbc strcpy(名字)` → pass 1 `0x0044ac19 0x40af12` + `0x0044ac33 view_to(x, y, 2)`
+    const place = {
+      entity: (pick < lands.length ? ESTATE_LAND_BASE : ESTATE_FACILITY_BASE) + picked.id,
+      owner: picked.owner,
+    };
     const inBlast = (e: { x: number; y: number }): boolean =>
-      Math.abs(e.x - origin.x) <= TYPHOON_RADIUS && Math.abs(e.y - origin.y) <= TYPHOON_RADIUS;
+      inBoardWindow(origin, e, TYPHOON_RADIUS);
+    // ★★ 2026-09-24（provenance 审计）：轻击是 `damage_area` **自己的**内联逻辑，不是 `mutate_land` mode 0
+    //   （后者在 `level == 0` 时整条不动）：
+    // ```asm
+    // ; 住宅 0x0040ad1c：level != 0 ⇒ −1；然后**不看等级**：type != 0 ⇒ level = type = 0
+    // 0040ad1c  mov cl,[ebx+0x1a] / test cl,cl / je 0x40ad2a / dec
+    // 0040ad2a  cmp byte [ebx+0x18],0 / je 结束 / mov [+0x1a],0 / mov [+0x18],0
+    // ; 設施 0x0040adf5：level != 0 ⇒ −1；然后**再读一次**：为 0（刚减到 / 本来就是）⇒ 种类清 0 并放人
+    // 0040ae03  mov al,[ebx+0x1a] / test al,al / jne 结束
+    // 0040ae0a  mov [ebx+0x18],al / 0040ae0d call 0x40dffa
+    // ```
+    //   ⇒ 窗里的 **0 级設施**也会放出全部旅館住客；0 级带种类的地块也清种类。攻击者 −1 ⇒ 不记敌意。
+    //   与 `fireMissile` 的轻击同一段（`blastLand(…, heavy=false)` 与設施那段内联）。
     const landMutations: LandMutation[] = [];
     const releaseFlags: boolean[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
-      const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
-      if (!after.changed) continue;
-      releaseFlags.push(after.releasesConfined);
-      landMutations.push({
-        id: after.land.id,
-        level: after.land.level,
-        type: after.land.type,
-        owner: after.land.owner,
-      });
+      // ★ 没盖房又没主的地块不在 id 图里 ⇒ 扫不到它（`0x4091df..0x409240`，见 board-window.ts）
+      if (!boardInstancePresent(l.level, l.owner)) continue;
+      const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, false);
+      if (after.level === l.level && after.type === l.type) continue;
+      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: l.owner });
     }
     const facilityMutations: LandMutation[] = [];
     for (const f of facilities) {
       if (!inBlast(f)) continue;
-      const after = mutateFacility(f, MUTATE_DEMOLISH_ONE);
-      if (!after.changed) continue;
-      releaseFlags.push(after.releasesConfined);
-      facilityMutations.push({
-        id: after.facility.id,
-        level: after.facility.level,
-        type: after.facility.type,
-        owner: after.facility.owner,
-      });
+      // ★ 同上：没盖过又没主的設施不在 id 图里（`0x4093f3..0x409488`）——
+      //   先前这种格子照样会 push 一个 releaseFlag（原版扫不到 ⇒ 不放人）
+      if (!boardInstancePresent(f.level, f.owner)) continue;
+      const level = f.level > 0 ? f.level - 1 : 0;
+      const type = level === 0 ? 0 : f.type;
+      if (level === 0) releaseFlags.push(true);
+      if (level === f.level && type === f.type) continue;
+      facilityMutations.push({ id: f.id, level, type, owner: f.owner });
     }
     return {
       ...base,
@@ -839,6 +914,7 @@ export function applyNewsEffect(
       amount: landMutations.length + facilityMutations.length,
       landMutations,
       facilityMutations,
+      place,
     };
   }
 
@@ -885,24 +961,25 @@ export function applyNewsEffect(
       pick < landCand.length
         ? { x: landCand[pick]!.x, y: landCand[pick]!.y }
         : { x: facCand[pick - landCand.length]!.x, y: facCand[pick - landCand.length]!.y };
-    // ② 爆心方窗。⚠️ 范围口径沿用本引擎对 Q-TOOL-1 的近似：原版是 440×440
-    //    **视图空间**的 ±半径（要镜头与等距投影），这里改用**地图坐标**的方窗，
-    //    半径同为 0x64 —— 与 `typhoonBlast` 及飛彈那条完全同一口径。
+    // ② 爆心方窗 —— 原版那套**屏幕方窗**（`rules/board-window.ts`，Q-TOOL-1 已按 exe 改）：
+    //    镜头先被 `0x0044921d call 0x41d476` 挪到爆心（`0x40af12` 取的地块/設施锚点），
+    //    窗心 = 它；半径同为 0x64 —— 与 `typhoonBlast` 及飛彈同一条判据。
     const inBlast = (e: { x: number; y: number }): boolean =>
-      Math.abs(e.x - origin.x) <= ALIEN_BLAST_RADIUS &&
-      Math.abs(e.y - origin.y) <= ALIEN_BLAST_RADIUS;
+      inBoardWindow(origin, e, ALIEN_BLAST_RADIUS);
 
     // ②a 住宅：**重击**支 —— owner/level/type 全清（`blastLand` 的 heavy 支）。
     //     @source `damage_area` 0x0040ad3a..0x0040ad85：`+0x19/+0x1a/+0x18` 全写 0
     //     再写 `+0x30`(地契)。原版对窗内**每一块**都写这 4 项；全 0 的地块写了也一样，
     //     故只把**真变了**的那几格带出去（`LandMutation` 的约定）。
-    //     ⚠️ `+0x30`（地契）本引擎的 `LandMutation` 带不了 —— 与已登记的 P4/#7 同一处。
+    //     `+0x30`（地契）由 `LandMutation.tenure` 带出（2026-09-24 起）。
     const landMutations: LandMutation[] = [];
     for (const l of lands) {
       if (!inBlast(l)) continue;
+      // ★ 没盖房又没主的地块不在 id 图里 ⇒ 扫不到（`0x4091df..0x409240`）
+      if (!boardInstancePresent(l.level, l.owner)) continue;
       const after = blastLand(l.owner, l.level, l.type, ctx.priceIndex, ALIEN_BLAST_HEAVY !== 0);
       if (after.owner === l.owner && after.level === l.level && after.type === l.type) continue;
-      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner });
+      landMutations.push({ id: l.id, level: after.level, type: after.type, owner: after.owner, tenure: 0 });
     }
 
     // ②b 設施：重击支与 `mutate_land` 的 **mode 1** 逐字相同
@@ -913,6 +990,8 @@ export function applyNewsEffect(
     const releaseFlags: boolean[] = [];
     for (const f of facilities) {
       if (!inBlast(f)) continue;
+      // ★ 同上：没盖过又没主的設施不在 id 图里（`0x4093f3..0x409488`）
+      if (!boardInstancePresent(f.level, f.owner)) continue;
       const after = mutateFacility(f, MUTATE_CLEAR_OWNER);
       releaseFlags.push(after.releasesConfined);
       facilityMutations.push({
@@ -920,12 +999,12 @@ export function applyNewsEffect(
         level: after.facility.level,
         type: after.facility.type,
         owner: after.facility.owner,
+        tenure: 0,
       });
     }
 
     // ③ 范围里的人：`0x40cd07`（毁车 + 挂「被炸」位）→ `send_to_hospital(玩家, 3)`
-    //    复刻对「谁在范围里」用的是既有的近似：玩家的**节点**落在爆心方窗内
-    //    （与 `fireMissile` 的 `hitNodes` 同一条口径）。
+    //    判据 = 玩家**自己那粒实例**（站在节点上时锚点就是节点坐标）落在窗里。
     const nodes = ctx.nodes ?? [];
     const hitNodes = new Set<number>();
     for (const n of nodes) if (inBlast(n)) hitNodes.add(n.id);
@@ -965,6 +1044,8 @@ export function applyNewsEffect(
         ALIEN_HOSPITAL_DAYS,
         prison,
         ctx.landscapes,
+        // 3 天 ⇒ `0x44f2c2` 不掷；照样传，口径统一
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       nextPlayers = c.players.map((q) => ({ ...q }));
       nextObjects = c.objects;
@@ -983,6 +1064,8 @@ export function applyNewsEffect(
       landMutations,
       facilityMutations,
       ...(blastedHospital.length === 0 ? {} : { blastedHospital }),
+      // ★ 爆心坐标 → 镜头（`view_to(x, y, 2)` @ 0x0044921d）；见 `NewsEffectResult.blastOrigin`
+      blastOrigin: origin,
       // 没给 `ctx.toolStock` 就不带这个字段（与 `fortune-effects.ts` 10/11 同一约定）
       ...(ctx.toolStock === undefined ? {} : { toolStock }),
     };
@@ -1001,11 +1084,17 @@ export function applyNewsEffect(
     }
     const pick = rng.below(lands.length + facilities.length);
     if (pick < lands.length) {
-      const name = lands[pick]!.name;
+      const picked = lands[pick]!;
+      const name = picked.name;
+      // ★ 挑中的那一处（訊息框 `%s` 的地名、镜头 `view_to` @ 0x0044a7ef）+ 标白的同名地块
+      //   （`0x0044a846`：strcmp 相等就标，**不看等级**）—— 见 `NewsEffectResult.flashLots`
+      const place = { entity: ESTATE_LAND_BASE + picked.id, owner: picked.owner };
+      const flashLots: number[] = [];
       const landMutations: LandMutation[] = [];
       const releaseFlags: boolean[] = [];
       for (const l of lands) {
         if (l.name !== name) continue;
+        flashLots.push(ESTATE_LAND_BASE + l.id);
         const after = mutateLand(l, MUTATE_DEMOLISH_ONE);
         if (!after.changed) continue;
         releaseFlags.push(after.releasesConfined);
@@ -1021,13 +1110,20 @@ export function applyNewsEffect(
         players: applyRelease(base.players, releaseFlags),
         amount: landMutations.length,
         landMutations,
+        place,
+        flashLots,
       };
     }
     const fac = facilities[pick - lands.length]!;
+    // ★ 設施那一支只标它自己（`0x0044a8d3`，实体 = `[0x48c59c]`）
+    const place = { entity: ESTATE_FACILITY_BASE + fac.id, owner: fac.owner };
+    const flashLots = [place.entity];
     const after = mutateFacility(fac, MUTATE_DEMOLISH_ONE);
-    if (!after.changed) return { ...base, amount: 0 };
+    if (!after.changed) return { ...base, amount: 0, place, flashLots };
     return {
       ...base,
+      place,
+      flashLots,
       players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [
@@ -1066,24 +1162,44 @@ export function applyNewsEffect(
     const total = landCand.length + facCand.length;
     if (total === 0) return { ...base, amount: 0 };
     const pick = rng.below(total);
+    // ★ 挑中的那一处 —— **改没改动都带**（原版 pass 0 已把名字填进訊息框、
+    //   pass 1 照样 `view_to` + 影片；新聞 21 挑到空地时 `mutate_land` 什么都不改）。
+    //   `owner` 取**改之前**的值：原版 pass 0 就 `[0x48c5a0] = byte [实体 + 0x19]`
+    //   （新聞 21 `0x0044ad70..0x0044ad79`；5 / 15 / 19 同形），房主台词看的是它。
+    // ★ 新聞 19「山洪」：挑中那一处标白、一起闪一遍（`0x0044aa9f` → `0x0044aab7`），见 `flashLots`
+    const flashes = entry.effects.includes('clearOwnerAny');
     if (pick < landCand.length) {
       const before = landCand[pick]!;
+      const place = { entity: ESTATE_LAND_BASE + before.id, owner: before.owner };
+      const flash = flashes ? { flashLots: [place.entity] } : {};
       const after = mutateLand(before, razeMode);
-      if (!after.changed) return { ...base, amount: 0 };
+      if (!after.changed) return { ...base, amount: 0, place, ...flash };
       return {
         ...base,
         players: applyRelease(base.players, [after.releasesConfined]),
         amount: 1,
         landMutations: [
-          { id: after.land.id, level: after.land.level, type: after.land.type, owner: after.land.owner },
+          {
+            id: after.land.id,
+            level: after.land.level,
+            type: after.land.type,
+            owner: after.land.owner,
+            ...(razeMode === MUTATE_CLEAR_OWNER ? { tenure: 0 } : {}),
+          },
         ],
+        place,
+        ...flash,
       };
     }
     const before = facCand[pick - landCand.length]!;
+    const place = { entity: ESTATE_FACILITY_BASE + before.id, owner: before.owner };
+    const flash = flashes ? { flashLots: [place.entity] } : {};
     const after = mutateFacility(before, razeMode);
-    if (!after.changed) return { ...base, amount: 0 };
+    if (!after.changed) return { ...base, amount: 0, place, ...flash };
     return {
       ...base,
+      place,
+      ...flash,
       players: applyRelease(base.players, [after.releasesConfined]),
       amount: 1,
       facilityMutations: [
@@ -1092,6 +1208,7 @@ export function applyNewsEffect(
           level: after.facility.level,
           type: after.facility.type,
           owner: after.facility.owner,
+          ...(razeMode === MUTATE_CLEAR_OWNER ? { tenure: 0 } : {}),
         },
       ],
     };
@@ -1242,7 +1359,10 @@ export function applyNewsEffect(
     const market = ctx.market;
     if (market === undefined) return { ...base, unimplemented: true };
     const stocks = market.stocks.map((s) => ({ ...s, newsFlag: flag }));
-    return { ...base, amount: 1, market: { ...market, stocks } };
+    // ★★ 2026-09-24（provenance 审计）：写完标记**当场改价** —— `0x0044b049 push 0 / 0x0044b04b call 0x429040`
+    //   （25 在 `0x0044b094/0x0044b096`）：参数 0 = 全部 12 支，按新标记重算趋势 ±10、今日价、并覆盖当天那笔历史。
+    //   先前只写标记 ⇒ 今天的价、身家、同日交易都还是旧价，要等明天的日推进才动。
+    return { ...base, amount: 1, market: applyStockNews({ ...market, stocks }, 0) };
   }
 
   // ── 新聞 26「股市暫停交易１０天」──────────────────────────────
@@ -1326,6 +1446,7 @@ export function applyNewsEffect(
       const each = perPlayer(p, who, ctx);
       shares.push({ player: who, amount: each });
       if (each <= 0) continue;
+      if (entry.effects.includes('pay') && ctx.deferTaxPayments === true) continue;
       if (entry.effects.includes('pay')) {
         const r = transferMoney(players, [], pool, who, PARTY_POOL, each, 0);
         players = r.players;
@@ -1391,6 +1512,7 @@ export function applyNewsEffect(
         days,
         other,
         ctx.landscapes,
+        ctx.rng === undefined ? undefined : nextOf(ctx.rng),
       );
       players = out.players;
       objects = out.objects;

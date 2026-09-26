@@ -105,6 +105,10 @@ describe('还款', () => {
 
   it('还款额被负债截断', () => {
     const p = repay(makePlayer({ loan: 10_000 }), 999_999);
+    // ★ 审计补：还款额超过 現金+存款 ⇒ 原样不动（0x0043538c cmp edx, 現金+存款 / jle）
+    const short = makePlayer({ loan: 10_000, cash: 3_000, moneyInBank: 2_000 });
+    expect(repay(short, 6_000)).toBe(short);
+    expect(repay(short, 5_000).loan).toBe(5_000);
     expect(p.loan).toBe(0);
     expect(p.moneyInBank).toBe(40_000); // 只扣了 1 万
   });
@@ -292,18 +296,46 @@ describe('★ 接线：非真人落銀行格时重分，真人不重分', () => 
     });
   }
 
-  it('电脑（who_plays = 2）：settle 时先重分，再开柜台', () => {
+  it('电脑（who_plays = 2）：settle 时先重分，再当场走貸款屏的电脑那一支（不挂柜台）', () => {
     const r = reduce(onBank(WHO_PLAYS_COMPUTER), { type: 'settle' }, topo);
     expect(r.players[0]?.cash).toBe(500);
     expect(r.players[0]?.moneyInBank).toBe(500);
-    expect(r.pending?.kind).toBe('bank');
+    // ★ 2026-09-23：电脑**不开**貸款屏 —— `0x004366a3 cmp byte [+0x15],1 / jne 0x4367ab` 那一支当场还 / 借，
+    //   不经 pending（先前这里断言「挂着 bank 柜台」，复述的是让 `decidePending` 代答的旧实现）。
+    //   这位 `loanRatio = 0`（`0x004368e1 test bh,bh / je`）⇒ 什么都不借。
+    expect(r.pending).toBeNull();
+    expect(r.players[0]?.loan).toBe(0);
   });
 
   it('真人（who_plays = 1）：原版走的是 ATM 对话框那一支，不重分', () => {
     const r = reduce(onBank(WHO_PLAYS_HUMAN), { type: 'settle' }, topo);
     expect(r.players[0]?.cash).toBe(0);
     expect(r.players[0]?.moneyInBank).toBe(1000);
-    expect(r.pending?.kind).toBe('bank');
+    // ★ 第十三份试玩回报 #2：先挂 ATM 对话框（`0x0041b396 call 0x4379c9` → `0x00437a71` 模态窗），
+    //   关掉之后才是柜台（`0x0041b3af call 0x436668`）—— 先前这里断言「直接是柜台」，复述的是漏了 ATM 的旧实现
+    expect(r.pending).toEqual({ kind: 'atm', landing: true });
+    expect(reduce(r, { type: 'declineDecision' }, topo).pending?.kind).toBe('bank');
+  });
+
+  it('★★ 电脑重分之后紧跟一次準備金对账（`0x00437c12 push 1 / call 0x436b0a`）：别家存款不够董事長的特別融資 ⇒ 董事長垫差额', () => {
+    const CID = 1;
+    const withBank: MapTopology = {
+      ...topo,
+      commercials: [{
+        id: CID, x: 0, y: 0, name: '測試銀行', stockIndex: 0, landPrice: 500, type: 7,
+        spriteIndex: 0, assetValue: 1_000_000, owner: 0, ranking: [0, 0, 0, 0], funds: 0, profit: 0, shares: 1000,
+      }],
+    };
+    const s0 = onBank(WHO_PLAYS_COMPUTER);
+    // 1 号是銀行董事長、欠特別融資 800；0 号（电脑）存款 1000 重分后只剩 500 ⇒ 缺 300
+    const players = s0.players.map((p, i) => (i === 1 ? { ...p, cash: 0, moneyInBank: 2000, specialFinance: 800 } : p));
+    const commercialOwners = [...s0.commercialOwners];
+    while (commercialOwners.length <= CID) commercialOwners.push({ owner: 0, ranking: [0, 0, 0, 0] });
+    commercialOwners[CID] = { owner: 2, ranking: [2, 0, 0, 0] };
+    const r = reduce({ ...s0, players, commercialOwners }, { type: 'settle' }, withBank);
+    expect(r.players[0]?.moneyInBank).toBe(500);
+    expect(r.players[1]).toMatchObject({ moneyInBank: 1700, specialFinance: 500 });
+    expect(r.notices).toContainEqual({ key: 'bank.reserveShortfall', args: [300, '約翰喬'], holdMs: 2500 });
   });
 
   it('被銀行拒绝往来期内（+0x3b ≠ 0）：连柜台都不开，也不重分', () => {

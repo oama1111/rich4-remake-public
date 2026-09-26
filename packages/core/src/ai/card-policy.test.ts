@@ -14,8 +14,11 @@ import { newStockMarket } from '../places/stock-market.ts';
 import {
   AI_NEVER_PLAYS,
   aiCardChoice,
+  cardLoopEsiAfterFill,
   cardsToConsider,
   mostHated,
+  visibleEntities,
+  visibleRivals,
   type CardAiView,
 } from './card-policy.ts';
 
@@ -86,6 +89,76 @@ describe('共用机制', () => {
     const view = viewOf();
     for (const id of AI_NEVER_PLAYS) expect(aiCardChoice(id, view)).toBeNull();
     expect(aiCardChoice(99, view)).toBeNull();
+  });
+});
+
+// ============================================================
+//  ★★ Q-TOOL-1：视野 = `0x40a45c(-1)` 摊平的那张 440×440 id 图（**屏幕空间**）
+//  镜头位置 = 当前行动者（`0x415e70` 取 `[0x49910c]`），故中心就是我的节点。
+//  下面的实测投影偏移（视角 0、镜头 (0,0)）来自 `rules/board-window.test.ts` 的预言机。
+// ============================================================
+
+describe('★★ 视野（Q-TOOL-1，@source 0x40a45c 的 -1 那一档）', () => {
+  /** 我站节点 1 (0,0)，且节点 1 上挂地块 1（`visibleEntities` 是按**节点**枚举实体的） */
+  const meAt0 = (extra: MapNode[]): MapNode[] => [
+    makeNode({ id: 1, x: 0, y: 0, ref: { kind: 'land', index: 1 } }),
+    ...extra,
+  ];
+
+  it('世界 +x 200 的地块**不在**画面里（投影 px = 224 > 220）—— 旧的节点方框会误判', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 200, y: 0, ref: { kind: 'land', index: 2 } })]);
+    const lands = [
+      makeLand({ id: 1, x: 0, y: 0, owner: 1 }),
+      makeLand({ id: 2, x: 200, y: 0, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([1]);
+  });
+
+  it('世界 +y 220 的地块**在**画面里（投影 (101,175)）—— 旧的节点方框也会误判', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 0, y: 220, ref: { kind: 'land', index: 2 } })]);
+    const lands = [
+      makeLand({ id: 1, x: 0, y: 0, owner: 1 }),
+      makeLand({ id: 2, x: 0, y: 220, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([1, 2]);
+  });
+
+  it('锚点是**记录自己的 x/y**：节点出画、记录在画面里的地块照样进候选（反之亦然）', () => {
+    // 节点 2 在世界 (0,0)（画面正中），它那块地的记录却在 (400,0)（投影早已出窗）；
+    // 节点 3 在世界 (200,0)（出窗），它那块地的记录贴着镜头 (0,10) ⇒ 在窗里。
+    const nodes = meAt0([
+      makeNode({ id: 2, x: 0, y: 0, ref: { kind: 'land', index: 2 } }),
+      makeNode({ id: 3, x: 200, y: 0, ref: { kind: 'land', index: 3 } }),
+    ]);
+    const lands = [
+      makeLand({ id: 2, x: 400, y: 0, owner: 1 }),
+      makeLand({ id: 3, x: 0, y: 10, owner: 1 }),
+    ];
+    expect(visibleEntities(viewOf({ nodes, lands })).map((e) => e.id)).toEqual([3]);
+  });
+
+  it('id 图上没有实例的地块/設施不进候选（没房子又没主）', () => {
+    const nodes = meAt0([
+      makeNode({ id: 2, x: 10, y: 0, ref: { kind: 'land', index: 2 } }),
+      makeNode({ id: 3, x: 20, y: 0, ref: { kind: 'facility', index: 2 } }),
+      makeNode({ id: 4, x: 30, y: 0, ref: { kind: 'land', index: 3 } }),
+    ]);
+    const lands = [
+      makeLand({ id: 2, x: 10, y: 0, level: 0, owner: 0 }), // 空、无主 ⇒ 不在图上
+      makeLand({ id: 3, x: 30, y: 0, level: 0, owner: 2 }), // 无主但**有主**的另一种：在图上
+    ];
+    const facilities = [makeFacility({ id: 2, x: 20, y: 0, level: 0, owner: 0 })];
+    expect(
+      visibleEntities(viewOf({ nodes, lands, facilities })).map((e) => `${e.kind}${e.id}`),
+    ).toEqual(['land3']);
+  });
+
+  it('对手按**节点**（棋子站在节点上）：世界 +x 200 的看不见，+y 220 的看得见', () => {
+    const nodes = meAt0([makeNode({ id: 2, x: 200, y: 0 }), makeNode({ id: 3, x: 0, y: 220 })]);
+    const players = [0, 1, 2, 3].map((i) =>
+      makePlayer({ index: i, nodeId: i === 0 ? 1 : i === 1 ? 2 : i === 2 ? 3 : 2 }),
+    );
+    expect(visibleRivals(viewOf({ nodes, players }))).toEqual([2]);
   });
 });
 
@@ -353,6 +426,38 @@ describe('12 拆除卡（0x0041f6a9）', () => {
   });
 });
 
+describe('12 拆除卡 —— 审计订正（ai-move）：画面清单一趟扫完', () => {
+  it('★★ 画面上方的对手路障先于下方的连锁店（旧实现先扫完地块再扫物件）', () => {
+    const chain = [3, 4, 5, 6].map((id, k) => makeLand({ id, owner: 2, type: 1, level: 0, name: `C${k}` }));
+    const rival = makeLand({ id: 7, owner: 3, level: 1, name: 'R' });
+    // 连锁店在 y = 50；对手的地（上面压着路障）在 y = -50
+    const nodes = [
+      makeNode({ id: 1 }),
+      ...[3, 4, 5, 6].map((id, k) => landNode(k + 2, id, (k + 1) * 10, 50)),
+      landNode(6, 7, 0, -50),
+    ];
+    const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i, personality: 1 }));
+    const state = makeGameState();
+    state.objects[24]!.nodeId = 6; // 下标 24 → 类型 16 路障
+    const view = viewOf({ players, nodes, lands: [...chain, rival], state: { objects: state.objects } });
+    expect(aiCardChoice(12, view)).toEqual({ target: { kind: 'object', objectIndex: 25 } });
+    // 路障挪到连锁店下方 → 连锁店先中
+    const below = [...nodes.slice(0, 5), landNode(6, 7, 0, 90)];
+    state.objects[24]!.nodeId = 6;
+    const view2 = viewOf({ players, nodes: below, lands: [...chain, rival], state: { objects: state.objects } });
+    expect(aiCardChoice(12, view2)).toEqual({ target: { kind: 'land', landId: 3 } });
+  });
+
+  it('★ 附在人身上的物件不在画面清单里（0x00409e8b 跳过 +0x05 ≠ 0）', () => {
+    const rival = makeLand({ id: 7, owner: 3, level: 1, name: 'R' });
+    const nodes = [makeNode({ id: 1 }), landNode(2, 7, 0, -50)];
+    const state = makeGameState();
+    state.objects[24]!.nodeId = 2;
+    state.objects[24]!.attached = 2;
+    expect(aiCardChoice(12, viewOf({ nodes, lands: [rival], state: { objects: state.objects } }))).toBeNull();
+  });
+});
+
 describe('13 搶奪卡（0x0041f901）', () => {
   it('最恨的人手里 f7 ≥ 1 最贵的一张 → 偷它', () => {
     const players = [0, 1, 2, 3].map((i) => makePlayer({ index: i }));
@@ -575,6 +680,78 @@ describe('27 漲價卡（0x0042040e）', () => {
     expect(aiCardChoice(27, viewOf({ nodes, facilities: [hotel] }))).toEqual({
       target: { kind: 'facility', facilityId: 1 },
     });
+  });
+});
+
+describe('27 漲價卡 —— 审计订正（ai-move）', () => {
+  // ★★ `0x0042056e fcomp qword [0x463d38]` —— 那个常数是 double **0.66**，不是 0.5
+  it('★★ 我占一半（1/2）→ 不涨：比例门槛是 0.66', () => {
+    const lands = [
+      makeLand({ id: 1, owner: 1, level: 5, name: 'A' }),
+      makeLand({ id: 2, owner: 1, level: 4, name: 'A' }),
+      makeLand({ id: 3, owner: 2, level: 1, name: 'A' }),
+      makeLand({ id: 4, owner: 0, level: 0, name: 'A' }),
+    ];
+    const nodes = [makeNode({ id: 1 }), landNode(2, 1, 10, 0)];
+    expect(aiCardChoice(27, viewOf({ nodes, lands }))).toBeNull();
+    // 2/3 ≥ 0.66 → 涨
+    expect(aiCardChoice(27, viewOf({ nodes, lands: lands.slice(0, 3) }))).toEqual({
+      target: { kind: 'land', landId: 1 },
+    });
+  });
+
+  it('★★ 33/50 恰好 0.66 → 涨（`jb` 只挡小于）', () => {
+    const lands: LandInfo[] = [];
+    for (let i = 1; i <= 50; i++) {
+      lands.push(makeLand({ id: i, owner: i <= 33 ? 1 : 0, level: i <= 2 ? 4 : 0, name: 'A' }));
+    }
+    const nodes = [makeNode({ id: 1 }), landNode(2, 1, 10, 0)];
+    expect(aiCardChoice(27, viewOf({ nodes, lands }))).toEqual({ target: { kind: 'land', landId: 1 } });
+    lands[32] = makeLand({ id: 33, owner: 0, level: 0, name: 'A' }); // 32/50 = 0.64
+    expect(aiCardChoice(27, viewOf({ nodes, lands }))).toBeNull();
+  });
+
+  // ★★ `0x004205f6 mov [esp+4], esi` —— 「目前最高等级」被写成了 esi（出牌主循环的残值）
+  const twoHotels = () => ({
+    nodes: [makeNode({ id: 1 }), facilityNode(2, 1, 10, 0), facilityNode(3, 2, 20, 0)],
+    facilities: [
+      makeFacility({ id: 1, owner: 1, type: FACILITY_TYPE.hotel, level: 3 }),
+      makeFacility({ id: 2, owner: 1, type: FACILITY_TYPE.mall, level: 5 }),
+    ],
+  });
+
+  it('★★ 手牌 ≤ 8（esi = 8）：只有**第一栋**合格的設施会被选中', () => {
+    expect(aiCardChoice(27, { ...viewOf(twoHotels()), cardLoopEsi: 8 })).toEqual({
+      target: { kind: 'facility', facilityId: 1 },
+    });
+    // 缺省即 8
+    expect(aiCardChoice(27, viewOf(twoHotels()))).toEqual({ target: { kind: 'facility', facilityId: 1 } });
+  });
+
+  it('★★ esi = 3：第二栋 5 级 > 3 → 改选它；esi = 0：整支落空（收尾 `cmp [esp+4], 0 / je`）', () => {
+    expect(aiCardChoice(27, { ...viewOf(twoHotels()), cardLoopEsi: 3 })).toEqual({
+      target: { kind: 'facility', facilityId: 2 },
+    });
+    expect(aiCardChoice(27, { ...viewOf(twoHotels()), cardLoopEsi: 0 })).toBeNull();
+  });
+
+  it('★★ 先处理过地块：esi = 同街循环的出口下标（地块数 + 1）', () => {
+    // 地块 1（我的 1 级，涨不了）在画面最上方 → esi = 地块数 + 1 = 3；之后 3 级旅馆 > 0 → 最高 = 3；
+    // 5 级商场 > 3 → 改选商场
+    const f = twoHotels();
+    const nodes = [makeNode({ id: 1 }), landNode(9, 1, 0, -10), ...f.nodes.slice(1)];
+    const lands = [makeLand({ id: 1, owner: 1, level: 1, name: 'A' }), makeLand({ id: 2, owner: 0, name: 'B' })];
+    expect(aiCardChoice(27, { ...viewOf({ ...f, nodes, lands }), cardLoopEsi: 0 })).toEqual({
+      target: { kind: 'facility', facilityId: 2 },
+    });
+  });
+
+  it('出牌主循环填表后的 esi：≤ 8 张恒为 8；> 8 张 = (起点 + 8) % 张数', () => {
+    expect(cardLoopEsiAfterFill(3, 0)).toBe(8);
+    expect(cardLoopEsiAfterFill(8, 0)).toBe(8);
+    expect(cardLoopEsiAfterFill(10, 1)).toBe(9);
+    expect(cardLoopEsiAfterFill(10, 2)).toBe(0);
+    expect(cardLoopEsiAfterFill(12, 7)).toBe(3);
   });
 });
 

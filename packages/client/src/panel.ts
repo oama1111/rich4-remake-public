@@ -20,8 +20,15 @@
 
 import { PANEL_PAGE_COUNT, panelValues, type GameState, type MapTopology } from '@rich4/core';
 
+/**
+ * ★ 第十九份（iPhone 发烫）：側欄每帧都格式化这几行，`toLocaleString('en-US')` 每次都现建一个
+ *   `Intl.NumberFormat`（实测是每帧 JS 里最重的一项）。同一 locale、同一（缺省）选项的
+ *   `NumberFormat#format` 按规范就是 `Number#toLocaleString` 的实现 —— 输出逐字相同。
+ */
+const EN_US = new Intl.NumberFormat('en-US');
+
 /** 货币串 —— 原版 `rich4_num_to_currency_string` 输出带千分位的 `$` 前缀 */
-export const currency = (n: number): string => `$${n.toLocaleString('en-US')}`;
+export const currency = (n: number): string => `$${EN_US.format(n)}`;
 
 /** 某一页三行的最终文字，顺序与标签一一对应 */
 export function panelRows(

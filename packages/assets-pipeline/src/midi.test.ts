@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { DEFAULT_TEMPO_US, MidiFormatError, parseMidi } from './midi.ts';
+import { DEFAULT_BEND_RANGE_SEMITONES, DEFAULT_TEMPO_US, MidiFormatError, parseMidi } from './midi.ts';
 import { MIDI_PLAYLIST } from './audio.ts';
 
 const GAME = (process.env.RICH4_WORKSPACE ?? '') + '/rich4-remake/assets/game';
@@ -112,6 +112,121 @@ describe('基本解析', () => {
   });
 });
 
+// ============================================================
+//  ★ 弯音（第十二份試玩回報「背景音乐卡住了」）
+//  先前 0xE0 整条丢掉 ⇒ 靠弯音换和弦的长音被弹成一个死和弦。
+//  96 tick / 四分、120 BPM ⇒ 96 tick = 0.5 s
+// ============================================================
+
+describe('★ 弯音 0xE0 / RPN 0 / CC121', () => {
+  it('缺省幅度 ±2 半音（GM1 上电值）', () => {
+    expect(DEFAULT_BEND_RANGE_SEMITONES).toBe(2);
+  });
+
+  it('★★ 按住的音：途中的弯音逐条记到音符上（相对起音的秒数 + 半音）', () => {
+    const song = parseMidi(
+      buildSmf([
+        0x00, 0x92, 69, 100, // t=0 ch2 note on A4
+        0x30, 0xe2, 0x00, 0x00, // +48 tick（0.25 s）弯到最低 0x0000 = −2 半音
+        0x30, 0xe2, 0x00, 0x40, // +48 tick（0.5 s）回中 0x2000
+        0x30, 0x82, 69, 0, // +48 tick（0.75 s）note off
+        0x00, 0xff, 0x2f, 0x00,
+      ]),
+    );
+    expect(song.notes).toHaveLength(1);
+    const n = song.notes[0]!;
+    expect(n.bend).toBeUndefined(); // 起音时没弯
+    expect(n.bends).toHaveLength(2);
+    expect(n.bends![0]!.at).toBeCloseTo(0.25, 6);
+    expect(n.bends![0]!.semitones).toBeCloseTo(-2, 9);
+    expect(n.bends![1]!.at).toBeCloseTo(0.5, 6);
+    expect(n.bends![1]!.semitones).toBe(0);
+  });
+
+  it('★ 起音前就弯着 ⇒ 记在 `bend` 上；别的通道的弯音不串过来', () => {
+    const song = parseMidi(
+      buildSmf([
+        0x00, 0xe1, 0x00, 0x60, // ch1 0x3000 = +1 半音
+        0x00, 0xe3, 0x00, 0x00, // ch3 弯到底（不该影响 ch1）
+        0x00, 0x91, 60, 100,
+        0x60, 0x81, 60, 0,
+        0x00, 0xff, 0x2f, 0x00,
+      ]),
+    );
+    expect(song.notes[0]!.bend).toBeCloseTo(1, 9);
+    expect(song.notes[0]!.bends).toBeUndefined();
+  });
+
+  it('★ RPN 0（CC101=0 / CC100=0 / CC6 半音 / CC38 音分）改幅度', () => {
+    const song = parseMidi(
+      buildSmf([
+        0x00, 0xb0, 101, 0,
+        0x00, 0xb0, 100, 0,
+        0x00, 0xb0, 6, 12, // ±12 半音
+        0x00, 0xb0, 38, 0,
+        0x00, 0xe0, 0x00, 0x00, // 弯到底 ⇒ −12
+        0x00, 0x90, 60, 100,
+        0x60, 0x80, 60, 0,
+        0x00, 0xff, 0x2f, 0x00,
+      ]),
+    );
+    expect(song.notes[0]!.bend).toBeCloseTo(-12, 9);
+  });
+
+  it('★ CC6 只在 RPN 0 选中时算幅度（选的是别的 RPN ⇒ 不动）', () => {
+    const song = parseMidi(
+      buildSmf([
+        0x00, 0xb0, 101, 0,
+        0x00, 0xb0, 100, 1, // RPN 0/1 = 微调，不是弯音幅度
+        0x00, 0xb0, 6, 12,
+        0x00, 0xe0, 0x00, 0x00,
+        0x00, 0x90, 60, 100,
+        0x60, 0x80, 60, 0,
+        0x00, 0xff, 0x2f, 0x00,
+      ]),
+    );
+    expect(song.notes[0]!.bend).toBeCloseTo(-2, 9);
+  });
+
+  it('★ CC121（Reset All Controllers）⇒ 弯音回中，按着的音也跟着回来', () => {
+    const song = parseMidi(
+      buildSmf([
+        0x00, 0xe0, 0x00, 0x00, // −2
+        0x00, 0x90, 60, 100,
+        0x30, 0xb0, 121, 0, // +0.25 s 复位
+        0x30, 0x80, 60, 0,
+        0x00, 0xff, 0x2f, 0x00,
+      ]),
+    );
+    const n = song.notes[0]!;
+    expect(n.bend).toBeCloseTo(-2, 9);
+    expect(n.bends).toEqual([{ at: 0.25, semitones: 0 }]);
+  });
+
+  it('不带弯音的音符形状不变（没有 bend / bends 两个键）', () => {
+    const song = parseMidi(
+      buildSmf([0x00, 0x90, 60, 100, 0x60, 0x80, 60, 0, 0x00, 0xff, 0x2f, 0x00]),
+    );
+    expect(Object.keys(song.notes[0]!).sort()).toEqual(['channel', 'duration', 'note', 'program', 'time', 'velocity']);
+  });
+
+  run('★★ 真值：midi07（百貨公司/樂透）2 号通道那组 23.9 秒长音靠弯音在 A ↔ G 之间来回', () => {
+    const song = parseMidi(load('midi07.mid'));
+    const pad = song.notes.filter((n) => n.channel === 2 && n.time === 0);
+    // 61/64/69 = A 大三和弦，Synth Strings（program 50），从头按住 23.9 秒
+    expect(pad.map((n) => n.note).sort((a, b) => a - b)).toEqual([61, 64, 69]);
+    for (const n of pad) {
+      expect(n.program).toBe(50);
+      expect(n.duration).toBeGreaterThan(23);
+      const values = (n.bends ?? []).map((b) => b.semitones);
+      // 扫到 −2 半音（= G 大三和弦）再回 0 —— 不认弯音就是 24 秒一个死和弦
+      expect(Math.min(...values)).toBeCloseTo(-2, 9);
+      expect(values).toContain(0);
+      expect(values.length).toBeGreaterThan(100);
+    }
+  });
+});
+
 describe('★ 原版那 25 首都能解开', () => {
   run('每一首都解得出音符，时长合理', () => {
     for (const f of MIDI_PLAYLIST) {
@@ -125,6 +240,24 @@ describe('★ 原版那 25 首都能解开', () => {
         expect(n.note, f).toBeGreaterThanOrEqual(0);
         expect(n.note, f).toBeLessThanOrEqual(127);
         expect(n.duration, f).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  run('★ 第十七份：弯音全是有限值、幅度 ≤ 12 半音，且都落在音符的发声期内（不会把振荡器推到奇怪的频率）', () => {
+    // 25 首里 RPN 0 只改过 12 / 2 / 2.44 半音（Rich08/16/17/20/21），14 位满偏 × 幅度 ⇒ |弯音| ≤ 12
+    for (const f of MIDI_PLAYLIST) {
+      if (!has(f)) continue;
+      for (const n of parseMidi(load(f)).notes) {
+        const all = [n.bend ?? 0, ...(n.bends ?? []).map((b) => b.semitones)];
+        for (const v of all) {
+          expect(Number.isFinite(v), f).toBe(true);
+          expect(Math.abs(v), f).toBeLessThanOrEqual(12);
+        }
+        for (const b of n.bends ?? []) {
+          expect(b.at, f).toBeGreaterThanOrEqual(0);
+          expect(b.at, f).toBeLessThanOrEqual(n.duration);
+        }
       }
     }
   });

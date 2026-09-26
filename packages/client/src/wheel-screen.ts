@@ -26,7 +26,7 @@
  * | 圓盤落點 **(0xdc, 0x140) = (220,320)** | 0x004409ce / 0x004409d3；轉動中 0x0043f17d / 0x0043f182 |
  * | 天使常態 = 圖 **0**（75×61，錨點 (−6,0)），落點 **(0x109, 0xe6) = (265,230)** | 0x004409fe `add eax,0xc` |
  * | 天使轉動 = 圖 **1**（87×61，錨點 (0,0)），同一落點 | 0x0043f1cc `add eax,0x18` |
- * | 對話氣泡 = `Data.mkf` **資源 0x205 = 517，圖 6**（271×199，錨點 (127,92)）| 0x004409b6 `mov eax,[0x48bad8]` + 0x004409bb `add eax,0x48`；載入點 rich4_load_map.asm:576 |
+ * | 對話框 = `Data.mkf` **資源 0x205 = 517，圖 5**（249×170，錨點 (123,101)，棕色金邊訊息框）| 0x004409b6 `mov eax,[0x48bad8]` + 0x004409bb `add eax,0x48` ⇒ `(0x48−0xc)/12 = 5`；載入點 rich4_load_map.asm:576 |
  * | 氣泡落點 **(0xdc, 0x8c) = (220,140)** | 0x004409ac `push 0x8c` / 0x004409b1 `push 0xdc` |
  * | 氣泡文字 = 表 `0x475cf8` 的第 `轉盤` 項，`sprintf(buf, 該串, 地主名)`，畫在 **(220,140) flag 4（正中）** | 0x00440a20 / 0x00440a35 |
  * | 字級 **0x10 = 16**、內文 `0xf0f0f0`、陰影 `0x101010`（1px 右下）| 0x0044094e `_rich4_create_font`；陰影畫法 0x0044fc31 起 |
@@ -93,7 +93,6 @@ import {
   WHEEL_SLOTS,
   WHEEL_TABLE,
   WHO_PLAYS_HUMAN,
-  WHO_PLAYS_MASK,
   WatcomRng,
   addInsuranceDays,
   effectiveFacility,
@@ -103,9 +102,10 @@ import {
   type GameState,
   type MapTopology,
 } from '@rich4/core';
-import { FONT_FAMILY } from './font.ts';
+import { drawGdiText } from './font.ts';
 import type { ArchiveName, Sprite } from './assets.ts';
 import type { UiScreen, UiScreenEnv, UiKeyEvent} from './ui-screen.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 取圖（與 `main.ts` 的 `spriteNow` 同一個簽名） */
 export type WheelSprite = (
@@ -157,12 +157,15 @@ export function wheelDiscChunk(slot: number): number {
 }
 
 /**
- * 對話氣泡：`Data.mkf` **資源 517（0x205）圖 6**，271×199，錨點 (127,92)。
+ * 對話框：`Data.mkf` **資源 517（0x205）圖 5**，249×170，錨點 (123,101) —— 棕色金邊的**訊息框**，
+ * 與詢問框 / 訊息框 / 神明老虎機同一張（`gameui.ts` 的 `DIALOG_SKIN_IMAGE`）。
  *
  * @source 載入點 `rich4_load_map.asm:576`（`_read_mkf(data_mkf, 0x205, 0, 0)`）；
- *   繪製點 0x004409bb `add eax,0x48`（0x48/12 = 圖 6）。
+ *   繪製點 0x004409bb `add eax,0x48`：精靈記錄從 `+0x0c` 起每張 12 字節 ⇒ `(0x48 − 0x0c) / 12 = 5`。
+ *   ★ 2026-09-23 訂正：先前寫成「0x48/12 = 圖 6」（漏減 0x0c 表頭），畫成了 `player_say` 的
+ *   紅邊雲朵（圖 6，只有 0x0044f028 `add eax,0x54` 用它）。`dialog-templates.test.ts` 逐字節釘住。
  */
-export const WHEEL_BUBBLE = { archive: 'Data.mkf', resource: 0x205, image: 6 } as const;
+export const WHEEL_BUBBLE = { archive: 'Data.mkf', resource: 0x205, image: 5 } as const;
 
 /**
  * 氣泡裡的兩行字 —— 表 `0x475cf8` 指到的四個串，**逐字照抄**（Big5）。
@@ -237,8 +240,6 @@ export const WHEEL_TEXT = {
   lineGap: 6,
 } as const;
 
-/** 舞台字體（與其他屏同一套 CJK 字體棧）*/
-const WHEEL_FONT = FONT_FAMILY;
 
 // ============================================================
 //  幀序（純函式，單測釘住）
@@ -506,8 +507,8 @@ export function wheelCue(
   if (node === undefined || node.specialKind !== 0) return null;
   // ★ 一個 rand() 都沒取 = 這一趟沒有轉盤（免收那三條 / 不取隨機數的行業）
   if (before.rngState === after.rngState) return null;
-  const human =
-    (p.whoPlays & WHO_PLAYS_MASK) === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0;
+  // @source `0x0043f84f cmp byte [+0x15], 1 / ja` / `0x0043fa6d cmp byte [+0x15], 1 / jne` —— ★ 整字节：託管不算真人（2026-09-23 订正）
+  const human = p.whoPlays === WHO_PLAYS_HUMAN && p.blocking.sleepWalking === 0;
   const slots = (wheel: number): Pick<WheelCue, 'start' | 'stop' | 'value'> => {
     const start = new WatcomRng(before.rngState).next() % WHEEL_SLOTS;
     const stop = firstFilledSlot(wheel, start);
@@ -590,7 +591,7 @@ export interface WheelDraw {
 /** 錨點落點繪製 @source `fcn_00456418`（`to_left = x − src->x`）*/
 function drawAnchored(ctx: CanvasRenderingContext2D, s: Sprite | null, x: number, y: number): void {
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 三張圖原版都走帶透明的 `fcn_00456418`（0x004409c6 / 0x0043f1ae / 0x0043f1d7）*/
@@ -639,17 +640,19 @@ export function drawWheelScreen(
   const lines = d.text.split('\n');
   if (lines.length === 0) return;
   const lh = WHEEL_TEXT.size + WHEEL_TEXT.lineGap;
-  ctx.font = `${WHEEL_TEXT.size}px ${WHEEL_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
     if (line === '') return;
     const y = WHEEL_TEXT_AT.y + (i - (lines.length - 1) / 2) * lh;
-    // 陰影：原地往右下 1px 再畫一遍 @source 0x0044fd54 起那三趟 DrawTextA
-    ctx.fillStyle = WHEEL_TEXT.shadow;
-    ctx.fillText(line, WHEEL_TEXT_AT.x + 1, y + 1);
-    ctx.fillStyle = WHEEL_TEXT.fill;
-    ctx.fillText(line, WHEEL_TEXT_AT.x, y);
+    // 粗体 + 右下 1 px 阴影（`create_font(…, 3, 1)` 的 bit1 / bit0，@source 0x0044fa3f / 0x0044fc31）
+    drawGdiText(ctx, line, WHEEL_TEXT_AT.x, y, {
+      size: WHEEL_TEXT.size,
+      color: WHEEL_TEXT.fill,
+      color2: WHEEL_TEXT.shadow,
+      flags: 3,
+      spacing: 1,
+    });
   });
 }
 
@@ -667,20 +670,45 @@ interface WheelPlayback {
 /** 現在正在播的那一段；`null` = 沒在播 */
 let playback: WheelPlayback | null = null;
 
+/**
+ * ★ 第十五份：已 diff 出、还没起播的那一盘（台上还有角色台词 —— 原版 `player_say` 阻塞，
+ *   说完才轮到 `0x44090e`；气泡与转盘不同屏）。`active()` 算它，免得没人叫 `tick`。
+ */
+let pendingCue: WheelCue | null = null;
+
+/** 起播闸（宿主给：`true` = 还不能起播）—— 与 `god-slot.ts` / `notice-box-screen.ts` 同一个形状 */
+let startGate: (() => boolean) | null = null;
+
+export function setWheelStartGate(f: (() => boolean) | null): void {
+  startGate = f;
+}
+
 /** 调试 / 单测用：把整屏关掉 */
 export function resetWheelScreen(): void {
   playback = null;
+  pendingCue = null;
+}
+
+/** 起播那一下：循環音 52 @source 0x0043f80d（flags = `ebx` = 1 = DSBPLAY_LOOPING）*/
+function beginWheel(cue: WheelCue, env: UiScreenEnv): void {
+  playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
+  env.playEffect(WHEEL_SPIN_SOUND, true);
+  env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
+  env.requestRender();
 }
 
 /** 给单测的只读视图 */
 export function wheelScreenState(): {
   playing: boolean;
+  /** ★ 第十五份：已 diff 出、等台词说完才起播 */
+  pending: boolean;
   cue: WheelCue | null;
   slot: number;
   landed: boolean;
 } {
   return {
     playing: playback !== null,
+    pending: pendingCue !== null,
     cue: playback?.cue ?? null,
     slot: playback === null ? 0 : wheelSpinSlot(playback.spin),
     landed: playback === null ? false : wheelSpinLanded(playback.spin),
@@ -742,8 +770,11 @@ export const wheelScreen: UiScreen = {
    */
   windowed: true,
 
-  /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關 */
-  active: () => playback !== null,
+  /** 演出期間接管整屏；停完 `WHEEL_HOLD_MS` 自己關（排着没起播的那一盘也算，见 `pendingCue`）*/
+  active: () => playback !== null || pendingCue !== null,
+
+  /** ★ 第十六份：排着等台词说完（见 `UiScreen.pendingOnly`）*/
+  pendingOnly: () => playback === null && pendingCue !== null,
 
   draw(env: UiScreenEnv): void {
     const play = playback;
@@ -777,7 +808,41 @@ export const wheelScreen: UiScreen = {
     clickWheel(env);
     return true;
   },
+
+  /**
+   * 联机旁观：行动者那台已经收场（见 `ui-screen.ts` 的 `fastForward`）⇒ 直接关屏。
+   *
+   * ★ 不看 `wheelClickable`：那是「这一下点击算不算」（电脑的转盘点了不算），
+   *   这里是「行动者那台整段都转完、关掉了」—— 无论谁的转盘都已落定（值在 core 里早算好）。
+   *   还在转就把循环的 52 号停掉（落地那一声 1 不补：他那边早响过了）。
+   */
+  fastForward(env: UiScreenEnv): boolean {
+    const play = playback;
+    if (play === null && pendingCue !== null) {
+      pendingCue = null;
+      env.log('轉盤：跟著行動者收場（未起播）');
+      env.requestRender();
+      return true;
+    }
+    if (play === null) return false;
+    if (play.landedAt === null) env.stopEffect(WHEEL_SPIN_SOUND);
+    playback = null;
+    env.log('轉盤：跟著行動者收場');
+    env.requestRender();
+    return true;
+  },
   tick(env: UiScreenEnv): void {
+    // ★ 第十五份：排着的那一盘 —— 闸一开就在这一拍起播，并自己续帧
+    if (playback === null && pendingCue !== null) {
+      if (startGate?.() === true) {
+        env.requestRender();
+        return;
+      }
+      const cue = pendingCue;
+      pendingCue = null;
+      beginWheel(cue, env);
+      return;
+    }
     const play = playback;
     if (play === null) return;
     if (play.landedAt !== null) {
@@ -813,14 +878,16 @@ export const wheelScreen: UiScreen = {
    *   **起點槽**都反得出來 —— 它就在 `before.rngState` 的第一次 `rand()` 裡。
    */
   event(before: GameState, after: GameState, env: UiScreenEnv): void {
-    if (playback !== null) return; // 上一段還沒播完
+    if (playback !== null || pendingCue !== null) return; // 上一段還沒播完
     if (before === after) return;
     const cue = wheelCue(before, after, env.topo);
     if (cue === null) return;
-    playback = { cue, spin: wheelSpinStart(cue.start, cue.stop, env.now), landedAt: null };
-    // ★ 起播那一下：循環音 52 @source 0x0043f80d（flags = `ebx` = 1 = DSBPLAY_LOOPING）
-    env.playEffect(WHEEL_SPIN_SOUND, true);
-    env.log(`轉盤：起點 ${cue.start} → 落點 ${cue.stop}（${cue.value}）`);
-    env.requestRender();
+    // ★ 第十五份：台上还有气泡 ⇒ 先排着（`tick` 里闸一开再起播）
+    if (startGate?.() === true) {
+      pendingCue = cue;
+      env.requestRender();
+      return;
+    }
+    beginWheel(cue, env);
   },
 };

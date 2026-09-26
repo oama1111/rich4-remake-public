@@ -66,6 +66,7 @@ import { portraitResource, type ArchiveName, type Sprite } from './assets.ts';
 import { currency } from './panel.ts';
 import { inRect } from './gameui.ts';
 import { FONT_FAMILY } from './font.ts';
+import { drawSprite } from './hd-stage.ts';
 
 /** 同步取图（与 `main.ts` 的 `spriteNow` 同一个签名） */
 export type SheetSprite = (
@@ -143,12 +144,26 @@ export function hitSheetExit(x: number, y: number): boolean {
 /** 头像：`map.mkf` 的角色图，锚点落在 (60,100) @source VA 0x4230bf */
 export const SHEET_PORTRAIT_AT = { x: 0x3c, y: 0x64 } as const;
 /**
- * 神明图标：图 `13 + (godInfo − 1)`，锚点落在 (60,188) @source VA 0x4231a1。
- * 表 `0x475464` 是**步长 4** 的 dword 表：`[0, 13, 14, 15, 16]`。
+ * 神明图标：图 `SHEET_GOD_ICON[godInfo]`，锚点落在 (60,188) @source VA 0x4231a1。
+ * @source `0x0042311f mov dl,[p+0x3f] / 0x00423125 mov edx,[edx*4 + 0x475464]` —— 按 **godInfo（物件槽号 + 1）**
+ *   查**步长 4** 的 dword 表 `0x475464`（`disasm.py dump 0x475464 17 4` 原样抄下）。
+ *   ★ 第十二份試玩回報：先前写成 `13 + godInfo − 1`，槽号 1..10 恰好对得上，11 起就错了。
  * `godInfo == 0` 时这一块（连着下面那行天数）**整个不画** @source VA 0x4231a6。
  */
 export const SHEET_GOD_AT = { x: 0x3c, y: 0xbc } as const;
-export const SHEET_GOD_FIRST = 13;
+export const SHEET_GOD_ICON: readonly number[] = [0, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 0, 23, 0, 0, 24, 24];
+/**
+ * 神明图标下面那行「N天」的 N = **该神明物件的剩余任期** `objects[godInfo − 1].state`。
+ * @source `0x00423167 imul eax,[0x48c27c],0x68 / mov al,[eax+0x496ba7]`（godInfo）→ `lea edx,[eax−1]` →
+ *   `0x00423183 mov al,[eax*8 + 0x496d0c]`（物件表步长 24 的 `state` 字节）→ `push 0x463e26`（"%d天"）。
+ * ★ 第十二份試玩回報「大福神时间到了仍然有加盖房屋效果」：先前这里画的是 `insuranceDays`（保險期），
+ *   没投保就一直显示「0天」—— 神明其实还剩 1..7 天，看上去就是「时间到了还在生效」。
+ */
+export function sheetGodDays(state: GameState, player: number): number | null {
+  const me = state.players[player];
+  if (me === undefined || me.godInfo === 0) return null;
+  return state.objects[me.godInfo - 1]?.state ?? 0;
+}
 /** 神明剩餘天数：`(60,234)`、16 号字、flag 2 @source VA 0x42321f */
 export const SHEET_GOD_DAYS = { x: 0x3c, y: 0xea, size: 0x10 } as const;
 
@@ -574,7 +589,7 @@ function drawAnchored(
 ): void {
   const s = sprite(archive, resource, index, colorKeyBlack);
   if (s === null) return;
-  ctx.drawImage(s.bitmap, x - s.anchorX, y - s.anchorY);
+  drawSprite(ctx, s, x - s.anchorX, y - s.anchorY);
 }
 
 /** 16 号白字带深色描边 @source VA 0x423215 `create_font(0, 3, 0x101010, 0xffffff, 0x10)` */
@@ -628,7 +643,7 @@ export function drawAssetSheet(
 ): void {
   // ── 底图（图号 = 视图号）@source VA 0x423088 ──
   const bg = sprite('Panel.mkf', SHEET_RESOURCE, view, false);
-  if (bg !== null) ctx.drawImage(bg.bitmap, 0, 0);
+  if (bg !== null) drawSprite(ctx, bg, 0, 0);
   else {
     ctx.fillStyle = '#1a2030';
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -655,10 +670,10 @@ export function drawAssetSheet(
   if (me !== undefined && me.godInfo !== 0) {
     drawAnchored(
       ctx, sprite, 'Panel.mkf', SHEET_RESOURCE,
-      SHEET_GOD_FIRST + me.godInfo - 1,
+      SHEET_GOD_ICON[me.godInfo] ?? 0,
       SHEET_GOD_AT.x, SHEET_GOD_AT.y, true,
     );
-    blackText(ctx, `${me.insuranceDays}天`, SHEET_GOD_DAYS.x, SHEET_GOD_DAYS.y, SHEET_GOD_DAYS.size, 'center');
+    blackText(ctx, `${sheetGodDays(state, selectedPlayer) ?? 0}天`, SHEET_GOD_DAYS.x, SHEET_GOD_DAYS.y, SHEET_GOD_DAYS.size, 'center');
   }
 
   // ── 12 个行标签 @source VA 0x422443 ──
@@ -680,7 +695,7 @@ export function drawAssetSheet(
     const r = sheetBtnRect(i);
     if (press.btn === i) {
       const plate = sprite('Panel.mkf', SHEET_RESOURCE, SHEET_BTN_PLATE, false);
-      if (plate !== null) ctx.drawImage(plate.bitmap, r.x, r.y);
+      if (plate !== null) drawSprite(ctx, plate, r.x, r.y);
     }
     // 当前视图那颗白字、其余暗灰 @source VA 0x4231e3 的 0xffffff / 0xc0c0c0
     ctx.font = `${SHEET_BTN_TEXT.size}px ${FONT}`;
@@ -700,7 +715,7 @@ export function drawAssetSheet(
       who === selectedPlayer ? SHEET_TAB.sel : SHEET_TAB.normal,
       false,
     );
-    if (tab !== null) ctx.drawImage(tab.bitmap, x - tab.anchorX, SHEET_TAB.y - tab.anchorY);
+    if (tab !== null) drawSprite(ctx, tab, x - tab.anchorX, SHEET_TAB.y - tab.anchorY);
     const p = state.players[who];
     blackText(
       ctx,
@@ -748,7 +763,7 @@ function drawEstateList(
     const x = SHEET_KIND_CELL.x0 + i * SHEET_KIND_CELL.w;
     if (i === press.kind) {
       const plate = sprite('Panel.mkf', SHEET_RESOURCE, SHEET_KIND_CELL.plate, false);
-      if (plate !== null) ctx.drawImage(plate.bitmap, x, SHEET_KIND_CELL.y);
+      if (plate !== null) drawSprite(ctx, plate, x, SHEET_KIND_CELL.y);
     }
     blackText(
       ctx,
@@ -780,7 +795,7 @@ function drawEstateList(
   ] as const) {
     if (press.arrow !== which) continue;
     const arrow = sprite('Panel.mkf', SHEET_RESOURCE, img, false);
-    if (arrow !== null) ctx.drawImage(arrow.bitmap, SHEET_ARROW.x, y0);
+    if (arrow !== null) drawSprite(ctx, arrow, SHEET_ARROW.x, y0);
   }
 }
 
@@ -839,7 +854,7 @@ function drawSummary(
     const { x, y } = sheetCell(k, SHEET_TOOL_GRID_Y0);
     const icon = sprite('Panel.mkf', SHEET_TOOL_RESOURCE, id - 1, true);
     if (icon !== null) {
-      ctx.drawImage(icon.bitmap, x - 0x10 - icon.anchorX, y - icon.anchorY);
+      drawSprite(ctx, icon, x - 0x10 - icon.anchorX, y - icon.anchorY);
     }
     outlinedText(ctx, `×${n}`, x + 0x1e, y, 'right');
     k++;

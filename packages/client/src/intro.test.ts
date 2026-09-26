@@ -93,7 +93,7 @@ function fakeSprite(): { fn: IntroSpriteFn; asked: { res: number; image: number 
   const asked: { res: number; image: number }[] = [];
   const fn: IntroSpriteFn = (_archive, res, image) => {
     asked.push({ res, image });
-    return { bitmap: { res, image } as unknown as CanvasImageSource, anchorX: 0, anchorY: 0 };
+    return { bitmap: { res, image } as unknown as CanvasImageSource, width: 0, height: 0, anchorX: 0, anchorY: 0 };
   };
   return { fn, asked };
 }
@@ -112,7 +112,7 @@ function fakeFlic(spec: Record<number, { frames: number; frameMs: number }>): {
       { length: s.frames },
       (_, i) => ({ res, frame: i }) as unknown as CanvasImageSource,
     );
-    return { frames, frameMs: s.frameMs } satisfies IntroFlic;
+    return { frames, frameMs: s.frameMs, width: 0, height: 0 } satisfies IntroFlic;
   };
   return { fn, asked };
 }
@@ -424,6 +424,19 @@ describe('★ drawIntro 真的把每一段都畫到畫布上', () => {
     expect(s.texts.every((t) => t === INTRO_HINT)).toBe(true);
   });
 
+  it('★ 高清舞台（W-80 §8）：畫布像素 = 邏輯 × s 時「按任意鍵跳過」仍按**邏輯**尺寸排在底部正中', () => {
+    const at: { x: number; y: number }[] = [];
+    const ctx = {
+      canvas: { width: 1280, height: 960 },
+      getTransform: () => ({ a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }),
+      fillRect: () => undefined,
+      fillText: (_t: string, x: number, y: number) => at.push({ x, y }),
+      drawImage: () => undefined,
+    } as unknown as CanvasRenderingContext2D;
+    drawIntro(ctx, 0, {});
+    expect(at.at(0)).toEqual({ x: 320, y: 468 });
+  });
+
   it('三個入口用的都是同一份檔案（jump.mkf）', () => {
     expect(INTRO_ARCHIVE).toBe('jump.mkf');
   });
@@ -441,8 +454,9 @@ describe('★ 宿主接線：交出去的是**全桌**角色，不是 `players[0
   const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
 
   it('★ 交出去的是 `state.players.map(...)`（NPC 也在裡面）', () => {
-    expect(main).toContain('const introCast = state.players.map((p) => p.character);');
-    expect(main).toContain('characters: introCast,');
+    // 审计 #15 起抽成函数（收场判据挪到帧首，两处共用同一份）
+    expect(main).toContain('function introCast(): number[] {\n  return state.players.map((p) => p.character);\n}');
+    expect(main).toContain('characters: introCast(),');
   });
 
   it('★ 舊版那一行（只給 `players[0]`）已經不在了 —— 寫回去就紅', () => {
@@ -450,7 +464,7 @@ describe('★ 宿主接線：交出去的是**全桌**角色，不是 `players[0
   });
 
   it('★ 時長判據吃的是同一份角色表（不是 `Airplane.avi` 的 15 幀）', () => {
-    expect(main).toContain('introDone(introStartedAt, performance.now(), introSkipped, introCast)');
+    expect(main).toContain('introDone(introStartedAt, performance.now(), introSkipped, introCast())');
     // 舊版的 1 秒時鐘常數已不再被宿主引用
     expect(main).not.toContain('INTRO_FRAMES');
   });

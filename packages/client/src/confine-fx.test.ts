@@ -14,16 +14,19 @@ import { MkfArchive, parseFlicInfo } from '@rich4/assets-pipeline';
 import { tickBlockingCounter } from '@rich4/core';
 
 import { LAYOUT } from './stage.ts';
+import { boardFilmWaitsForEventBox } from './board-film.ts';
 import {
   CONFINE_FX_ARCHIVE,
   CONFINE_HOSPITAL,
   CONFINE_PRISON,
   beginConfineFx,
+  confineAfterEventBox,
   confineClip,
   confineFxBitmap,
   confineFxDone,
   confineFxFrame,
   confineFxTrigger,
+  confineFxTriggers,
   confineSkippable,
   confineTotalMs,
   type ConfineKind,
@@ -32,6 +35,14 @@ import {
 const DATA_MKF = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/Data.mkf';
 const hasData = existsSync(DATA_MKF);
 const runData = hasData ? it : it.skip;
+const EXE = (process.env.RICH4_WORKSPACE ?? '') + '/Rich4/rich4.exe';
+const runExe = existsSync(EXE) ? it : it.skip;
+/** `rich4.exe` 的 VA → 文件偏移（与 `tools/disasm.py` 的换算同一条）*/
+function exeBytes(va: number, n: number): number[] {
+  const d = readFileSync(EXE);
+  const off = 1024 + (va - 0x401000);
+  return [...d.subarray(off, off + n)];
+}
 
 /** 只有占用表/计数两个字段的最小状态 */
 function st(over: {
@@ -142,13 +153,30 @@ describe('★ 什么时候播（占用表 / 计数的一拍之差）', () => {
     expect(confineFxTrigger(st({}), st({ pris: [0, 0, 0, 1] }))).toBe('prison');
   });
 
-  it('★ 本来就是 1（加刑）但计数变大 → 照样播（原版每次 `send_to_*` 都重播）', () => {
+  // ★★ 2026-09-23 订正（第十四份試玩回報，协调方拍板照 exe）：先前这一条断言「加刑照样播
+  //   （原版每次 `send_to_*` 都重播）」—— exe 里不是这样：
+  //     send_to_prison    0x0043d5d4 mov dh, [计数] / 0x0043d5da test dh, dh / 0x0043d5dc jne 0x43d6bd
+  //     send_to_hospital  0x0043ec80 mov dh, [计数] / 0x0043ec86 test dh, dh / 0x0043ec88 jne 0x43ed6c
+  //   原计数非 0 ⇒ 直接跳去「加天数」，搬位置与 0x21a / 0x20c 那一次 `fcn_0045144f` 都被跳过。
+  //   字节钉在下面 `runExe` 那一条（以及 core 的 `confine-view.test.ts`）。
+  it('★ 本来就在里面（加刑）计数变大 → **不播**（@source 0x0043ec86 / 0x0043d5da `test dh,dh / jne` 跳过播片）', () => {
     const before = st({ hosp: [1, 0, 0, 0], inHospital: [2, 0, 0, 0] });
     const after = st({ hosp: [1, 0, 0, 0], inHospital: [5, 0, 0, 0] });
-    expect(confineFxTrigger(before, after)).toBe('hospital');
+    expect(confineFxTrigger(before, after)).toBeNull();
     const b2 = st({ pris: [1, 0, 0, 0], inPrison: [1, 0, 0, 0] });
     const a2 = st({ pris: [1, 0, 0, 0], inPrison: [4, 0, 0, 0] });
-    expect(confineFxTrigger(b2, a2)).toBe('prison');
+    expect(confineFxTrigger(b2, a2)).toBeNull();
+  });
+
+  runExe('★ 回 exe 钉：加刑那一支的跳转在播片之前', () => {
+    // 0x0043d5da test dh, dh / jne rel32 → 0x43d6bd（> 0x0043d6aa 那一次 call 0x45144f）
+    expect(exeBytes(0x43d5da, 8)).toEqual([0x84, 0xf6, 0x0f, 0x85, 0xdb, 0x00, 0x00, 0x00]);
+    expect(0x43d5da + 2 + 6 + 0xdb).toBe(0x43d6bd);
+    expect(0x43d6bd).toBeGreaterThan(0x43d6aa);
+    // 0x0043ec86 test dh, dh / jne rel32 → 0x43ed6c（> 0x0043ed59 那一次 call 0x45144f）
+    expect(exeBytes(0x43ec86, 8)).toEqual([0x84, 0xf6, 0x0f, 0x85, 0xde, 0x00, 0x00, 0x00]);
+    expect(0x43ec86 + 2 + 6 + 0xde).toBe(0x43ed6c);
+    expect(0x43ed6c).toBeGreaterThan(0x43ed59);
   });
 
   it('放出来（1→0、计数变小）不播', () => {
@@ -176,21 +204,21 @@ describe('★ 什么时候播（占用表 / 计数的一拍之差）', () => {
     ).toBeNull();
   });
 
-  it('★ 但**真的**加刑 / 真的送入照样播（掩掉高位没把这两条一并吞掉）', () => {
-    // 加刑：`confine()` 写的是 `(existing + days) & 0x7f`，低 7 位确实变大
+  it('★ 首次送入照样播；加刑 / 待释放期间又被送进去都不播（原计数字节非 0 ⇒ 加刑支）', () => {
+    // 加刑：`confine()` 写的是 `(existing + days) & 0x7f` —— 走 0x0043ed6c，不播
     expect(
       confineFxTrigger(
         st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
         st({ hosp: [1, 0, 0, 0], inHospital: [5, 0, 0, 0] }),
       ),
-    ).toBe('hospital');
-    // 待释放期间**又被送进去**：core 的 `confine` 给出 (0x80 + 3) & 0x7f = 3
+    ).toBeNull();
+    // 待释放期间**又被送进去**：计数字节 0x80 非 0 ⇒ 同样走加刑支（(0x80 + 3) & 0x7f = 3），不播
     expect(
       confineFxTrigger(
         st({ hosp: [1, 0, 0, 0], inHospital: [0x80, 0, 0, 0] }),
         st({ hosp: [1, 0, 0, 0], inHospital: [3, 0, 0, 0] }),
       ),
-    ).toBe('hospital');
+    ).toBeNull();
     // 首次送入（占用表 0→1）
     expect(confineFxTrigger(st({}), st({ hosp: [0, 1, 0, 0], inHospital: [0, 3, 0, 0] }))).toBe(
       'hospital',
@@ -239,6 +267,102 @@ describe('★ main.ts 的接线（源码钉子）', () => {
     const src = readFileSync(new URL('./render.ts', import.meta.url), 'utf8');
     expect(src).toContain('BUILD_FX_BOARD_Y');
     expect(src).not.toContain('BUILD_FX_Y, BUILD_FX_W');
+  });
+});
+
+/**
+ * ★★ 第十五份試玩回報（Charles，`wt16/20260923-212047821-manual-Charles.json`）：
+ * 「忍太郎刚刚进监狱的动画太快了，前一个事件的弹窗还没看清楚就触发」——
+ * 那一局 P3 踩到新聞格，抽到 29「%s違法超貸 經營者%s坐牢５天」，经营者是忍太郎（P1）；
+ * 日志：`事件提示框：新聞 #29` 紧接着就是 `影片：開始 prison`（同一拍），框还没停满警车就开了。
+ */
+describe('★★ 新聞 / 命運引出的入獄・住院：等事件提示框收掉再播', () => {
+  const ev = (kind: string) => ({ lastEvent: { kind } });
+
+  it('判据 = `lastEvent` 换了引用且是新聞 / 命運（与事件框起播同一条）', () => {
+    const none = { lastEvent: null };
+    expect(confineAfterEventBox(none, ev('news'))).toBe(true);
+    expect(confineAfterEventBox(none, ev('fortune'))).toBe(true);
+    // 同一个引用 = 这一拍没抽事件（例：陷害卡、踩到惡犬）
+    const same = ev('news');
+    expect(confineAfterEventBox(same, same)).toBe(false);
+    // 魔法屋 / 小遊戲不玩那两条走的是别的屏
+    expect(confineAfterEventBox(none, ev('magicHouse'))).toBe(false);
+    expect(confineAfterEventBox(none, ev('minigameDecline'))).toBe(false);
+    expect(confineAfterEventBox(none, none)).toBe(false);
+  });
+
+  it('`afterEventBox` 只在事件框还在时押着；普通那一段不受影响', () => {
+    const held = { ...confineClip('prison'), afterEventBox: true };
+    expect(boardFilmWaitsForEventBox(held, true)).toBe(true);
+    expect(boardFilmWaitsForEventBox(held, false)).toBe(false);
+    expect(boardFilmWaitsForEventBox(confineClip('prison'), true)).toBe(false);
+  });
+
+  runExe('★ 回 exe 钉：框先停满，pass 1 才调 `send_to_prison`（影片在它里面）', () => {
+    // 新聞 fcn_0044b6df：0x0044b862 push 0x960 / call 0x4544f6（2400 ms）
+    expect(exeBytes(0x44b862, 10)).toEqual([0x68, 0x60, 0x09, 0x00, 0x00, 0xe8, 0x8a, 0x8c, 0x00, 0x00]);
+    expect(0x44b867 + 5 + 0x8c8a).toBe(0x4544f6);
+    // 0x0044b86f mov eax,[esp+0x10] / push 1 / call [eax*4 + 0x475e24] —— pass 1 在等待之后
+    expect(exeBytes(0x44b86f, 13)).toEqual([
+      0x8b, 0x44, 0x24, 0x10, 0x6a, 0x01, 0xff, 0x14, 0x85, 0x24, 0x5e, 0x47, 0x00,
+    ]);
+    // 新聞 29 pass 1：0x0044b35f push 5 / push eax / call 0x43d593（send_to_prison）
+    expect(exeBytes(0x44b35f, 8)).toEqual([0x6a, 0x05, 0x50, 0xe8, 0x2c, 0x22, 0xff, 0xff]);
+    expect(0x44b362 + 5 + (0xffff222c | 0)).toBe(0x43d593);
+    // 命運 fcn_0044db81：0x0044dd44 push 0x640 / call 0x4544f6（1600 ms）→ pass 1 → 0x0044dd7b 800 ms
+    expect(exeBytes(0x44dd44, 10)).toEqual([0x68, 0x40, 0x06, 0x00, 0x00, 0xe8, 0xa8, 0x67, 0x00, 0x00]);
+    expect(exeBytes(0x44dd6f, 9)).toEqual([0x6a, 0x01, 0xff, 0x94, 0x03, 0xf0, 0x5e, 0x47, 0x00]);
+    expect(exeBytes(0x44dd7b, 10)).toEqual([0x68, 0x20, 0x03, 0x00, 0x00, 0xe8, 0x34, 0x4b, 0x00, 0x00]);
+    // 命運 33 pass 1：0x0044d8c2 call 0x43d593
+    expect(exeBytes(0x44d8c2, 5)).toEqual([0xe8, 0xcc, 0xfc, 0xfe, 0xff]);
+    expect(0x44d8c2 + 5 + (0xfffefccc | 0)).toBe(0x43d593);
+  });
+
+  it('main.ts 接线：送进去那一拍按判据带上 `afterEventBox`，起播两处都问事件框', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    expect(src).toContain('const afterBox = confineAfterEventBox(before, after);');
+    expect(src).toContain('afterBox ? { ...confineClip(hit.kind), afterEventBox: true }');
+    expect(src).toContain('if (boardFilmWaitsForEventBox(pending, eventBoxScreen.active(uiEnv()))) {');
+    expect(src).toContain('!boardFilmWaitsForEventBox(after, eventBoxScreen.active(uiEnv()))');
+  });
+});
+
+describe('★★ 新聞 4：先飛碟，再每位受害者一辆救护车（不再被顶掉）', () => {
+  it('`confineFxTriggers` 逐人列出（按玩家号；加刑的不列）', () => {
+    const before = st({ inHospital: [0, 0, 2, 0] });
+    const after = st({ hosp: [1, 1, 1, 1], inHospital: [3, 3, 5, 3] });
+    expect(confineFxTriggers(before, after)).toEqual([
+      { player: 0, kind: 'hospital' },
+      { player: 1, kind: 'hospital' },
+      { player: 3, kind: 'hospital' },
+    ]);
+    expect(confineFxTrigger(before, after)).toBe('hospital');
+  });
+
+  it('main.ts 接线：飛碟先排、救护车逐段排在后面（`fcn_0044913d`：0x0044925b 播 0x213 → 0x00449285 各次 0x20c）', () => {
+    const src = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
+    const fx = src.slice(src.indexOf('function startActionFx('));
+    expect(fx.indexOf('startAlienNewsFx(before, state);')).toBeLessThan(fx.indexOf('startConfineFx(before, state);'));
+    const confine = src.slice(src.indexOf('function startConfineFx('), src.indexOf('function startGodFx('));
+    expect(confine).toContain('for (const hit of hits) {');
+    expect(confine).toContain('queueBoardFilm(clip);');
+    const alien = src.slice(src.indexOf('function startAlienNewsFx('));
+    expect(alien.slice(0, alien.indexOf('\n}\n'))).toContain('queueBoardFilm(spec);');
+    expect(alien.slice(0, alien.indexOf('\n}\n'))).not.toContain('startBoardFilm(spec);');
+    // 取走队头之后接下一段
+    expect(src).toContain('pendingBoardFilmAfter = boardFilmQueueRest.shift() ?? null;');
+  });
+
+  runExe('★ 回 exe 钉：新聞 4 先播飛碟（0x0044925b call 0x45144f）、后逐人 `send_to_hospital`（0x00449285）', () => {
+    expect(0x44925b).toBeLessThan(0x449285);
+    const d = exeBytes(0x449285, 5);
+    expect(d[0]).toBe(0xe8);
+    const rel = (d[1]! | (d[2]! << 8) | (d[3]! << 16) | (d[4]! << 24)) | 0;
+    expect(0x449285 + 5 + rel).toBe(0x43ec3f);
+    const f = exeBytes(0x44925b, 5);
+    const rel2 = (f[1]! | (f[2]! << 8) | (f[3]! << 16) | (f[4]! << 24)) | 0;
+    expect(0x44925b + 5 + rel2).toBe(0x45144f);
   });
 });
 

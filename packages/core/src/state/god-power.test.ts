@@ -11,11 +11,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
+import { CARDS } from '@rich4/data';
 import { parseMap } from '../loaders/map.ts';
-import { newGame } from '../rules/new-game.ts';
+import { newGame as newGameRaw } from '../rules/new-game.ts';
+import { landAll } from '../testing/factories.ts';
 import { reduce } from './reduce.ts';
+import { WHO_PLAYS_HUMAN } from './types.ts';
 import type { GameState } from './types.ts';
-import { placeObjectOfType } from '../rules/object-landing.ts';
+import { placeObjectOfType, tickGod } from '../rules/object-landing.ts';
+import { seizeHostilityDelta } from '../rules/god-manifest.ts';
+import { makePlayer } from '../testing/factories.ts';
+const makePlayerLite = (i: number) => makePlayer({ index: i });
 import { summonableObjects } from '../cards/summon.ts';
 import {
   GOD_ANGEL,
@@ -29,9 +35,17 @@ import {
   GOD_SMALL_POVERTY,
   GOD_SMALL_WEALTH,
   rollGodAmounts,
+  GOD_SLOT_AUTO_ROLLS,
 } from '../rules/god-power.ts';
 import { WatcomRng, drawRandomCard } from '../rng/watcom.ts';
 import { sellAllCards, sellAllTools } from '../rules/inventory.ts';
+
+/**
+ * 夹具：「第一輪已经过去」—— 这里测的不是开局，要的是大家都已在盘上
+ * （`newGame` 只摆第 1 位，其余轮到自己才落地，见 `rules/start-placement.ts`）。
+ */
+const newGame = (o: Parameters<typeof newGameRaw>[0]): ReturnType<typeof newGameRaw> =>
+  landAll(newGameRaw(o), o.map.nodes);
 
 const MAP = (process.env.RICH4_WORKSPACE ?? '') + '/extracted/map/0001.bin';
 const run = existsSync(MAP) ? it : it.skip;
@@ -127,19 +141,44 @@ function attachViaCard(type: number, over: Partial<GameState> = {}) {
 
 const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
 
+/**
+ * ★★ 2026-09-24（provenance 审计）：本文件的附身者都是**电脑**（who_plays 2 > 1）⇒ 老虎机自动转
+ *   **4 轮**（`0x0043f306 cmp byte [cur+0x15],1 / ja` → 计数 0/10/20/30 各掷一轮），金额取最后一轮。
+ *   先前这些用例按 1 轮断言（那是真人点一次就停的替身）。
+ */
+function autoSlot(rngState: number) {
+  const r = new WatcomRng(rngState);
+  let a = rollGodAmounts(r);
+  for (let k = 1; k < GOD_SLOT_AUTO_ROLLS; k++) a = rollGodAmounts(r);
+  return a;
+}
+
 describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
   run('★ 小財神：每個對手付給附身者（現金），四位數金額 @source 0x0040ec99', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     expect(amount).toBeLessThanOrEqual(999);
     expect(after.players[0]!.godInfo).toBe(1);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash, `玩家 ${i}`).toBe(100_000 - amount);
     expect(after.players[0]!.cash).toBe(100_000 + amount * 3);
   });
 
+  run('★★ 小財神：前面的对手被收破产，**后面的照收**（循环只在分出胜负时跳出，0x0040ec7b）', () => {
+    const { state } = fresh();
+    // ★ 同上（G-08）：2/3 号位开局 `who_plays == 0`（惰性摆人）⇒ 先摆上盘、给真人档，收钱循环才进得去。
+    const placed = landAll(rich(state), loadMap().nodes);
+    const players = placed.players.map((p, i) =>
+      i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : i > 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p,
+    );
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players });
+    const amount = autoSlot(rngAtAttach).three;
+    expect(after.players[1]!.whoPlays).toBe(0); // 1 号付不起 ⇒ 破产
+    for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 照付`).toBe(100_000 - amount);
+  });
+
   run('★ 大財神：附身者進帳（現金），三位數 @source 0x0040ed4c', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(amount).toBeLessThanOrEqual(9999);
     expect(after.players[0]!.godInfo).toBe(2);
     expect(after.players[0]!.cash).toBe(100_000 + amount);
@@ -148,7 +187,7 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 小窮神：附身者付給每個對手，進對方**存款** @source 0x0040efd9', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_POVERTY);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     expect(after.players[0]!.cash).toBe(100_000 - amount * 3);
     expect(after.players[0]!.moneyInBank).toBe(0);
     for (const i of [1, 2, 3]) {
@@ -159,7 +198,7 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★ 大窮神：附身者付給銀行（公庫）@source 0x0040f076', () => {
     const { before, after, rngAtAttach } = stepOnto(GOD_BIG_POVERTY);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(after.players[0]!.cash).toBe(100_000 - amount);
     expect(after.pool).toBe(before.pool + amount);
     for (const i of [1, 2, 3]) expect(after.players[i]!.cash).toBe(100_000);
@@ -192,6 +231,38 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(after.cardAmount).toEqual(deck);
   });
 
+  /**
+   * ★★ 得卡那一扇訊息框的**形状**：小福神每张一扇（`0x0040ee13 push 0x4632fd`，
+   *   `%s附身\n\n得到%s！`），**大福神两张只弹一扇**（`0x0040eed7 push 0x463353`，
+   *   `大福神附身\n\n得到%s及%s！` —— 串里自己写着神明名，故 `args` 只有两张卡名）。
+   *
+   * 反证：旧实现（每张都 push `god.gotCard`、args 带神明名）在这一组里是**两扇**，
+   *   下面第一条的 `toHaveLength(1)` / `key` / `args` 都会红。
+   */
+  run('★★ 大福神两张 ⇒ **只有一扇** `god.gotCardTwo`，args = [两张卡名]、不含神明名', () => {
+    const { after } = stepOnto(GOD_BIG_LUCK);
+    const cards = after.players[0]!.cards;
+    expect(cards).toHaveLength(2);
+    expect(after.notices).toHaveLength(1);
+    const n = after.notices![0]!;
+    expect(n.key).toBe('god.gotCardTwo');
+    expect(n.holdMs).toBe(1500);
+    // 顺序 = 两张卡各自的名字（先抽到的在前，同原版 `[ebx]` → `[esi]` 的 sprintf 顺序）
+    expect(n.args).toEqual([CARDS[cards[0]! - 1]!.name, CARDS[cards[1]! - 1]!.name]);
+    expect(n.args).not.toContain('大福神');
+    // 这张框的 key 与 `gotCard` 不同 ⇒ 旧的「带神明名」形状不适用；`cardId` 也不带
+    expect(n.cardId).toBeUndefined();
+  });
+
+  run('★ 小福神一张 ⇒ 仍然**一扇** `god.gotCard`、args = [神明名, 卡名]（没误伤）', () => {
+    const { after } = stepOnto(GOD_SMALL_LUCK);
+    const cards = after.players[0]!.cards;
+    expect(cards).toHaveLength(1);
+    expect(after.notices).toEqual([
+      { key: 'god.gotCard', args: ['小福神', CARDS[cards[0]! - 1]!.name], holdMs: 1500, cardId: cards[0]! },
+    ]);
+  });
+
   run('★ 小衰神：丢一张（回牌堆）@source 0x0040f10c', () => {
     const start = fresh().state;
     const { before, after } = stepOnto(GOD_SMALL_MISFORTUNE, {
@@ -201,6 +272,32 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
     expect(after.players[0]!.cards).toHaveLength(2);
     // 丢的那张回牌堆：总数 +1
     expect(sum(after.cardAmount)).toBe(sum(before.cardAmount) + 1);
+  });
+
+  /**
+   * ★ 2026-09-23（神明对话框反查）：丢了卡就弹訊息框「小衰神附身\n\n遺失%s！」（1500 ms）。
+   * @source `0x0040f114 call 0x441e77` → `0x0040f11c test eax,eax / je`（没丢不弹）→
+   *   `0x0040f124 mov esi,[eax*8 + 0x47fdea]`（卡名）→ `0x0040f12c push 0x4633ab` →
+   *   `0x0040f13e push 0x5dc` → `0x0040f148 call 0x440cac`
+   */
+  run('★ 小衰神丢卡 ⇒ 訊息框 god.lostCard（args = 丢掉那张的卡名，1500 ms）', () => {
+    const start = fresh().state;
+    const { after } = stepOnto(GOD_SMALL_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [1, 2, 3] } : p)),
+    });
+    const left = after.players[0]!.cards;
+    const lost = [1, 2, 3].find((id) => !left.includes(id))!;
+    expect(after.notices).toEqual([{ key: 'god.lostCard', args: [CARDS[lost - 1]!.name], holdMs: 1500 }]);
+  });
+
+  run('★ 小衰神附身时手里没卡 ⇒ 什么都不丢、也不弹框（`0x0040f11e je 0x40ece6`）', () => {
+    const start = fresh().state;
+    const { before, after } = stepOnto(GOD_SMALL_MISFORTUNE, {
+      players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [] } : p)),
+    });
+    expect(after.players[0]!.cards).toEqual([]);
+    expect(after.notices ?? []).not.toContainEqual(expect.objectContaining({ key: 'god.lostCard' }));
+    expect(sum(after.cardAmount)).toBe(sum(before.cardAmount));
   });
 
   run('★ 大衰神：丢一半（原版那个循环丢的是第 0、2、4… 张）@source 0x0040f1de', () => {
@@ -251,7 +348,11 @@ describe('★ 踩到神明格 —— 附身那一刻的發威', () => {
 
   run('★★ G40：小衰神丢一张也按**卡号**移除首个匹配，不是按随机下标', () => {
     const start = fresh().state;
-    // 6 张、只有在手牌里重复出现的卡号 —— 只要下标不是「首个匹配」就与旧实现不同
+    // 5 张、只有在手牌里重复出现的卡号 —— 只要下标不是「首个匹配」就与旧实现不同
+    // （张数随种子调：开局摆人每人多抽一次「来路」（`0x00408328`）之后，6 张在这个种子上
+    //   恰好抽到下标 0、失去鉴别力；下面那条「前提」断言原样保留，专门盯这件事）
+    // ★ 2026-09-24 再调回 6 张：可成交量重算（`0x42915a`）挪到每位玩家回合开头之后，附身那一刻的
+    //   `rand()` = 30310 ⇒ 5 张落下标 0（失去鉴别力），6 张落下标 4（5 号卡首个匹配在 0）
     const hand = [5, 1, 5, 5, 5, 5];
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_MISFORTUNE, {
       players: rich(start).players.map((p, i) => (i === 0 ? { ...p, cards: [...hand] } : p)),
@@ -294,7 +395,7 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
   run('請大財神上身 → 一样進帳', () => {
     const { after, rngAtAttach, handle } = attachViaCard(GOD_BIG_WEALTH);
     expect(after.players[0]!.godInfo).toBe(handle);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     expect(after.players[0]!.cash).toBe(100_000 + amount);
   });
 
@@ -342,11 +443,21 @@ describe('★ 請神符走同一条發威（两条附身路径共用 @source 0x0
 });
 
 describe('★ 附身那一刻的随机数消耗与原版同形', () => {
-  run('金額型取满四个 rand()%10（不是三次、也不是五次）', () => {
+  run('金額型每轮取满四个 rand()%10；电脑自动转 4 轮 = 16 次（0x0043f2d7 ×4 × 计数 0/10/20/30）', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
     const probe = new WatcomRng(rngAtAttach);
-    for (let i = 0; i < 4; i++) probe.below(10);
+    for (let i = 0; i < 4 * GOD_SLOT_AUTO_ROLLS; i++) probe.below(10);
     expect(after.rngState).toBe(probe.getState());
+  });
+
+  run('★ 真人（who_plays == 1、没夢遊）点一次就停 ⇒ 只掷 1 轮（D-003 的替身）', () => {
+    const base = fresh().state;
+    const human = { ...base, players: base.players.map((p, i) => (i === 0 ? { ...p, whoPlays: 1 } : p)) };
+    const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH, { players: rich(human).players });
+    const probe = new WatcomRng(rngAtAttach);
+    const once = rollGodAmounts(probe);
+    expect(after.rngState).toBe(probe.getState());
+    expect(after.players[0]!.cash).toBe(100_000 + once.four);
   });
 
   run('抽卡 / 丢一张各取一次 rand()（那是抽卡与选牌用的，不是金額）', () => {
@@ -378,7 +489,7 @@ describe('★ 附身那一刻的随机数消耗与原版同形', () => {
 describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金额', () => {
   run('★★ 小財神（種類 1）⇒ amount = **三位数**那一个（不是差分总和、不是四位数）', () => {
     const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).three;
+    const amount = autoSlot(rngAtAttach).three;
     const hint = after.lastGodPower;
     expect(hint).toBeTruthy();
     expect(hint!.player).toBe(0);
@@ -392,7 +503,7 @@ describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金�
 
   run('★★ 大財神（種類 2）⇒ amount = **四位数**那一个', () => {
     const { after, rngAtAttach } = stepOnto(GOD_BIG_WEALTH);
-    const amount = rollGodAmounts(new WatcomRng(rngAtAttach)).four;
+    const amount = autoSlot(rngAtAttach).four;
     const hint = after.lastGodPower;
     expect(hint).toBeTruthy();
     expect(hint!.player).toBe(0);
@@ -426,5 +537,59 @@ describe('★ W-55 行 7：`GameState.lastGodPower` = 那一次掷出来的金�
     // ★ 恒等性：`raw === state`（没生效的 action）一律原样返回，连瞬态都不清
     const same = reduce(after, { type: 'endTurn' }, topo);
     if (same === after) expect(same.lastGodPower).toBe(after.lastGodPower);
+  });
+});
+
+// ============================================================
+//  provenance 审计（2026-09-24）补的几条
+// ============================================================
+describe('★★ provenance 审计：神明', () => {
+  run('G-08 小財神：一位付不起破产后，**后面的人照付**（0x0040ec7b 只在终局跳出）', () => {
+    const { state } = fresh();
+    // ★★ 2026-09-25（econ 区审计合入 provenance 之后复核）：`newGame` 的**惰性摆人**让第 2..N 位
+    //   开局 `who_plays == 0`（轮到自己才落地），而 `collectFromOpponents` 的判据正是
+    //   `whoPlays === 0 ⇒ 跳过`（`0x0040ec99` 的 `cmp byte [player+0x15], 0 / je`）——
+    //   先前这条用例的 2/3 号位**根本没上盘**，收钱循环一个对手都没进：
+    //   `autoSlot` 掷出 0 时 `if (amount === 0) return` 还会让断言整个不跑（那是它一直绿的原因）。
+    //   ⇒ 先用 `landAll` 把四位摆上盘，再给 2/3 号位**真人**那一档（`who_plays = 1`）：
+    //     1 号破产后 `remainingHumans != 0` ⇒ 不判终局（`0x0040d029`），循环才继续往下收。
+    const placed = landAll(rich(state), loadMap().nodes);
+    const broke = {
+      ...placed,
+      players: placed.players.map((p, i) =>
+        i === 1 ? { ...p, cash: 0, moneyInBank: 0 } : i > 1 ? { ...p, whoPlays: WHO_PLAYS_HUMAN } : p,
+      ),
+    };
+    const { after, rngAtAttach } = stepOnto(GOD_SMALL_WEALTH, { players: broke.players });
+    const amount = autoSlot(rngAtAttach).three;
+    if (amount === 0) return; // 掷出 0 就没人付得起不起的问题
+    expect(after.players[1]!.whoPlays).toBe(0);
+    for (const i of [2, 3]) expect(after.players[i]!.cash, `玩家 ${i} 仍要付`).toBe(100_000 - amount);
+  });
+
+  run('G-15 大衰神丢一半：弹「大衰神附身\\n\\n遺失一半卡片！」（0x0040f1f6 push 0x5dc / push 0x4633d5）', () => {
+    const { state } = fresh();
+    const withCards = rich(state).players.map((p, i) => (i === 0 ? { ...p, cards: [1, 2, 3, 4] } : p));
+    const { after } = stepOnto(GOD_BIG_MISFORTUNE, { players: withCards });
+    expect(after.players[0]!.cards).toHaveLength(2);
+    expect(after.notices).toContainEqual({ key: 'god.lostHalf', args: [], holdMs: 1500 });
+  });
+
+  it('G-22 土地公強佔的敌意：`A × ((level+2)/5)` 的 double 低 32 位（0x0040f6d4..0x0040f6ff）', () => {
+    expect(seizeHostilityDelta(700, 1, 5)).toBe(-1);
+    expect(seizeHostilityDelta(1001, 1, 2)).toBe(1717986919);
+    expect(seizeHostilityDelta(1000, 1, 3)).toBe(0);
+  });
+
+  it('G-27 神明任期满离身：搭档的参照格 = 附身者**此刻**的格（0x0040e3cd..0x0040e3d4）', () => {
+    const p0 = { ...makePlayerLite(0), nodeId: 42, godInfo: 1 };
+    const objects = [{ type: 1, nodeId: 7, state: 1, attached: 1 }, { type: 2, nodeId: 0, state: 0, attached: 0 }];
+    const r = tickGod({ players: [p0], objects: objects as never, tools: [], toolStock: [] }, 0);
+    expect(r.expired).toBe(true);
+    expect(r.respawn).toEqual({ partner: 1, nearNode: 42 });
+    // 关着的人：用物件表里存着的格（0x0040e356 cmp dword [+0x32],0 / jne → 直接 0x40e14d）
+    const jailed = { ...p0, blocking: { ...p0.blocking, inPrison: 2 } };
+    const r2 = tickGod({ players: [jailed], objects: objects as never, tools: [], toolStock: [] }, 0);
+    expect(r2.respawn).toEqual({ partner: 1, nearNode: 7 });
   });
 });

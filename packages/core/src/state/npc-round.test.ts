@@ -3,7 +3,7 @@
  * 四大惡人每輪走一趟 @source 0x00418f93（下一名行动者依次轮到棋盘上的 4..7）+ 0x0040dd1f（步数）
  */
 import { describe, expect, it } from 'vitest';
-import { makeGameState, makeNode, makePlayer } from '../testing/factories.ts';
+import { makeGameState, makeLand, makeNode, makePlayer } from '../testing/factories.ts';
 import { autoAction, pickNextNode, reduce, type MapTopology } from './reduce.ts';
 import {
   ACTOR_PLACE,
@@ -21,6 +21,7 @@ import { SPECIAL_KIND } from '../loaders/map.ts';
 import { TOOL_SLOTS_PER_PLAYER } from '../rules/tools.ts';
 import { stateFingerprint } from '../net/protocol.ts';
 import { WatcomRng } from '../rng/watcom.ts';
+import { advanceDate, packDate } from '../rules/calendar.ts';
 import type { GameState } from './types.ts';
 
 /** 一条 30 格的环 */
@@ -290,6 +291,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('landPriceStatus / facilityPriceStatus 每天 −0x10', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0x50, 0x51, 0],
       facilityPriceStatus: [0, 0x51, 0x20],
@@ -301,6 +303,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('★ 查封 5 天后整字节解封（查封位不残存）', () => {
     let s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0x51],
     });
@@ -314,6 +317,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('★ 漲價 5 天后回落', () => {
     let s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       facilityPriceStatus: [0, 0x50],
     });
@@ -323,6 +327,7 @@ describe('★ 涨价/查封状态每日递减（T-084）@source 0x0041d0ff 起',
 
   it('高 nibble 为 0 的状态不被误伤', () => {
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
       landPriceStatus: [0, 0, 1],
     });
@@ -407,11 +412,12 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     expect(after.lastNpcWalks).toEqual([]);
   });
 
-  it('★ 保釋上路那一趟也记下来：起点是監獄格', () => {
+  it('★ 保釋那一下**不**走（0x0043d7e0 只摆到门口）⇒ 没有新的走子提示；等轮到他那一趟才从監獄门口起步', () => {
     const s = makeGameState({
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, points: 900 })),
       prisonOccupancy: initialConfinement('prison', 8),
       phase: 'turnEnd',
+      currentPlayer: 3,
       pending: {
         kind: 'bail',
         place: 'prison',
@@ -419,16 +425,17 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
         points: 900,
       },
     });
-    const after = reduce(s, { type: 'bail', slot: 4 }, away);
+    const bailed = reduce(s, { type: 'bail', slot: 4 }, away);
+    expect(bailed.lastNpcWalks).toBe(s.lastNpcWalks);
+    expect(bailed.specialActors[0]!.nodeId).toBe(1);
+    const after = reduce(bailed, { type: 'endTurn' }, away);
     const hint = after.lastNpcWalks;
     expect(hint).toHaveLength(1);
     expect(hint[0]!.slot).toBe(0);
     const path = hint[0]!.path;
     expect(path[0]).toBe(1); // 監獄格
     expect(path.length).toBeGreaterThanOrEqual(2);
-    // 这条直路一路向前，末格就是 state 里的落点
     expect(path[path.length - 1]).toBe(after.specialActors[0]!.nodeId);
-    expect(path).toEqual(Array.from({ length: path.length }, (_, i) => i + 1));
     for (let i = 0; i + 1 < path.length; i++) {
       expect(away.nodes[path[i]! - 1]!.adjacent).toContain(path[i + 1]);
     }
@@ -444,6 +451,7 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
     tools[1] = 1; // 道具 1 = 機器娃娃
     const s = makeGameState({
+    phase: 'awaitingRoll',
       players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })),
       tools,
     });
@@ -467,5 +475,241 @@ describe('★ lastNpcWalks：整趟路径交给表现层（T-047）', () => {
     const other = { ...after, lastNpcWalks: [{ slot: 3, path: [9, 8, 7] }] };
     expect(stateFingerprint(blanked)).toBe(base);
     expect(stateFingerprint(other)).toBe(base);
+  });
+});
+
+describe('★★ 第二十六份 panel #1：`lastNpcTurn` —— 行动者游标在惡人身上的那一整条 action（侧栏画他那一版）', () => {
+  /** 四个惡人全在盘上（各站一格），玩家 3 是最后一名 */
+  function four(over: Partial<GameState> = {}): GameState {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 20 })),
+      phase: 'turnEnd',
+      currentPlayer: 3,
+      ...over,
+    });
+    const specialActors = [...s.specialActors];
+    for (let slot = 0; slot < 4; slot++) specialActors[slot] = { ...releaseNpc(slot + 1, slot + 4, 0), stepsRemaining: 0 };
+    return { ...s, specialActors };
+  }
+
+  it('@source 0x00418f9c 游标 4→5→6→7：`endTurn` 交出 actor 4，之后每条 `npcStep` 交出下一个（含推日期那一条）', () => {
+    let s = reduce(four({ rngState: 7 }), { type: 'endTurn' }, ring);
+    const seen = [s.lastNpcTurn?.actor];
+    while ((s.pendingNpcSlots ?? []).length > 0) {
+      s = reduce(s, { type: 'npcStep' }, ring);
+      seen.push(s.lastNpcTurn?.actor);
+    }
+    expect(seen).toEqual([4, 5, 6, 7]);
+    // 最后一个惡人那一条连推日期、换到 0 号 —— 侧栏仍是他，直到下一条 action（原版 0x00418c55 那次重画才换走）
+    expect(s.phase).toBe('turnStart');
+    expect(s.currentPlayer).toBe(0);
+    expect(s.lastNpcTurn).toEqual({ actor: 7 });
+    const next = reduce(s, { type: 'startTurn' }, ring);
+    expect(next).not.toBe(s);
+    expect(next.lastNpcTurn ?? null).toBeNull();
+  });
+
+  it('★ 停留（+0x0e）的惡人：不走（`lastNpcWalks` 空）但这一回合照样是他的 @source 0x00418d5f 重画在 0x0040de2b 判停留之前', () => {
+    const after = reduce(withThief({ rngState: 3 }, { halted: 2 }), { type: 'endTurn' }, ring);
+    expect(after.lastNpcWalks).toEqual([]);
+    expect(after.lastNpcTurn).toEqual({ actor: SPECIAL_ACTOR_BASE });
+  });
+
+  it('不绕回的 `endTurn`、不在盘上的惡人、機器娃娃 ⇒ 都不写', () => {
+    expect(reduce({ ...withThief(), currentPlayer: 0 }, { type: 'endTurn' }, ring).lastNpcTurn ?? null).toBeNull();
+    expect(reduce(withThief({}, { place: ACTOR_PLACE.prison }), { type: 'endTurn' }, ring).lastNpcTurn ?? null).toBeNull();
+    const tools = new Array<number>(4 * TOOL_SLOTS_PER_PLAYER).fill(0);
+    tools[1] = 1;
+    const s = makeGameState({
+    phase: 'awaitingRoll', players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, lastNodeId: 0 })), tools });
+    const doll = reduce(s, { type: 'useTool', toolId: 1 }, ring);
+    expect(doll.lastNpcWalks[0]?.slot).toBe(4);
+    expect(doll.lastNpcTurn ?? null).toBeNull();
+  });
+
+  it('★ 保釋那一下不写（原版保釋 0x0043d7e0 不动 `[0x49910c]`，侧栏仍是保釋的那位玩家）；轮到他那条才写', () => {
+    const s = makeGameState({
+      players: [0, 1, 2, 3].map((i) => makePlayer({ index: i, nodeId: 1, points: 900 })),
+      prisonOccupancy: initialConfinement('prison', 8),
+      phase: 'turnEnd',
+      pending: { kind: 'bail', place: 'prison', candidates: [{ slot: 4, player: -1, name: '', cost: 300, affordable: true }], points: 900 },
+    });
+    const after = reduce(s, { type: 'bail', slot: 4 }, away);
+    expect(after.lastNpcWalks).toBe(s.lastNpcWalks);
+    expect(after.lastNpcTurn ?? null).toBeNull();
+    const round = reduce({ ...after, currentPlayer: 3 }, { type: 'endTurn' }, away);
+    expect(round.lastNpcTurn).toEqual({ actor: 4 });
+  });
+
+  it('只活一条 action：没生效的 action 原样留着（恒等），生效的清成 null', () => {
+    const s = reduce(four({ rngState: 7 }), { type: 'endTurn' }, ring);
+    expect(s.lastNpcTurn).toEqual({ actor: 4 });
+    // 惡人段里 `endTurn` 不动状态 ⇒ 原样返回（提示也还在）
+    expect(reduce(s, { type: 'endTurn' }, ring)).toBe(s);
+    // 同一个号再来一条 action 也是**新**对象（按引用判「这一条新写的」）
+    const t = reduce(s, { type: 'npcStep' }, ring);
+    expect(t.lastNpcTurn).not.toBe(s.lastNpcTurn);
+  });
+
+  it('★ C-DET：不进 stateFingerprint；两份独立重放（单机 / 联机旁观端）得到同一份', () => {
+    const a = reduce(four({ rngState: 11 }), { type: 'endTurn' }, ring);
+    const b = reduce(structuredClone(four({ rngState: 11 })), { type: 'endTurn' }, ring);
+    expect(b.lastNpcTurn).toEqual(a.lastNpcTurn);
+    const base = stateFingerprint(a);
+    const blanked = { ...a, lastNpcTurn: null };
+    const other = { ...a, lastNpcTurn: { actor: 6 } };
+    expect(stateFingerprint(blanked)).toBe(base);
+    expect(stateFingerprint(other)).toBe(base);
+  });
+});
+
+describe('★★ 第二十六份 panel：换人那次整窗重画（`0x41c84f` → `0x436a5a` → `0x41906a(1)`）—— `lastPanelTurn` / `lastTurnBeats`', () => {
+  /** 推日期之后的「今天」再往后 n 天（打包值），给 `loanDueDate` 用 */
+  function dueIn(s: GameState, n: number): number {
+    let d = advanceDate({ year: s.year, month: s.month, day: s.day }).date;
+    for (let i = 0; i < n; i++) d = advanceDate(d).date;
+    return packDate(d);
+  }
+
+  it('最后一个惡人那一条：切成两段 —— 前段（惡人 + 推日期）侧栏仍是他、后段起换成下一位（没借过钱）', () => {
+    const s = withThief({ rngState: 7 });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    expect(after.phase).toBe('turnStart');
+    expect(after.currentPlayer).toBe(0);
+    expect(after.lastPanelTurn).toEqual({ actor: 0 });
+    const beats = after.lastTurnBeats!;
+    expect(beats).toHaveLength(2);
+    const [b1, b2] = beats as [NonNullable<GameState['lastTurnBeats']>[number], NonNullable<GameState['lastTurnBeats']>[number]];
+    // 前段：游标还没交出去的样子 —— 当前玩家仍是离场者、日期已推、惡人那一回合还挂着、没有换人提示
+    expect(b1.after.currentPlayer).toBe(1);
+    expect(b1.after.day).not.toBe(s.day);
+    expect(b1.after.lastNpcTurn).toEqual({ actor: 4 });
+    expect(b1.after.lastPanelTurn ?? null).toBeNull();
+    // 后段：接着前段、落到最终那一份（含换人提示）
+    expect(b2.before).toBe(b1.after);
+    expect(b2.after.currentPlayer).toBe(0);
+    expect(b2.after.lastPanelTurn).toEqual({ actor: 0 });
+    // 分段里不再挂分段（不串成链）
+    for (const b of beats) {
+      expect(b.before.lastTurnBeats ?? null).toBeNull();
+      expect(b.after.lastTurnBeats ?? null).toBeNull();
+    }
+  });
+
+  it('@source 0x00436a7c `cmp eax,3 / jg`（有符号）：距还款日 ≤ 3 天 ⇒ 重画换人；> 3 天 ⇒ 不重画，侧栏留着上一位（这里是惡人）', () => {
+    for (const [days, actor] of [[3, 0], [2, 0], [4, 4], [10, 4]] as const) {
+      const s0 = withThief({ rngState: 7 });
+      const s: GameState = { ...s0, players: s0.players.map((p, i) => (i === 0 ? { ...p, loan: 1000, loanDueDate: dueIn(s0, days) } : p)) };
+      const after = reduce(s, { type: 'endTurn' }, ring);
+      expect(after.lastPanelTurn, `距还款日 ${days} 天`).toEqual({ actor });
+    }
+  });
+
+  it('不绕回的 `endTurn`（1 → 0 号之前的 0 → 1）：没有分段；距还款日 > 3 天侧栏留离场者，否则换人', () => {
+    const s = withThief({ currentPlayer: 0 }, { place: ACTOR_PLACE.prison });
+    const plain = reduce(s, { type: 'endTurn' }, ring);
+    expect(plain.currentPlayer).toBe(1);
+    expect(plain.lastTurnBeats ?? null).toBeNull();
+    expect(plain.lastPanelTurn).toEqual({ actor: 1 });
+    const owed: GameState = { ...s, players: s.players.map((p, i) => (i === 1 ? { ...p, loan: 500, loanDueDate: dueIn({ ...s, day: s.day - 1 } as GameState, 9) } : p)) };
+    expect(reduce(owed, { type: 'endTurn' }, ring).lastPanelTurn).toEqual({ actor: 0 });
+  });
+
+  it('绕回但盘上没有惡人：前段是推日期（侧栏仍是离场者）', () => {
+    const s = withThief({}, { place: ACTOR_PLACE.prison });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    const b1 = after.lastTurnBeats![0]!;
+    expect(b1.after.currentPlayer).toBe(1);
+    expect(b1.after.day).not.toBe(s.day);
+    expect(after.lastPanelTurn).toEqual({ actor: 0 });
+  });
+
+  it('惡人段没走完（停在 turnEnd）不算换人；只活一条 action；不进指纹', () => {
+    const s = withThief({ rngState: 7 });
+    const after = reduce(s, { type: 'endTurn' }, ring);
+    const next = reduce(after, { type: 'startTurn' }, ring);
+    expect(next.lastPanelTurn ?? null).toBeNull();
+    expect(next.lastTurnBeats ?? null).toBeNull();
+    const base = stateFingerprint(after);
+    const blanked: GameState = { ...after, lastPanelTurn: null, lastTurnBeats: null };
+    expect(stateFingerprint(blanked)).toBe(base);
+    const b = reduce(structuredClone(s), { type: 'endTurn' }, ring);
+    expect(b.lastPanelTurn).toEqual(after.lastPanelTurn);
+    expect(b.lastTurnBeats![0]!.after.lastNpcTurn).toEqual(after.lastTurnBeats![0]!.after.lastNpcTurn);
+  });
+});
+
+/**
+ * ★★ 2026-09-25（follow-up 审计 · 扫 `pending: null`）：惡人那一步把人榨破产时，
+ *   **清算拍卖不能被丢掉**。
+ *
+ * @source 惡人勒索 `0x0041c4df`（流氓停在别人的地產上）→ `0x0041c521 call 0x41d2c6`
+ *   （`pay_money`，付款人两个口袋都空 ⇒ `0x0041d376 call 0x40cd87`）——
+ *   清算里的下線拍卖 `0x40d1e3 call 0x43bde5` 是**阻塞**的：那一串打完才回到
+ *   回合边界的游标（`0x00418f93` 的下一个惡人）。所以「惡人段还没走完」与
+ *   「清算拍卖挂着」可以同时成立，`endTurn` 的「停在 turnEnd 等下一条 npcStep」
+ *   那一条出口**必须**把 pending 留着（先前的 `pending: null` 会把它丢掉，
+ *   队列里剩下的场次再也接不上 ⇒ `afterDayRollover` 见队列非空却没有 pending ⇒ 卡死）。
+ */
+describe('★★ 惡人段里破产：清算拍卖要留着（follow-up 扫 pending: null）', () => {
+  /** 6 格环、3 号格是「A 区」的一块地（地价 10 万 ⇒ 勒索費 10 万×物價） */
+  const feeRing: MapTopology = {
+    nodes: Array.from({ length: 6 }, (_, i) =>
+      makeNode({
+        id: i + 1,
+        adjacent: [((i + 1) % 6) + 1],
+        ...(i === 2 ? { ref: { kind: 'land' as const, index: 3 } } : {}),
+      }),
+    ),
+    lands: [3, 4, 5, 6].map((id) => makeLand({ id, name: 'A', type: 0, landPrice: 100_000 })),
+  };
+
+  it('★ 流氓停在 0 号的地上、0 号付不出 ⇒ 拍卖挂着、惡人段还剩一个、队列接得上', () => {
+    const base = makeGameState({
+      year: 1998,
+      month: 1,
+      day: 5,
+      // ★ 两位真人：只有一位时他一出局就收局，清算整段被跳过（`0x0040cfdb`）
+      players: [
+        makePlayer({ index: 0, character: 0, whoPlays: 1, nodeId: 1, cash: 0, moneyInBank: 0 }),
+        // 其余三位要有**出得起起拍价**的現金（起拍价 = 地价 10 万 × 物價 1），
+        // 否则三场拍卖一开就全体放弃、当场流拍，pending 自然就空了（不是本用例要测的东西）
+        makePlayer({ index: 1, character: 1, whoPlays: 1, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 2, character: 2, whoPlays: 2, nodeId: 1, cash: 1_000_000 }),
+        makePlayer({ index: 3, character: 3, whoPlays: 2, nodeId: 1, cash: 1_000_000 }),
+      ],
+      currentPlayer: 3, // 最后一名 ⇒ 这一回合推日期、先走惡人段
+      phase: 'turnEnd',
+    });
+    // 0 号名下 4 块地（> 3 ⇒ 清算要开 3 场拍卖）
+    const landOwner = new Array<number>(64).fill(0);
+    for (const l of feeRing.lands!) landOwner[l.id] = 1;
+    const specialActors = [...base.specialActors];
+    // 流氓（actor 6 = 槽 2）在 2 号格、龜行 1 步 ⇒ 必定走到 3 号格（0 号的地）停下勒索
+    specialActors[2] = { ...releaseNpc(2, 1, 0), singleStep: 1, lastNodeId: 1 };
+    // 间谍（槽 3）也在盘上 ⇒ 惡人段还剩一位没走
+    specialActors[3] = { ...releaseNpc(6, 1, 0), singleStep: 1, lastNodeId: 5 };
+
+    const s: GameState = { ...base, landOwner, specialActors };
+    const after = reduce(s, { type: 'endTurn' }, feeRing);
+
+    expect(after.players[0]!.whoPlays, '被勒索到出局').toBe(0);
+    expect(after.pending?.kind, '★ 清算拍卖必须留着').toBe('auction');
+    expect(after.phase).toBe('awaitingDecision');
+    expect(after.pendingNpcSlots, '★ 惡人段还剩一位').toEqual([3]);
+
+    // 三场拍卖打完 ⇒ 回到 turnEnd，惡人段接着走（不卡死）
+    let cur = after;
+    let auctions = 0;
+    while (cur.pending?.kind === 'auction' && auctions < 10) {
+      auctions++;
+      cur = reduce(cur, { type: 'auction', winner: -1, price: 0 }, feeRing);
+    }
+    expect(auctions, '释放 4 处 ⇒ 拍 3 场').toBe(3);
+    expect(cur.pending).toBeNull();
+    expect(cur.pendingQueue).toEqual([]);
+    expect(cur.phase).toBe('turnEnd');
+    expect(cur.pendingNpcSlots).toEqual([3]);
+    expect(autoAction(cur), '下一条自动 action 就是接着走惡人').toEqual({ type: 'npcStep' });
   });
 });

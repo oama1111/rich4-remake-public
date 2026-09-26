@@ -18,6 +18,11 @@
  *
  *   ⚠️ 只放**一张**：原版三个小游戏的底图都在各自资源里，
  *   只有 #92 是「没有头、`sprite()` 取不到」的那一张（D-MINI-1）。
+ *
+ * ★ 另一格（2026-09-24，gap-audit #19 / D-MINI-2）：企鵝挖寶的**命中表** `Panel.mkf` #81
+ *   —— 640×480、每像素 1 字节、值 = 格号。同样是无头 `.bin`、`sprite()` 取不到，
+ *   同样由 `main.ts` 开局读一次（`readRawBytes` + `parsePenguinHitMask`）放进这里，
+ *   `minigame-screen.ts` 的 `down` 取来逐像素查。是同步读的原始字节，不用催帧。
  */
 
 /** 当前这张財神屏底图；`null` = 还没载好 / 载不到 */
@@ -46,8 +51,22 @@ export function onMinigameBackgroundReady(cb: () => void): void {
   onReady = cb;
 }
 
+/** 企鵝挖寶的命中表 #81（640×480 字节）；`null` = 没载到 → 命中退回几何近似 */
+let penguinHitMask: Uint8Array | null = null;
+
+/** `main.ts` 开局调：交上 `parsePenguinHitMask(readRawBytes(archives, 'Panel.mkf', 0x51))` */
+export function setPenguinHitMask(mask: Uint8Array | null): void {
+  penguinHitMask = mask;
+}
+
+/** `minigame-screen.ts` 的 `down` 调这里 */
+export function getPenguinHitMask(): Uint8Array | null {
+  return penguinHitMask;
+}
+
 /** 测试用：清空并断开回调 —— 位图是 `ImageBitmap`，`close()` 的时机交给调用方 */
 export function resetMinigameBackground(): void {
   background = null;
   onReady = null;
+  penguinHitMask = null;
 }

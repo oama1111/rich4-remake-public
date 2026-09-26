@@ -9,13 +9,14 @@
 
 import type { GameMode } from '../rng/policy.ts';
 import type { EventDeck } from '../events/deck.ts';
-import type { AuctionRequest, PendingInteraction } from '../rules/interaction.ts';
+import type { AuctionRequest, PendingInteraction, QueuedStep } from '../rules/interaction.ts';
 import type { StockMarketState } from '../places/stock-market.ts';
 import type { StockHolding } from '../places/stock.ts';
 import type { CommercialOwnership } from '../places/commercial.ts';
 import type { Listing } from '../places/notice-board.ts';
 import type { MapObject } from '../cards/summon.ts';
 import type { SpecialActor, SweptObject } from '../rules/special-actors.ts';
+import type { SpeechRoll } from '../rules/speech-rand.ts';
 import type { WinConditions } from '../rules/setup.ts';
 import type { VictoryOutcome } from '../rules/victory.ts';
 
@@ -306,6 +307,40 @@ export interface Player {
   monthlyPaid: number;
   /** 本月收入累计 @source player_info +0x60（`add [player*0x68 + 0x496bc8], ebx`） */
   monthlyReceived: number;
+  /**
+   * 「落地之后是谁在打」—— `player_info +0x64`（存档里的 `f100`）。
+   *
+   * ★ 开局**只有它**记着人／电脑：玩家记录是整条从角色表抄来的（`0x004072e4 memcpy
+   *   (player, 0x47e80c + 角色 × 0x68, 0x68)`），表里 `+0x08..+0x10`（坐标 / 节点 / 来路 / 朝向）
+   *   与 `+0x15`（`who_plays`）**全是 0**；接着 `0x004072f9` 只写 `+0x64 = 1（人）/ 2（电脑）`。
+   *   ⇒ 开局所有人都是「没上盘」：`who_plays == 0` 且 `xpos == 0`。
+   * ★ 谁第一次被镜头对准（自己的第一个回合）才摆谁（`0x004082d9..0x004083a0`），
+   *   落地影片播完那一刻才把它抄回 `+0x15`：
+   * ```asm
+   * 00418d01  mov dl, byte [eax + 0x496bcc]   ; +0x64
+   * 00418d07  mov byte [eax + 0x496b7d], dl   ; → who_plays
+   * ```
+   * 之后原版不再拿它当「谁在打」读（`0x00447a49` 那件道具借它暂存交通工具，本引擎另有字段）。
+   * 破产的 `memset(player + 0x1c, 0, 0x4c)` 覆盖到它（`markPlayerBankrupt` 清成 0）。
+   *
+   * 可选：旧存档 / 测试工厂造的玩家没有这一格 = 0 = 「不会再落地」。
+   */
+  landingWhoPlays?: number;
+  /**
+   * 開**工程車**之前的交通方式 / 骰子数 —— 原版借 `+0x64` / `+0x65` 暂存
+   * （`0x00447a49 mov [p+0x64], +0x11` / `0x00447a55 mov [p+0x65], +0x12`，道具 12 那一支）。
+   * 工程車（`+0x11 = 0x1f`）每天 `−4`，`(v & 0xfc) == 0` 那天按它还原（`0x0041ccd0..0x0041cd83`，
+   * 见 `reduce.ts` 的 `tickEngineVehicle`）。缺省 = 0（还原成步行）。
+   * ⚠️ 写入一侧（用道具 12 时存下来）归道具区，审计时尚未接（`docs/audit/provenance-loop.md` 的 cross-area）。
+   */
+  engineSavedTraffic?: number;
+  /** 见 `engineSavedTraffic`（`+0x65`） */
+  engineSavedDice?: number;
+  /**
+   * `+0x1b`：挪去住店 / 关押之前的朝向，「走回棋盘」那一回合收尾时还原（`0x00418f2e`，低 4 位 == 0xf 不还原）。
+   * 住店存朝向（`0x0040d61b` / `0x0040d68e`），关押写哨兵 0xf（`0x0043d637` / `0x0043ece3`）。缺省 = 0xf。
+   */
+  savedFacing?: number;
 }
 
 // ============================================================
@@ -375,6 +410,33 @@ export interface NpcWalkHint {
 }
 
 /**
+ * ★★ **这一条 action 把行动者游标交给了哪个惡人**（actor 4..7）—— 纯表现提示（第二十六份 panel #1）。
+ *
+ * 原版侧栏画谁只看行动者 `[0x49910c]`（整版 `0x00415fc1` / 窄版 `0x00416767`），而侧栏只在整窗重画时才画：
+ * ```asm
+ * ; 游标推进 fcn_00418ebd
+ * 00418f9c  mov [0x49910c], esi            ; 轮到下一位（4..7 = 惡人，+0x0a ≠ 0 的跳过 0x00418fdc）
+ * 00419058  or  byte [actor×0x34 + 0x498ea0], 0x80   ; 挂「该开回合了」
+ * ; 回合开头 fcn_00418c55（主循环 0x00401db3）
+ * 00418d41  cmp ecx, 4 / jl · cmp ecx, 8 / jge · cmp byte [actor×16 + 0x498df2], 0 / jne
+ * 00418d5f  call 0x416e6d(1) / 00418d69 call 0x41d546   ; → 0x41906a(1) → WM_PAINT 0x00418bb9 → 0x415f69 / 0x4166f8
+ * 00418d70  call 0x40c912(0) → 0x00418dc6 … 0x00418e75 call 0x40dd1f   ; 这才开始走（停留的 0x0040de2b 也照样开回合）
+ * ```
+ * ⇒ 惡人一轮到就整窗重画成**他那一版**，之后侧栏不再重画（走子 `0x40829d`、訊息框 `0x440cac` 都不碰侧栏），
+ *   一直留到下一位行动者回合开头那次重画 —— 走完之后的「小偷偷得…」框、受害者台词、**停留**不走的那一回合都算他的。
+ *
+ * core 一条 `npcStep`（或绕回的那条 `endTurn`）就是一个惡人的整个回合，下一条 action 就是下一位行动者
+ * ⇒ 本字段**只活一条 action**（`reduce` 出口按引用相等清成 null，同 `lastBlockedSays`），
+ *   表现层在它还在时画惡人那一版。不进指纹、不进存档、不进 history。
+ *   保釋那一下**不写**：原版保釋（`0x0043d7e0` / `0x0043ee8f`）只把他摆到门口、不动 `[0x49910c]`；
+ *   他要等游标轮到他才走，那一条照常写。
+ */
+export interface NpcTurnHint {
+  /** 行动者号 4..7（= 槽 + 4）*/
+  readonly actor: number;
+}
+
+/**
  * **上一次「某玩家用出了某张卡」** —— 纯表现提示（卡牌使用者台词）。
  *
  * ★ 为什么要有它：原版每张卡的函数体里都有一句
@@ -394,11 +456,113 @@ export interface NpcWalkHint {
  * ⚠️ 「用出去了」才写（对应原版卡片函数返回非 0）：`ok: false` 的那条路
  *   （= 卡还在手上、一点状态都没动）**不写**这个提示。
  */
+export interface ToolUseHint {
+  /** 用道具的人下标 0..3 */
+  player: number;
+  /** 道具号 1..13（`@rich4/data` 的 `toolLine(character, toolId)` 用它取台词） */
+  toolId: number;
+}
+
+/** 一场拍卖落槌（纯表现；见 `GameState.lastAuctionResults`）*/
+export interface AuctionResultHint {
+  /** 落槌那一刻的 pending（开拍即流标：开拍那一份）*/
+  pending: AuctionRequest & Partial<Extract<PendingInteraction, { kind: 'auction' }>>;
+  /** 得标者玩家下标；−1 = 流标 */
+  winner: number;
+  /** 成交价（流标为 0）*/
+  price: number;
+}
+
 export interface CardPlayHint {
   /** 出牌者下标 0..3 */
   player: number;
   /** 卡号 1..30（`@rich4/data` 的 `cardLine(character, card)` 用它取台词） */
   cardId: number;
+  /**
+   * ★ 第十四份：被动卡（免費卡 / 嫁禍卡）在收費那一段里用掉的 —— 亮牌已经作为訊息框队列里的一扇交出去
+   *   （`NoticeHint.card`，好排在收費框之后），这里 `false` = 事件框**不再**亮这一张，只说台词。
+   */
+  popup?: false;
+  /**
+   * ★ 第十四份：出牌者之后**回一句**的人 —— 免費卡是地主（`0x00444b98`，卡牌台词表槽 79，表情 1；
+   *   企業那一路地主实参 −1 ⇒ 不带），嫁禍卡是替死鬼（`0x00444a4b`，槽 78，表情 2）。
+   */
+  answeredBy?: number;
+}
+
+/** 魔法屋一段演出的前后状态（见 `GameState.lastMagicBeats`）*/
+export interface MagicBeat {
+  readonly before: GameState;
+  readonly after: GameState;
+}
+
+/**
+ * ★★ 第二十一份（`20260924-144653022`「这个页面应该有台词，评比本月最倒霉和最幸运…2个评比」）：
+ * **这一次月结的现场** —— 纯表现提示，见 `GameState.lastMonthlySettle`。
+ *
+ * 原版月结屏 `fcn_00439bfa` / 窗口过程 `fcn_00437e61` 读的全是**结算那一刻**的值：
+ * - 每行名牌（`0x00439cd7` 循环，画进图 `11+行`）：`存款：` = 加息**之前**的 `+0x20`、`利息：` = `trunc(存款×0.1)`
+ *   或红字 `貸款中`（`+0x24 != 0`）；
+ * - 状态 2（`0x004380d5`）才把存款 ×1.1（`0x00438201`），随后 `fcn_00437d1a` 评「本月悲情人物」
+ *   （读 `+0x5c/+0x60/+0x42/+0x44`）、`fcn_00437dfe` 评「本月冠軍」（`calculate_player_wealth` 最大者）；
+ * - 两张 4 行表（状态 7 / 0x11）画的是那两位**那一刻**的 `+0x5c/+0x60/+0x42` 与 `+0x1c/+0x20/总资产`；
+ * - 模态循环结束后（`0x00439ec6`）才把三项月度累加器清零。
+ *
+ * 本引擎在 `advanceGameDay` 里一口气结完（累加器当场清零），表现层事后**反推不出**这些值
+ * （先前的月结屏拿结算**之后**的累加器评奖 ⇒ 永远是 0 ⇒ 悲情人物那一段从来不出）。
+ * 所以由 core 在结算那一刻交出来。
+ */
+export interface MonthlySettleHint {
+  /** 在场玩家（`who_plays != 0`），**按 `players` 序**（= 原版 `[0x48c418]` 的填法 `0x00439caa`）*/
+  readonly rows: readonly MonthlySettleRow[];
+  /** 本月悲情人物（`fcn_00437d1a`）在 `players` 里的下标；`-1` = 无（原版 `0xff`）*/
+  readonly unlucky: number;
+  /** 本月冠軍 = 首富（`fcn_00437dfe`）在 `players` 里的下标 */
+  readonly champion: number;
+}
+
+/** `MonthlySettleHint` 的一行 */
+export interface MonthlySettleRow {
+  readonly player: number;
+  /** 加息之前的存款（名牌上的 `存款：`）@source `0x00439d6a mov eax, [p+0x20]` */
+  readonly bankBefore: number;
+  /** 这一笔利息（名牌上的 `利息：`；有贷款时为 0、名牌写 `貸款中`）*/
+  readonly interest: number;
+  /** 结算那一刻的贷款（`+0x24`，非 0 ⇒ `貸款中`）*/
+  readonly loan: number;
+  /** 本月意外損失 `+0x5c`（清零之前）*/
+  readonly unexpectedLoss: number;
+  /** 本月意外之財 `+0x60`（清零之前）*/
+  readonly unexpectedGain: number;
+  /** 本月倒楣天數 `+0x42`（清零之前）*/
+  readonly unluckyDays: number;
+  /** 加息之后的现金 / 存款 / 总资产（冠軍那张表 `0x00438e38` 起）*/
+  readonly cash: number;
+  readonly bank: number;
+  readonly wealth: number;
+}
+
+/**
+ * **这一次樂透開獎开出了什么**（第十二份試玩回報「沒展現出本期開獎號碼」）—— 纯表现提示，
+ * 见 `GameState.lastLotteryDraw`。
+ *
+ * @source 原版 `0x00430b07`–`0x00430b77` 当场掷出号码（`ebx` = 1..36），
+ *   随即 `0x00430b7a sprintf("%02d", ebx)` 拆成两位写进 `[0x48c37d]/[0x48c37e]`，
+ *   开号那一拍 `0x00430c48`/`0x00430c80`（号码球）与 `0x00430cba`/`0x00430cf4`
+ *   （`Data.mkf#517` 的大号绿字）把它画出来 —— **无论有没有人中**。
+ *   这个号在原版只活在开奖屏的那两个字节里，状态机之外没有任何地方留下它；
+ *   本引擎的 core 一条 action 就把开奖做完，表现层事后**反推不出**没人中奖时开的是几号
+ *   （号码表与公库都原样），所以由 core 在开奖那一刻交出来。
+ */
+export interface LotteryDrawHint {
+  /** 中奖号的**槽号 0..35**（屏上显示 `%02d` 的 `number + 1`，与投注屏/持号表同一口径）*/
+  number: number;
+  /** 得主下标；开出的号没人买为 `null` */
+  winner: number | null;
+  /** 开奖那一刻的公库（屏上「累積獎金」那一格；有人中奖时也就是他拿走的数）*/
+  pool: number;
+  /** **开奖前**的号码表（原版到收屏 `0x00430aee` 才 `memset`，演出全程铭牌上都看得见）*/
+  sold: number[];
 }
 
 /**
@@ -428,12 +592,15 @@ export interface GodLineHint {
 /**
  * 董事長在商店送出的那一件（W-67-a）—— 纯表现提示，见 `GameState.lastShopGift`。
  *
+ * ★ 道具袋全空那一支也写：原版框是无条件走的，`{kind:'tool', id:0, points:70}` 表示
+ *   「框里那个名字是别名到卡 30 的那一项、手里一件都没多」（见 `reduce.ts` 的 `enterShop`）。
+ *
  * 消费者：`client/src/speech.ts` 的 `detectShopGift`（走 `fcn_0044f230` 那一支阶梯）。
  */
 export interface ShopGiftHint {
   /** 送的是道具还是卡 */
   readonly kind: 'tool' | 'card';
-  /** 道具号 / 卡号 */
+  /** 道具号 / 卡号（`0` = 空袋：原版读了道具名表 index 0 那个别名项）*/
   readonly id: number;
   /** 那件的**點數价** —— 原版传给 `0x44f230` 的就是它（不是现金价）*/
   readonly points: number;
@@ -495,6 +662,53 @@ export interface NoticeHint {
    *   其余全部走 `0x5dc`。写在这里是为了客户端**不自己编时长**（C-ARC-2）。
    */
   holdMs?: number;
+  /**
+   * 这扇框在原版里排在**同一条 action 派生的影片之前**（`true`）。
+   *
+   * ★ 魔法屋那几扇就是：`0x431caa` 每一支都是**先** `0x440cac` 弹框（阻塞 1500 ms），
+   *   **再**加蓋（大锤 0x229）/ 拆除（0x211）/ 送監獄・醫院（0x20d / 0x20c）的影片。
+   *   而本引擎客户端的通用口径是「框等影片播完」（過路費閃地块那一类）⇒ 这个标记让客户端
+   *   反过来：影片等这扇框收掉。缺席 = 通用口径。
+   */
+  beforeFilms?: boolean;
+  /**
+   * 框收掉之后原版还**空等**多久（ms，`fcn_0045285e` 忙等 —— 点不掉，也不画东西）；缺席 = 0。
+   *
+   * ★ 魔法屋那几支：變賣卡片 / 存入現金 / 變賣道具 收尾 `push 0xc8`（200 ms，0x00431d53）、
+   *   向後轉 `push 0x1f4`（500 ms，0x004321e6）。
+   */
+  afterMs?: number;
+  /**
+   * 框收掉的那一刻（`afterMs` 空等之前）放的音效（`Effect.mkf` 资源号，纯表现）。
+   *
+   * ★ 魔法屋向後轉：訊息框 0x004321c1 之后紧接 0x004321d0 `call 0x40c78c`，
+   *   它开头 0x0040c793..0x0040c79a `push 0 / push 0x4823f2 / call 0x4542ce` —— `[0x4823f2]` = **56**。
+   */
+  closeSfx?: number;
+  /**
+   * ★ 第十四份（2026-09-23）：**这扇框之后**原版紧跟着的那一句 `player_say`（纯表现）。
+   *
+   * 两种形状：
+   *   - `{ player, event }`：固定槽位（免收九种之后当前玩家的事件 13 `0x0041d6dd`；
+   *     命運坐牢被神明挡掉之后的事件 0 `0x0044d873`）；
+   *   - `{ player, reliefAmount }`：走 `fcn_0044f567` 那条「逃过一劫」阶梯（12/13/14），
+   *     金额是**没付的那一笔**（命運罰金免付 `0x0044ce7e` / `0x0044d028`，
+   *     大財神把费用抹成 0 `0x0041d7c1`）。档位由表现层按 `payTierFor` 分。
+   */
+  say?: { player: number; event: number } | { player: number; reliefAmount: number };
+  /**
+   * ★ 第十四份：这一扇**不是**訊息框，而是亮牌（`fcn_00441f73(卡号, 文字)`：卡面 + 那一句，1500 ms）——
+   *   收費那一段里的被动卡要排在收費框之后、死神框之前，所以跟着訊息框排队。文字 = `key` 的格式串。
+   */
+  card?: number;
+  /**
+   * ★ 2026-09-23：`0x440cac` 的时长参数带 **bit31**（`0x80000000 | ms`）—— 框整体**右移 100**。
+   * @source `0x00440cef test esi, 0x80000000 / je` → `0x00440cf7 and esi, 0x7fffffff` →
+   *   `0x00440cfd add [esp], 0x64` / `0x00440d01 add [esp+8], 0x64`（x0 / x1 各 +100，锚点跟着走）。
+   *   全 exe 只有三处带它：股市柜台漲停 / 跌停（`0x0042af18` / `0x0042b04b push 0x800003e8`）
+   *   与貸款屏进门的暫停放款（`0x004351ee push 0x800005dc`）。
+   */
+  shiftRight?: boolean;
 }
 
 /**
@@ -526,6 +740,7 @@ export interface NoticeHint {
  * | `object.treasure` | `MESSAGE_BOX.got500Points` | 0x0041bb4e `push 0x463ad3` |
  * | `beggar.alms` | `MESSAGE_BOX.alms` | 0x0041b656 `push 0x463ab1` |
  * | `thief.loot` | `MESSAGE_BOX.thiefLoot` | 0x0041ba0a 等五处 `push 0x463ac0` |
+ * | `confinement.*` | `CONFINEMENT.{hotel,disappearing,prison,hospital,sleeping}` | 0x0040c912 一族的五处推串点 `0x4631e0`/`0x4631f5`/`0x46320a`/`0x46321f`/`0x463234` |
  *
  * ★ 免收那九种是 `0x0041d559`「九种免收」的全部：豁免成立时原版**先 `sprintf`
  *   一句、再弹同一个通用訊息框**（`0x41d6a4 push 0x5dc / call 0x440cac`）。
@@ -555,6 +770,11 @@ export type NoticeKey =
   | 'points.30'
   | 'points.10'
   | 'points.card'
+  /** 節日送卡（按地图选框文，`[玩家名, 卡名]`）@source 0x004526c5..0x0045272a */
+  | 'holiday.cardGalaxy'
+  | 'holiday.cardDino'
+  | 'holiday.cardNewYearEve'
+  | 'holiday.cardXmas'
   /** 小遊戲「不玩」白拿的點券（`0x00415472 push 0x463797`，2000 ms）—— `args[0]` = 點數 */
   | 'points.minigame'
   | 'object.gift'
@@ -569,13 +789,159 @@ export type NoticeKey =
   | 'god.blockPurchase'
   /** 福神附身得卡（`0x0040ee13 push 0x4632fd`，1500 ms）—— `args` = [神明名, 卡名]；`cardId` 给台词配档 */
   | 'god.gotCard'
-  /** 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天 */
+  /**
+   * **大福神**附身得两张卡（`0x0040eed7 push 0x463353`，1500 ms）—— **一扇框、两张卡名**。
+   *
+   * `args` = [先抽到的卡名, 後抽到的卡名]（格式串里 `%s` 只出现两次，**不含神明名**：
+   * 「大福神附身\n\n得到%s及%s！」自己写着神明名）⇒ 与 `god.gotCard` 的 args 形状不同。
+   */
+  | 'god.gotCardTwo'
+  /**
+   * **小衰神**附身丢一张卡（`0x0040f12c push 0x4633ab`「小衰神附身\n\n遺失%s！」，`0x0040f13e push 0x5dc` = 1500 ms，
+   * `0x0040f148 call 0x440cac`）—— `args[0]` = 丢掉的卡名；手里没卡（`0x441e77` 返回 0）不弹。
+   */
+  | 'god.lostCard'
+  | 'god.lostHalf'
+  /**
+   * 路过 / 落在銀行格但被拒絕往來（`0x004379ef push 0x464bed`，**1000 ms**）—— `args[0]` = 还剩几天
+   * = `(+0x3b & 0x7f) + 1`（@source `0x004379e6 and al,0x7f` / `0x004379ed inc eax`）
+   */
   | 'bank.rejected'
+  /**
+   * 真人开 ATM 时正「銀行暫停放款」（`+0x3c != 0`）：ATM 窗 `0x401` 铺完面板后 `PostMessage(0x408)`
+   * （`0x004370a5`），`0x408` 那一支 `0x00437123 push 0x464bd4`「銀行暫停放款\n\n還剩%d天！」+
+   * `0x00437135 push 0x5dc`（1500 ms）`call 0x440cac` —— 框盖在 ATM 上。`args[0]` = `(+0x3c & 0x7f) + 1`
+   * （`0x0043711b and al,0x7f` / `0x00437121 inc ebx`）。
+   */
+  | 'bank.frozen'
   /**
    * 董事長蒞臨商店的贈禮（`_rich4_ui_shop_entry` 0x0042e9f8 `push 0x464378`，
    * 訊息框 1500 ms）—— **在商店窗打开之前**弹，`args[0]` = 送出那件的名字。
    */
-  | 'shop.chairmanGift';
+  | 'shop.chairmanGift'
+  /**
+   * ★ 回合開始時「被阻礙」那五扇框 —— 住宿／消失／坐牢／住院／冬眠。
+   *
+   * @source `fcn_0040c912`（VA 0x0040c912，`rich4.asm:6561`）对**当前玩家无条件**弹，
+   *   不分真人与电脑；`args` = [`玩家名`, `剩余天数`]，天数 = `displayRemainingDays(raw, mask)`
+   *   （消失用 `DISAPPEARING_MASK = 0x3f`，其余 `0x7f`）。
+   *   模板见 `@rich4/data` 的 `CONFINEMENT`（`0x4631e0` / `0x4631f5` / `0x46320a`
+   *   / `0x46321f` / `0x463234`）。
+   */
+  | 'confinement.hotel'
+  | 'confinement.disappearing'
+  | 'confinement.prison'
+  | 'confinement.hospital'
+  | 'confinement.sleeping'
+  /**
+   * ★ 魔法屋（2026-09-23）—— 效果派发 `0x431caa` 对**每个中签者**弹的那一扇
+   * （`sprintf("%s\n\n", 名字)` + `strcat(效果名)` → `0x440cac(…, 0x5dc)`，如 0x00431cee..0x00431d23）。
+   * `args` = [中签者名, 效果名]。
+   */
+  | 'magic.effect'
+  /**
+   * 魔法屋「得一張卡片」那一扇（`0x004320dd` 一支：`"%s\n\n"` + `sprintf("得到%s！", 卡名)`，0x00432122）。
+   * `args` = [中签者名, 卡名]。
+   */
+  | 'magic.gotCard'
+  /**
+   * 电脑踩魔法屋：两个转盘都转完后先弹「条件\n\n效果」（`0x00433981..0x004339b8`，
+   * 格式串 `0x464842 "%s\n\n%s"`，1500 ms），**然后**才进 `0x431caa` 逐人施加。
+   * `args` = [条件名（去掉 `#00NN`）, 效果名]。真人那一支没有这一扇（女巫窗口就是它）。
+   */
+  | 'magic.spin'
+  /**
+   * ★ 第十四份：命運的**神明加持**那六扇（`fcn_0044b896` 写 `[0x48c5b8]`，调用方 1500 ms）——
+   * `args[0]` = 神明名（`[0x47ed76 + god_info*4]`）。见 `@rich4/data` 的 `BLESSING`。
+   */
+  | 'blessing.rewardDouble'
+  | 'blessing.rewardVoid'
+  | 'blessing.penaltyDouble'
+  | 'blessing.penaltyVoid'
+  | 'blessing.misfortuneDouble'
+  | 'blessing.misfortuneVoid'
+  /**
+   * ★ 第十四份：过路费的神明调整（`fcn_0041d709`，金额变了才弹，1500 ms）—— `args[0]` = 費名。
+   * 小財神 `0x463c67` / 大財神 `0x463c80` / 小窮神 `0x463c95` / 大窮神 `0x463cae`。
+   */
+  | 'god.tollHalf'
+  | 'god.tollFree'
+  | 'god.tollPlusHalf'
+  | 'god.tollDouble'
+  /** ★ 第十四份：保險理賠（`fcn_0044ba63`，`0x4658fa`，**2000 ms**）—— `args[0]` = 理賠金额 */
+  | 'insurance.payout'
+  /** ★ 第十四份：被动卡亮牌「使用%s」（带 `card`）—— `args[0]` = 卡名 */
+  | 'card.use'
+  /** ★ 第十四份：嫁禍卡亮牌「%s\n\n嫁禍卡生效！」（带 `card`）—— `args[0]` = 出牌者名 */
+  | 'card.scapegoatOn'
+  /** ★ 第十四份：电脑嫁禍之后「嫁禍給%s！」（`0x004449df`，1500 ms）—— `args[0]` = 替死鬼名 */
+  | 'card.scapegoatTo'
+  /** 免罪卡亮牌「%s\n\n免罪卡生效！」（`0x00444be8 push 0x46539d` → `call 0x441f73(0x15)`，带 `card`）—— `args[0]` = 持卡人 */
+  | 'card.absolved'
+  /** 復仇卡亮牌「%s\n\n復仇卡生效！」（`0x004446c7 push 0x46532c` → `call 0x441f73(0x12)`，带 `card`）—— `args[0]` = 持卡人 */
+  | 'card.revenge'
+  // ── ★ 2026-09-23 框模板反查补齐（格式串见 `@rich4/data` 的 `NOTICE_BOX`；时长缺席 = 1500）──
+  /** 惡人：小偷偷點券 `[受害者, 點數]`（0x0041c255，1000 ms）*/
+  | 'npc.stealPoints'
+  /** 惡人：奪卡 `[受害者, 卡名]`（0x0041c2ea，1000 ms）*/
+  | 'npc.stealCard'
+  /** 惡人：強盜搶銀行 `[总得款, 主人]`（0x0041c415，2000 ms）*/
+  | 'npc.robBank'
+  /** 惡人：流氓勒索 `[地主, 金额]`（0x0041c56e / 0x0041c692）*/
+  | 'npc.protection'
+  /** 惡人：間諜取走過路費 `[金额]`（0x0041c56e / 0x0041c692 的另一支）*/
+  | 'npc.spyToll'
+  /** 惡人：間諜取走盈餘 `[金额]`（0x0041c778）*/
+  | 'npc.spySurplus'
+  /** 航空公司轉盤 0「不用出國！」（0x0041abf0）*/
+  | 'company.noTravel'
+  /** 建設公司（真人）选地之前「%s\n\n請選擇欲加蓋地點」`[企業名]`（0x0041aa62 / 0x0041acf7）*/
+  | 'company.pickBuildSite'
+  /** 研究所研發完成 `[道具名]`（0x0041ce0e）*/
+  | 'research.done'
+  /** 認購之后易主：門派「恭喜您成為幫主！」/ 其余「恭喜您獲得經營權！」（0x0041d2aa）*/
+  | 'shares.becameBoss'
+  | 'shares.becameChairman'
+  /** 电脑买 / 卖股 `[玩家, 股名, 张数]`（0x0042c78c / 0x0042d092）*/
+  | 'stock.aiBuy'
+  | 'stock.aiSell'
+  /**
+   * 股市柜台（客户端自己弹，core 不产出）：漲停不能买 / 跌停不能卖
+   * （`0x0042af18` / `0x0042b04b push 0x800003e8` —— **1000 ms、右移 100**）
+   */
+  | 'stock.limitUpNoBuy'
+  | 'stock.limitDownNoSell'
+  /** 貸款屏进门时正暫停放款 `[还剩天数]`（0x004351f8，**右移 100**）*/
+  | 'bank.loanFrozen'
+  /** 电脑贷款 `[玩家, 金额]`（0x0043694b）*/
+  | 'bank.aiBorrow'
+  /** 电脑提前还清贷款 `[玩家, 金额]`（0x00436877，1500 ms）*/
+  | 'bank.aiRepay'
+  /** 回合开始、今天就是还款日「貸款到期日\n\n強制執行！」（0x00436aa5，1500 ms）—— 之后当场扣款 */
+  | 'bank.loanDueForced'
+  /** 回合开始、距还款日 1 天 / 2 天（0x00436ae9，1500 ms）*/
+  | 'bank.loanDueOneDay'
+  | 'bank.loanDueTwoDays'
+  /** 銀行準備金不足、董事長垫付 `[缺口, 董事長]`（0x00436c1f，2500 ms）*/
+  | 'bank.reserveShortfall'
+  /** 特別融資收回：先「銀行經營權易主！」（0x00436ccb），再 `[玩家, 金额]`（0x00436cfd）*/
+  | 'bank.chairmanChanged'
+  | 'bank.forcedSpecialRepay'
+  /** 电脑保釋 `[被保的人]`：監獄 0x0043d550 / 醫院 0x0043ebfc */
+  | 'bail.prison'
+  | 'bail.hospital'
+  /** 自己的地升级但现金不够「您的現金不足！」（0x00419a5d）*/
+  | 'land.cashShort'
+  /** 購地卡现金不够「您的現金不足！」（0x004425fb）*/
+  | 'card.cashShort'
+  /** 搶奪卡（电脑）/ 命運生日（电脑寿星）`[受害者, 卡名]`（0x00441ab1）*/
+  | 'card.robbed'
+  /** 紅卡 / 黑卡（电脑）`[股名, 卡名]`（0x00444fdb / 0x00445154）*/
+  | 'card.useOnStock'
+  /** 查稅卡 `[被查的人, 税金]`（0x004453ef）*/
+  | 'card.taxed'
+  /** 电脑用道具 `[道具名]`（0x00448070）*/
+  | 'tool.aiUse';
 
 /**
  * 这一次加蓋是**谁**发起的 —— 决定表现层要不要先播大锤。
@@ -960,6 +1326,31 @@ export interface GameState {
      */
     shares?: readonly { player: number; amount: number }[];
     /**
+     * ★ 新聞「随机挑一处建筑」那一族（5 外星怪獸 / 15 瓦斯爆炸 / 19 山洪 / 20 超級颱風 /
+     *   21 龍捲風）**挑中的那一处**：`entity` = 实体编码（`0x7d0 + 地块 id` /
+     *   `0xfa0 + 設施 id`，与原版 `[0x48c59c]` 同一套编码），`owner` = **改之前**的
+     *   主人（1 基，0 = 无主；原版在 pass 0 就把 `byte [实体 + 0x19]` 存进 `[0x48c5a0]`）。
+     *
+     * @source 以新聞 21 `fcn_0044ac99` 为例：pass 0 `0x0044acbd rand() % (地块数 + 設施数)`
+     *   → `0x0044acfe strcpy(buf, 实体 + 4)`（名字）→ `0x0044ad79 [0x48c5a0] = owner`
+     *   → `0x0044ad90 sprintf("#0170龍捲風侵襲%s…", 名字)`；pass 1 `0x0044add3 0x40af12(实体)`
+     *   → `0x0044aded view_to(x, y, 2)` → `0x0044adfe mutate_land(实体, 0)` → 影片 0x217 …
+     *   → `0x0044ae4a owner != 0` 才让房主说一句。
+     *
+     * 表现层要它：訊息框里 `%s` 是**这个地名**（不是人名），镜头要移过去，房主要说话。
+     * 纯表现提示（与本字段所在的 `lastEvent` 一样不参与任何规则判定）。
+     */
+    place?: { readonly entity: number; readonly owner: number };
+    /**
+     * ★ 新聞 18「強烈地震」/ 19「山洪」：一起**闪一遍**的那几处（实体编码，同 `place`）。
+     *   18 = 与挑中那一块**同名的每一块地**（挑中設施就只它自己）；19 = 挑中那一处。
+     *   表现层据此在事件框收屏之后闪 16 帧 + 静 400 ms（`fcn_00451985`，与過路費同一支），
+     *   再重画、再停 500 / 300 ms。纯表现提示，不参与规则、不进指纹。
+     * @source 见 `events/news-effects.ts` 的 `NewsEffectResult.flashLots`（18 `0x0044a846` / `0x0044a8d3`，
+     *   19 `0x0044aa9f`；闪 `0x0044a8f3` / `0x0044aab7`）
+     */
+    flashLots?: readonly number[];
+    /**
      * ★ 魔法屋那一支（`kind === 'magicHouse'`）：**目标转盘抽中的条件号 0..11**。
      *
      * @source `spinMagicHouse` 的 `criterion`（VA 0x0043390b 一带：
@@ -984,6 +1375,9 @@ export interface GameState {
      * ```
      * 即台词取自**角色台词表 `0x48084a` 的事件 0／1**（好消息那两条）。
      * 这一支**电脑玩家也会走**，所以那两次 `rand()` 与谁在玩无关。
+     *
+     * ★ 第十四份：`kind === 'fortune'` 时是命運 9 / 10 / 11 / 32 施加后当前玩家那一句的事件号
+     *   （9 → 5、10 → 3|4（`0x0044cb28` 的 `rand()&1`，core 掷）、11 → 3、32 → 3）；被神明挡掉就不带。
      */
     phraseIndex?: number;
   } | null;
@@ -995,8 +1389,8 @@ export interface GameState {
    *   逐格算完才回一个 `path`），而 `path` 的中间格是岔路上 `rand()` 选的、
    *   消费掉的 RNG 状态已经回不去，渲染器事后**推不出来**。原版是逐格 tick 播的，
    *   要 1:1 就得把这份路径原样交给渲染器（见 `client/render.ts` 的 `ActorWalk`）。
-   *   三个覆写点：`reduce.ts` 的 `npcRound`（一輪里每个在盘上的惡人各一趟）、
-   *   `bail`（保釋当场那一趟）、以及用道具 1 时 `runDoll` 的九格。
+   *   两个覆写点：`reduce.ts` 的 `npcStepOnce`（一輪里每个在盘上的惡人各一趟，含刚被保釋出来的）、
+   *   以及用道具 1 时 `runDoll` 的九格。（保釋那一下不走，见 `bail` 那一支。）
    *
    * ★ **只保留最近一次**（每次覆写整份，不做累积）—— 它描述的是「刚刚发生了什么」，
    *   用于起一段补间；累积起来既没有消费者，也会让读档后的画面莫名滑一段。
@@ -1015,12 +1409,44 @@ export interface GameState {
   lastNpcWalks: NpcWalkHint[];
 
   /**
+   * ★★ 这一条 action 轮到的惡人（侧栏画他那一版）—— 纯表现提示，见 `NpcTurnHint`。
+   * 只活一条 action；缺席 / `null` = 这一条不是惡人的回合。
+   */
+  lastNpcTurn?: NpcTurnHint | null;
+
+  /**
+   * ★★ 第二十六份 panel：换人那条 action 演完之后侧栏画谁（行动者号 0..3 / 4..7）—— 纯表现提示，
+   * 只活一条 action，不进指纹 / 存档。见 `reduce.ts` 的 `withTurnHandoff`（`0x436a5a` 的 `0x41906a(1)` 重画：
+   * 距还款日 ≤ 3（含没借过）当场换成下一位；否则留着上一位直到他回合开头 `0x00418d5f`）。
+   */
+  lastPanelTurn?: NpcTurnHint | null;
+
+  /**
+   * ★★ 第二十六份 panel：换人那条 action 在「游标交给下一位、`0x41c84f`」处切成两段的前后状态 ——
+   * `[before → mid]`（惡人那一趟 / 推日期，侧栏仍是上一位）、`[mid → final]`（下一位的「走一天」，侧栏已换）。
+   * 纯表现提示（与 `lastMagicBeats` 同形、同规矩：只活一条 action、不进指纹 / 存档）。分界之前没有演出时不写。
+   */
+  lastTurnBeats?: readonly MagicBeat[] | null;
+
+  /**
    * **上一次用出的卡**（出牌者 + 卡号）—— 纯表现提示，见 `CardPlayHint`。
    *
    * 消费者：`client/src/speech.ts` 的 `cardPlaySpeech()`（用卡时角色说那句话）
    * ⇒ `speech-bubble.ts` 的 `cardLineBubbleOf()`（显示 + 语音）。
    */
   lastCardPlay: CardPlayHint | null;
+
+  /**
+   * ★★ **上一次用出去的道具**（用的人 + 道具号）—— 纯表现提示，与 `lastCardPlay` 同一套规矩
+   *   （不进指纹/存档/history；**真的用出去了**才写）。
+   *
+   * 消费者：`client/src/speech.ts` 的 `toolUseSpeech()` —— 原版 13 件道具在用的那一下
+   * 都 `player_say(角色, 0, _tool_strings[角色][道具号−1])`，而且**在 human/AI 分流之前**。
+   *
+   * 第十一份試玩回報 #3（`feedback/20260922-200005`）：「NPC放置炸弹、定时炸弹时好像也有台词」
+   *   —— 这条通道先前整个没接（`DETECTORS` 只覆盖状态跃迁类台词）。
+   */
+  lastToolUsed: ToolUseHint | null;
 
   /**
    * ★★ **这一笔过路费把哪些地块算了进去**（地块 id，含同盟那一份）—— W-69。
@@ -1035,6 +1461,82 @@ export interface GameState {
    * 只有 `counted.length > 1` 才写，否则 null（原版那时不演）。
    */
   lastTollLands: number[] | null;
+
+  /**
+   * ★★ **这一次樂透開獎开出了什么** —— 纯表现提示，见 `LotteryDrawHint`。
+   *
+   * 消费者：`client/src/lottery-draw-screen.ts` 的 `lotteryDrawCue()`（开奖屏的号码球、
+   * 中央大号数字、得主、持号表）。规矩与 `lastTollLands` 同一套：**纯表现、不进指纹/存档、
+   * 只活一条 action**（`reduce` 出口按引用相等清成 null）。
+   * 只在原版**真的开屏**时写（至少卖出一张票，`0x00431729 cmp eax,0x24 / je` 那道闸之内）。
+   */
+  lastLotteryDraw: LotteryDrawHint | null;
+
+  /**
+   * ★ **魔法屋逐人的演出分段**（D-MAGIC-16，2026-09-23）—— 纯表现提示（不进指纹、不进存档），
+   * 只活一条 action（`reduce` 出口按引用相等清成 null）。缺席 / `null` = 这一条不是魔法屋。
+   *
+   * @source 效果派发 `0x431caa` 的逐人循环（`0x004320b4..0x004320aa`）：每位中签者整支演完
+   *   （闸 → `0x41906a(1)` 重画 → 訊息框 → 镜头 / 影片 → 台词）才轮到下一位；「抽取命運三張」
+   *   每一张（`0x00431dbc` 循环 `0x44db81`）也是一段完整的命運演出。
+   *   core 一条 action 就把整趟写完了，所以把**每一段前后的完整状态**交给表现层逐段演
+   *   （段里的 `currentPlayer` = 那位中签者，同原版 `0x004320c9`）。电脑那一支第一段是
+   *   「条件\n\n效果」那一扇（`0x004339bd`）。
+   */
+  lastMagicBeats?: readonly MagicBeat[] | null;
+
+  /**
+   * ★ **回合开始被挡时这一回合说了哪几句**（事件 19 坐牢 / 20 住院 / 21 冬眠）—— 纯表现提示
+   * （不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条不是被挡的回合开始。
+   *
+   * @source `fcn_0040c912`（主循环 `0x00418d70 push 0` 那一路）：三个计数各自非零时**各掷一次**
+   *   `rand()`，`test al,1` 为真才说 —— 坐牢 `0x0040ca20`、住院 `0x0040ca99`、
+   *   冬眠 `0x0040cb1b`（冬眠还要 `dword [+0x32] == 0`，即住宿/消失/坐牢/住院全为 0，`0x0040cb12`）。
+   *   这几次 `rand()` 与游戏逻辑共用同一个发生器 ⇒ 在 core 里掷，所有客户端一致。
+   *   （第十三份試玩回報，需求方拍板「按原版 1/2 概率」）
+   */
+  lastBlockedSays?: readonly number[] | null;
+
+  /**
+   * ★★ 第二十一份：**这一次月结的现场**（见 `MonthlySettleHint`）—— 纯表现提示（不进指纹、不进存档），
+   * 只活一条 action（`reduce` 出口按引用相等清成 null）。缺席 / `null` = 这一条没有跨月。
+   * 消费者：`client/src/monthly-screen.ts`。
+   */
+  lastMonthlySettle?: MonthlySettleHint | null;
+
+  /**
+   * ★ 第十四份（2026-09-23）：**这一条 action 里原版调了「進帳」档位函数 `fcn_0044f354` 的那几笔**
+   * —— 纯表现提示（不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条没有。
+   *
+   * `0x44f354`（事件 6/7/8）全 exe 只有 6 个调用点，除大財神那一处（`0x0040ed85`，
+   * 走 `lastGodPower`）外都在这里交出去：
+   *   - `0x00419fa1` / `0x00419ff0`：過路費的**地主**（有同盟时只算地主那一份，同盟那份不说）；
+   *   - `0x0041a735`：設施費的主人；
+   *   - `0x00449a80`：新聞 8/9/10 的受奖人；
+   *   - `0x0044d334`：命運「進帳」那一族（20/21/22/25/27/28/29/31）没被神明作廢时。
+   * 金额 = 原版压给 `0x44f354` 的那个数；档位由表现层分（`gainEventFor`）。
+   */
+  lastGainSays?: readonly { player: number; amount: number }[] | null;
+
+  /**
+   * ★ 第十四份：**「消失」那一刻当事人说的那一句**（`fcn_0040d375` 的 `0x0040d3f8 call 0x44f2c2(玩家, 天数)`，
+   * 小额损失那一族 3/4/5；天数 4..6 那一档的 `rand()&1` 在 core 用同一个发生器掷）—— 纯表现，只活一条 action。
+   * 命運 6/7（出國 / 綁架）与航空公司的旅遊（`0x0041b05a`）共用。
+   */
+  lastDisappearSay?: { player: number; event: number } | null;
+
+  /**
+   * ★★ 第十八份（「怎么拍卖直接流标了」）：**这一条 action 里落槌的拍卖**（先后照落槌次序）——
+   * 纯表现提示（不进指纹、不进存档），只活一条 action。缺席 / `null` = 这一条没有。
+   *
+   * 为什么要它：拍賣屏先前靠**屏内自己记**「最后一口是谁加的」推结果 —— 电脑那几口若不是本屏
+   * 发的（单机回合驱动抢先答掉、联机由服务器出），屏就记不到 ⇒ 明明成交却演成「無人出價，宣佈流標。」。
+   * 另外「一开拍就全体不可出价」在 reducer 里当场流标，pending 从没挂出来 ⇒ 屏根本不开；
+   * 原版那种情形照样开窗、再弹「無人出價，宣佈流標。」（`0x0043b2c5`..`0x0043b2cd push 0x465063`）。
+   *
+   * `pending` = 落槌那一刻的那一份（开拍即流标时就是开拍那一份，座位状态照 `openAuction`）。
+   */
+  lastAuctionResults?: readonly AuctionResultHint[] | null;
 
   /**
    * ★★ **这一次 action 要把镜头移到哪里**（`view_to`，@source VA 0x0041d476）。
@@ -1096,6 +1598,14 @@ export interface GameState {
    *   客户端直接从 `god.seize` 訊息框认出来即可，不需要本字段。
    */
   lastGodLine?: GodLineHint | null;
+  /**
+   * ★★ 2026-09-25（provenance 审计 events 第二轮）：**这一条 action 里台词阶梯掷过的 `rand()`**，按先后
+   *   （站点 VA、说话人、原值）。原版这些 `rand()` 走全局流（见 `rules/speech-rand.ts`），core 在 exe 掷的
+   *   那一刻掷、记在这里；客户端按站点 + 说话人查它挑那一句（取代先前的 speech-coin 状态哈希）。
+   *   纯表现瞬态：不进指纹 / 存档；最外层 `reduce` 出口整份覆写（没掷就是 null）。
+   *   逐段演出（魔法屋 `lastMagicBeats`）的中间状态带「到那一段为止」的前缀。
+   */
+  lastSpeechRolls?: readonly SpeechRoll[] | null;
 
   /**
    * ★ **这一次神明發威掷出来的金额**（W-55 行 7）—— 纯表现提示。
@@ -1237,8 +1747,20 @@ export interface GameState {
    *   （见 `state/reduce.ts` 的 `startAuction` / `settleAuctionExplicit`）。
    *
    * 空数组 = 没有排队的拍卖（绝大多数时候）。
+   *
+   * ★ 2026-09-25（follow-up 审计）：队列项不只是「一场拍卖」了 —— 还有
+   *   「破产清算的下一抽」「挂着没入账的那笔钱」「推日期剩下的半段」，
+   *   见 `rules/interaction.ts` 的 `QueuedStep`。
    */
-  pendingQueue: AuctionRequest[];
+  pendingQueue: QueuedStep[];
+
+  /**
+   * ★ 推日期（`0x41cf67`）里开出了拍卖（分紅打破產的下線拍卖）时，新当前玩家的回合边界
+   * `0x41c84f`（还款日检查 / 阻碍计数 / 神明任期…）要等那串拍卖打完才走 —— 原版拍卖是阻塞调用，
+   * `0x419039 call 0x41c84f` 排在 `0x41902e call 0x41cf67` 之后。这里记下「打完之后给谁走」；
+   * 缺省 / `null` = 没有押着的。
+   */
+  deferredTurnStart?: number | null;
 
   /**
    * 全局道具表，`tools[player * 15 + toolId]`。
@@ -1317,6 +1839,31 @@ export interface GameState {
 
 export function isAlive(p: Player): boolean {
   return (p.whoPlays & WHO_PLAYS_MASK) !== WHO_PLAYS_DEAD;
+}
+
+/**
+ * 这一位**还没上盘**吗（开局之后、自己第一个回合之前）。
+ *
+ * @source 回合游标 `0x00418fee..0x00419006`：
+ * ```asm
+ * 00418ff5  cmp byte [player + 0x15], 0     ; who_plays
+ * 00418ffc  jne 收下
+ * 00418ffe  cmp word [player + 0x08], 0     ; xpos
+ * 00419006  jne 跳过                         ; ★ who_plays == 0 且 xpos != 0 才是出局者
+ * ```
+ *   ⇒ `who_plays == 0 且 xpos == 0` 的人**照样轮到**；轮到时镜头函数 `0x0040829d`
+ *   见 `(x, y) == (0, 0)`（`0x004082c9` / `0x004082d1`）就把他摆上盘。
+ * ★ 另加一条 `landingWhoPlays != 0`：原版里出局者一定已经上过盘（xpos 非 0），这一格把
+ *   「测试工厂 / 旧存档里 `whoPlays = 0` 又没填坐标的出局者」排除掉，免得被当成没上盘的人
+ *   复活；破产会把这一格清成 0（`memset` 覆盖 +0x64）。在原版可达的局面上两种判据等价。
+ */
+export function isUnplaced(p: Player): boolean {
+  return p.whoPlays === 0 && p.xpos === 0 && (p.landingWhoPlays ?? 0) !== 0;
+}
+
+/** 还在这一局里：在场，或还没上盘（等自己的第一个回合落地）*/
+export function isInGame(p: Player): boolean {
+  return isAlive(p) || isUnplaced(p);
 }
 
 /** 该玩家此刻由 AI 操作吗（电脑玩家，或被托管的人类） */
