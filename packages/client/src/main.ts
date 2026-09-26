@@ -535,6 +535,14 @@ import { clockSeed, reduceWithHostRng, reseedAfterLoad } from './rng-host.ts';
 import { FlightRecorder, reportFileName } from './flight-recorder.ts';
 import { holidayBgmOnDayAdvance } from './holiday-bgm.ts';
 import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } from './stage.ts';
+import { parseBoard } from './board-data.ts';
+import {
+  boardPanelDom,
+  fetchBoardText,
+  installBoardPanel,
+  readBoardView,
+  type BoardStorage,
+} from './board-panel.ts';
 import { installTextEntryRecovery, installViewportFit, iosViewportContent, isIosWebKit } from './viewport.ts';
 import { drawTitle, hitTitle, TITLE_RESOURCE } from './title.ts';
 import {
@@ -790,6 +798,18 @@ const $ = <T extends HTMLElement>(id: string): T => {
   if (el === null) throw new Error(`缺少元素 #${id}`);
   return el as T;
 };
+
+/**
+ * 佈告欄的收起状态存在这里（见 `board-panel.ts` 的 `BOARD_STATE_KEY`）。
+ * Safari 隐私模式下**碰一下 `localStorage` 就抛**，所以包起来 —— 拿不到就只是不记忆。
+ */
+function boardStorage(): BoardStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 const canvas = $<HTMLCanvasElement>('board');
 // ★ 第十二份試玩回報：iPad Safari 地址栏遮住工具栏 —— 页面钉在 `visualViewport` 上，
@@ -13787,6 +13807,26 @@ async function boot(): Promise<void> {
     bindAudioUnlock();
     // ★ 第十九份：切后台 / 回前台（音频挂起、驱动停在闸口、回来静默追上）
     bindPageVisibility();
+    // ★ 左侧佈告欄（需求方 2026-09-25）：内容来自同源 `/board.json`
+    //   （部署时由 `tools/build-board.mjs` 生成，见 board-panel.ts）。
+    //   ⚠️ 位置在 `boot()` 的**末尾**，不在模块顶层：面板一露出来就要 `requestRender()`
+    //      （它一展开画布就变窄，`resizeCanvas()` 得在那一帧里读新尺寸），
+    //      而渲染链要等素材与状态都铺好才安全。
+    //   拿不到 / 解析不动 / 是空的 ⇒ 面板一直 `hidden`、一个监听都不挂，游戏一个字节不受影响。
+    const boardDom = boardPanelDom(document);
+    if (boardDom !== null) {
+      void installBoardPanel({
+        dom: boardDom,
+        load: async () => {
+          const text = await fetchBoardText((url) => fetch(url, { cache: 'no-cache' }));
+          return text === null ? null : parseBoard(text);
+        },
+        storage: boardStorage(),
+        view: readBoardView(window),
+        onLayoutChange: requestRender,
+        onError: (err) => log(`⚠ 佈告欄載入失敗：${err instanceof Error ? err.message : String(err)}`),
+      });
+    }
     // ★ W-74：「我还在这儿」——只要有鼠标 / 键盘输入就报一次（自己有 10 秒节流）
     for (const type of ['mousemove', 'mousedown', 'keydown', 'wheel'] as const) {
       window.addEventListener(type, noteAlive, { passive: true });

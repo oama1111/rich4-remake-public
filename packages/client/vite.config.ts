@@ -17,6 +17,11 @@ const assetsRoot = fileURLToPath(new URL('../../assets', import.meta.url));
  */
 const hdRoot = process.env['RICH4_HD_ROOT'] ?? assetsRoot;
 const HD_TIERS = ['hd', 'hd-2x'] as const;
+/**
+ * 佈告欄的产物目录。`publicDir: false` ⇒ 开发服务器不管 `dist-web/`，
+ * 而 `/board.json` 正是 `tools/build-board.mjs` 写在那里面的（生产由 Node 静态站端出去）。
+ */
+const distWeb = fileURLToPath(new URL('dist-web', import.meta.url));
 
 /**
  * 把原版素材目录挂到 `/assets/game/*`，超分产物挂到 `/assets/hd/*` 与 `/assets/hd-2x/*`
@@ -32,6 +37,12 @@ function serveGameAssets(): Plugin {
       server.middlewares.use((req, res, next) => {
         if (req.url === undefined) return next();
         const url = req.url.split('?')[0]!;
+        // ★ 左侧佈告欄（`board-panel.ts`）：本地 `pnpm dev` 也看得到面板 ——
+        //   生产是 Node 静态站从 `dist-web/` 直接端这个文件，dev 这边没人管它。
+        //   没有这个文件（还没跑过 `pnpm board`）就照常 404，客户端那边「拿不到就收起面板」。
+        if (url === '/board.json') {
+          return streamFile(join(distWeb, 'board.json'), 'application/json; charset=utf-8', res, next);
+        }
         const tier = HD_TIERS.find((t) => url === `/assets/${t}-manifest.json`);
         if (tier !== undefined) return streamFile(join(hdRoot, `${tier}-manifest.json`), 'application/json', res, next);
         const hdTier = HD_TIERS.find((t) => url.startsWith(`/assets/${t}/`));

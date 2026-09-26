@@ -139,9 +139,77 @@
       .itx-detail { color: #9aa3b2; font-size: 12px; margin-bottom: 8px; }
       #interaction .row { margin: 0; }
       #interaction button { padding: 5px 10px; font-size: 12px; }
+      /* ★ 左侧佈告欄（需求方 2026-09-25）：公告 + 更新日誌，DOM，**不进 640×480 舞台**。
+         `#boardpanel` 是 `body`（flex 行）里 `#board` 前面的一个普通 flex 子项 ——
+         **不是浮层**（没有 position: absolute/fixed），所以它一展开画布就自己变窄，
+         两者永不重叠 ⇒ 画布上的指针/触摸事件一个都截不走，`touch-action: none` 照旧。
+         收起时只剩 30px 的细籤（手机上默认收起，见 board-panel.ts 的 defaultCollapsed）。
+         内容与收起状态见 board-panel.ts；拿不到 /board.json 时整块 `hidden`。 */
+      #boardpanel {
+        flex: none; display: flex; flex-direction: row; align-items: stretch;
+        width: min(300px, 64vw); overflow: hidden;
+        background: #14171d; border-right: 1px solid #2a2e38; color: #c9d2e0;
+      }
+      #boardpanel[hidden] { display: none; }
+      #boardpanel.collapsed { width: 30px; }
+      #boardpanel.collapsed #boardbody { display: none; }
+      #boardtab {
+        flex: none; width: 30px; margin: 0; padding: 8px 0; border: 0; border-radius: 0;
+        background: #1d2430; color: #cfe0f5; cursor: pointer; opacity: .9;
+        writing-mode: vertical-rl; letter-spacing: 6px;
+        font: 600 12px/1.2 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+        touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+      }
+      #boardtab:hover { background: #26303f; opacity: 1; }
+      /* 面板自己滚，滚到底不再把整页带着动（页面本来就没有可滚的高度，双保险）。
+         下沿留出一颗按钮的高度：左下角那颗**固定定位**的「回報問題」（z-index 40，
+         `left/bottom: 14px`）正压在面板这一块上，不留白最后几行会被它盖住。 */
+      #boardbody {
+        flex: 1 1 auto; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
+        padding: 12px 12px 56px 10px;
+        font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif;
+      }
+      #boardbody h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; letter-spacing: 1px; color: #e8d24a; }
+      #boardbody h2.second { margin-top: 16px; }
+      #boardannouncement { margin: 0 0 4px; color: #e6e8ee; }
+      /* 公告按**空行**分段（board-panel.ts 的 announcementParagraphs）；段内的单换行照旧保留 */
+      #boardannouncement p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      /* 落款（以破折号开头的那一段）：右对齐 + 灰 + 小一号，免得看起来像正文 */
+      #boardannouncement p.boardsig {
+        margin: 0 0 4px; text-align: right; color: #8d95a5; font-size: 12px;
+      }
+      #boardannouncedate { margin: 0 0 12px; color: #7d8698; font-size: 11px; font-variant-numeric: tabular-nums; }
+      #boardannouncedate:empty { display: none; }
+      #boardhighlights { margin: 0 0 12px; padding-left: 18px; }
+      #boardhighlights li { margin-bottom: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      #boardlog { border-top: 1px solid #232732; padding-top: 8px; }
+      #boardlog summary { cursor: pointer; color: #9aa3b2; }
+      #boardlog summary:hover { color: #c9d2e0; }
+      #boardchangelog { margin-top: 8px; }
+      .boardday { margin-bottom: 10px; }
+      .boarddate { margin-bottom: 2px; color: #8d95a5; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .boardday ul { margin: 0; padding-left: 16px; }
+      .boardday li { margin-bottom: 3px; color: #b9c2d0; white-space: pre-wrap; overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
+    <!-- ★ 左侧佈告欄（DOM，不进画布）：公告 + 更新日誌。内容由 tools/build-board.mjs
+         生成到 dist-web/board.json，页面上没有编辑器。默认 `hidden` —— 只有拿到并解析出
+         内容才露出来；拿不到就一直是隐藏的（游戏照跑）。收起时只剩左边那条细籤。 -->
+    <aside id="boardpanel" class="collapsed" hidden>
+      <button id="boardtab" type="button" aria-expanded="false" title="看公告與更新日誌">公告</button>
+      <div id="boardbody">
+        <h2>公告</h2>
+        <p id="boardannouncement"></p>
+        <div id="boardannouncedate"></div>
+        <h2 class="second">更新日誌</h2>
+        <ul id="boardhighlights"></ul>
+        <details id="boardlog">
+          <summary>全部更新記錄</summary>
+          <div id="boardchangelog"></div>
+        </details>
+      </div>
+    </aside>
     <canvas id="board"></canvas>
     <aside id="panel">
       <div class="meta" id="meta">载入中…</div>
