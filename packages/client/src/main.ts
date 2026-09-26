@@ -538,6 +538,7 @@ import { LAYOUT, SCREEN_H, SCREEN_W, stageMetrics, toStage, type StageMetrics } 
 import { parseBoard } from './board-data.ts';
 import {
   boardPanelDom,
+  boardPanelFoyer,
   fetchBoardText,
   installBoardPanel,
   readBoardView,
@@ -12778,6 +12779,26 @@ function foyerUrl(): string {
 }
 
 /**
+ * ★ 左侧佈告欄与门厅之间那块开关（见 `board-panel.ts` 的 `BoardPanelFoyer`）。
+ * 门厅是 `position: fixed` 的满屏覆盖层，以前正好把佈告欄盖死 —— 第一次来的人
+ * 看不到公告。现在门厅的左边界是 `--board-w`（面板自己写），而这块开关让面板在
+ * **门厅期间一律展开**（连手机也是）：需求方「一进去就要看到」。
+ */
+const boardFoyer = boardPanelFoyer();
+
+/** 门厅在屏幕上的这段期间：佈告欄让出左边那一条 + 一律展开；结束（含中途抛了）回到正常判据 */
+async function whileFoyerUp<T>(open: () => Promise<T>): Promise<T> {
+  boardFoyer.up = true;
+  boardFoyer.refresh?.();
+  try {
+    return await open();
+  } finally {
+    boardFoyer.up = false;
+    boardFoyer.refresh?.();
+  }
+}
+
+/**
  * ★ 门厅：**只在网页版、且地址里没有 `screen=` 调试参数时**，
  * 在素材载入完成之后、標題畫面之前出现（任务书 W-73 §1）。
  *
@@ -12787,13 +12808,15 @@ function foyerUrl(): string {
  */
 async function openFoyer(opts: { view?: 'home' | 'rooms'; notice?: string; inviteRoom?: string | null } = {}): Promise<void> {
   const storage = browserStorage();
-  const choice = await showFoyer({
-    ...opts,
-    wsUrl: foyerUrl(),
-    clientId: loadClientId(storage),
-    storage,
-    hd: { on: hdStage, set: setHdStage },
-  });
+  const choice = await whileFoyerUp(() =>
+    showFoyer({
+      ...opts,
+      wsUrl: foyerUrl(),
+      clientId: loadClientId(storage),
+      storage,
+      hd: { on: hdStage, set: setHdStage },
+    }),
+  );
   if (choice.kind === 'solo') {
     enterTitleScreen();
     return;
@@ -13823,6 +13846,8 @@ async function boot(): Promise<void> {
         },
         storage: boardStorage(),
         view: readBoardView(window),
+        // ★ 门厅期间面板一律展开、并把左边界让给它（见 `whileFoyerUp` 与 `BoardPanelFoyer`）
+        foyer: boardFoyer,
         onLayoutChange: requestRender,
         onError: (err) => log(`⚠ 佈告欄載入失敗：${err instanceof Error ? err.message : String(err)}`),
       });

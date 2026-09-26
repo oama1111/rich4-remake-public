@@ -301,16 +301,24 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
   const openSocket = opts.openSocket ?? ((url: string) => new WebSocket(url) as unknown as FoyerSocket);
 
   return new Promise<FoyerChoice>((resolve) => {
+    // ★ 左侧佈告欄（`board-panel.ts`）：门厅**不再盖住左边那一条**。
+    //   面板把当前占位宽度写在 `body` 的 `--board-w` 上（`hidden` ⇒ `0px`），
+    //   这里拿它当左边界 —— 面板于是永远露在门厅外面（第一次来的人也看得到公告），
+    //   而面板自己还是 `body` 里没 position 的 flex 子项，绝不会浮到画布上去。
+    //   `top/right/bottom` 代替 `inset`：左边那一份让给面板。拿不到变量时按 `0px`
+    //   （= 老行为，铺满整屏）。
     const overlay = el(
       doc,
       'div',
-      `position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#16304f 0%,#0b1622 70%);font-family:${FONT};color:#e9eef7;overflow:auto`,
+      `position:fixed;left:var(--board-w,0px);top:0;right:0;bottom:0;z-index:50;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at top,#16304f 0%,#0b1622 70%);font-family:${FONT};color:#e9eef7;overflow:auto`,
     );
     overlay.id = 'foyer';
+    // 卡片按**门厅自己的宽度**收（不是 `100vw`）：面板展开时门厅只剩右边那一块，
+    // 手机竖屏那种窄条上 360px 的卡片要能跟着缩，不许溢出到面板底下。
     const card = el(
       doc,
       'div',
-      'width:360px;max-width:calc(100vw - 32px);box-sizing:border-box;margin:16px auto;padding:22px 20px;border-radius:12px;background:#17304f;border:1px solid #2b4a70;box-shadow:0 10px 34px rgba(0,0,0,.45)',
+      'width:360px;max-width:calc(100% - 32px);box-sizing:border-box;margin:16px auto;padding:22px 20px;border-radius:12px;background:#17304f;border:1px solid #2b4a70;box-shadow:0 10px 34px rgba(0,0,0,.45)',
     );
     overlay.append(card);
     doc.body.append(overlay);

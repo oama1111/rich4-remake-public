@@ -7,6 +7,8 @@
  * 所以这里用一套假 DOM 把它能碰到的东西收窄成一张白名单，再钉住 index.html 的布局：
  *
  *   ① 纯逻辑：默认收起（手机 / 矮屏 / 粗指针）、记忆、`/board.json` 拿不到怎么办；
+ *   ①′ 门厅（进站第一屏）：面板把自己占多宽写给 `body` 的 `--board-w`，门厅拿它当左边界
+ *      ⇒ 面板永远露在门厅外面；门厅在屏幕上时面板**一律展开**（连手机也是）；
  *   ② 运行：装上去之后**唯一的监听**是细籤上的 `click` —— 画布上零监听、零改动；
  *   ③ 源码：面板的 CSS 是 `flex: none` 的**兄弟项**（不是浮层），画布那两条
  *      （`flex: 1 1 0` / `touch-action: none`）一个字没动；面板只按 6 个 id 取元素；
@@ -15,18 +17,23 @@
  * ★ 可证伪性：给 `#boardpanel` 加一句 `position: fixed`、把它挪到 `<canvas>` 后面、
  *   把 `#boardpanel[hidden]` 那条删掉、让面板去 `getElementById('board')`、
  *   用 `innerHTML` 摆条目、`installBoardPanel` 在拿不到数据时也挂监听 —— 都会当场红。
+ *   把门厅改回 `inset:0`（或者忘了写 `--board-w`）同样当场红。
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { BOARD_JSON_PATH, parseAnnouncement, parseBoard, type BoardData } from './board-data.ts';
 import {
   BOARD_STATE_KEY,
+  BOARD_WIDTH,
+  BOARD_WIDTH_VAR,
   NARROW_HEIGHT_PX,
   NARROW_WIDTH_PX,
   TAB_LABEL_CLOSE,
   TAB_LABEL_OPEN,
   announcementParagraphs,
   boardPanelDom,
+  boardPanelFoyer,
+  boardPanelWidth,
   defaultCollapsed,
   fetchBoardText,
   initialCollapsed,
@@ -42,6 +49,9 @@ import {
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const main = readFileSync(new URL('./main.ts', import.meta.url), 'utf8');
 const panelSrc = readFileSync(new URL('./board-panel.ts', import.meta.url), 'utf8');
+const foyerSrc = readFileSync(new URL('./foyer.ts', import.meta.url), 'utf8');
+/** 去注释之后的源码（注释里提到 `inset` / `100vw` 这些词不算） */
+const foyerCode = foyerSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 // ============================================================
 //  假 DOM / 假 storage
@@ -95,10 +105,14 @@ function fakeEl(id: string): FakeEl {
 /**
  * 一套假面板。`canvas` 是**游戏那块画布的另一半** —— 面板这一路根本拿不到它
  * （`boardPanelDom` 只按 6 个自己的 id 取元素），下面几条断言就是钉这个。
+ *
+ * `layout.props` 是写给 `body` 的那几个自定义属性（真 DOM 上是 `body.style`）——
+ * 门厅靠 `--board-w` 让位，所以它也得被钉住。
  */
 function fakePanel(): {
   dom: BoardPanelDom;
   els: Record<'root' | 'tab' | 'announcement' | 'announcedAt' | 'highlights' | 'changelog', FakeEl>;
+  layout: { readonly props: Map<string, string> };
   canvas: FakeEl;
 } {
   const els = {
@@ -114,9 +128,15 @@ function fakePanel(): {
   els.root.classes.add('collapsed');
   els.tab.textContent = TAB_LABEL_OPEN;
 
+  const props = new Map<string, string>();
   const dom: BoardPanelDom = {
     root: els.root,
     tab: els.tab,
+    layout: {
+      setProperty: (name, value) => {
+        props.set(name, value);
+      },
+    },
     announcement: els.announcement,
     announcedAt: els.announcedAt,
     highlights: els.highlights,
@@ -125,7 +145,7 @@ function fakePanel(): {
     item: (text) => ({ kind: 'item', text }),
     group: (date, items) => ({ kind: 'group', date, items }),
   };
-  return { dom, els, canvas: fakeEl('board') };
+  return { dom, els, layout: { props }, canvas: fakeEl('board') };
 }
 
 function fakeStorage(init: Record<string, string> = {}): BoardStorage & { readonly map: Map<string, string> } {
@@ -214,6 +234,140 @@ describe('收起状态的记忆', () => {
     expect(BOARD_STATE_KEY).toBe('rich4.board.collapsed');
     expect(readStoredCollapsed(storedCollapsedValue(true))).toBe(true);
     expect(readStoredCollapsed(storedCollapsedValue(false))).toBe(false);
+  });
+});
+
+// ============================================================
+//  ①′ 门厅：进门第一眼就要看到公告
+// ============================================================
+
+describe('★ 门厅（进站第一屏）—— 面板让位 + 一律展开', () => {
+  it('`--board-w` 三个值：hidden ⇒ 0px、收起 ⇒ 30px、展开 ⇒ 与面板同一条公式', () => {
+    expect(BOARD_WIDTH_VAR).toBe('--board-w');
+    expect(boardPanelWidth({ hidden: true, collapsed: true })).toBe('0px');
+    expect(boardPanelWidth({ hidden: true, collapsed: false })).toBe('0px'); // hidden 优先
+    expect(boardPanelWidth({ hidden: false, collapsed: true })).toBe('30px');
+    expect(boardPanelWidth({ hidden: false, collapsed: false })).toBe('min(300px, 64vw)');
+    // 门厅在屏幕上、展开着 ⇒ 窄一点那一档（给门厅留 240px）
+    expect(boardPanelWidth({ hidden: false, collapsed: false, foyer: true })).toBe('min(300px, max(120px, 100vw - 240px))');
+    // 收起优先于门厅那一档
+    expect(boardPanelWidth({ hidden: false, collapsed: true, foyer: true })).toBe('30px');
+    expect(BOARD_WIDTH).toEqual({
+      hidden: '0px',
+      collapsed: '30px',
+      foyer: 'min(300px, max(120px, 100vw - 240px))',
+      expanded: 'min(300px, 64vw)',
+    });
+  });
+
+  it('★ 变量里那几条宽度与 index.html 的面板宽度一字不差（对不上门厅就会错开一条缝 / 压住面板）', () => {
+    expect(cssRule('#boardpanel')).toContain(`width: ${BOARD_WIDTH.expanded}`);
+    expect(cssRule('#boardpanel.foyer')).toContain(`width: ${BOARD_WIDTH.foyer}`);
+    expect(cssRule('#boardpanel.collapsed')).toContain(`width: ${BOARD_WIDTH.collapsed}`);
+    // 初始值：面板 hidden（`board.json` 还没回来）时门厅铺满整屏
+    expect(cssRule('body')).toContain(`${BOARD_WIDTH_VAR}: ${BOARD_WIDTH.hidden}`);
+  });
+
+  it('★ `.foyer` 那一档在手机上真的把门厅让宽了：390 宽 ⇒ 面板 150px / 门厅 240px', () => {
+    // `min(300px, max(120px, 100vw - 240px))` 在 390 宽上 = 150px（老公式 64vw = 250px）
+    const vw = 390;
+    const foyerWidth = Math.min(300, Math.max(120, vw - 240));
+    expect(foyerWidth).toBe(150);
+    expect(vw - foyerWidth).toBe(240);
+    // 桌面（1440）上这一档与展开那一条完全一样 ⇒ 观感不变
+    expect(Math.min(300, Math.max(120, 1440 - 240))).toBe(300);
+    expect(Math.min(300, 0.64 * 1440)).toBe(300);
+  });
+
+  it('★ 门厅在 ⇒ 手机（横屏 / 竖屏）、小窗都默认**展开**；门厅收了 ⇒ 回到视口判据', () => {
+    expect(initialCollapsed(IPHONE_LANDSCAPE, null, true)).toBe(false);
+    expect(initialCollapsed(IPHONE_PORTRAIT, null, true)).toBe(false);
+    expect(initialCollapsed({ width: 640, height: 480, coarse: false }, null, true)).toBe(false);
+    expect(initialCollapsed(IPHONE_LANDSCAPE, null, false)).toBe(true);
+    expect(initialCollapsed(DESKTOP, null, false)).toBe(false);
+  });
+
+  it('★ 玩家自己按过的永远优先（门厅期间也不翻他的案）', () => {
+    expect(initialCollapsed(IPHONE_LANDSCAPE, '1', true)).toBe(true);
+    expect(initialCollapsed(DESKTOP, '0', true)).toBe(false);
+    expect(initialCollapsed(DESKTOP, '看不懂', true)).toBe(false);
+  });
+
+  it('装上时门厅还在 ⇒ 手机上也展开，并把占位宽度写给门厅（窄一点那一档）', async () => {
+    const { dom, els, layout } = fakePanel();
+    await installBoardPanel({
+      dom,
+      load: async () => board(),
+      storage: fakeStorage(),
+      view: IPHONE_LANDSCAPE,
+      foyer: boardPanelFoyer(true),
+    });
+    expect(els.root.hidden).toBe(false);
+    expect(els.root.classes.has('collapsed')).toBe(false);
+    expect(els.root.classes.has('foyer')).toBe(true); // 门厅那一档（给门厅留 240px）
+    expect(els.tab.textContent).toBe(TAB_LABEL_CLOSE);
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.foyer);
+  });
+
+  it('★ 门厅收了（main.ts 调 refresh）⇒ 手机上回到默认收起，而且**不写** localStorage', async () => {
+    const { dom, els, layout } = fakePanel();
+    const storage = fakeStorage();
+    const foyer = boardPanelFoyer(true);
+    await installBoardPanel({ dom, load: async () => board(), storage, view: IPHONE_LANDSCAPE, foyer });
+
+    foyer.up = false;
+    foyer.refresh?.();
+    expect(els.root.classes.has('collapsed')).toBe(true);
+    expect(els.root.classes.has('foyer')).toBe(false); // 门厅没了就不再走窄那一档
+    expect(els.tab.textContent).toBe(TAB_LABEL_OPEN);
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.collapsed);
+    expect(storage.map.size).toBe(0); // 这一下不是玩家按的，不进记忆
+
+    // 门厅又回来（进房失败回列表）：再展开一次
+    foyer.up = true;
+    foyer.refresh?.();
+    expect(els.root.classes.has('collapsed')).toBe(false);
+    expect(els.root.classes.has('foyer')).toBe(true);
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.foyer);
+  });
+
+  it('★ 门厅期间玩家按了「收起」⇒ 门厅收了也照他说的收着（窄那一档让位给 30px）', async () => {
+    const { dom, els, layout } = fakePanel();
+    const storage = fakeStorage();
+    const foyer = boardPanelFoyer(true);
+    await installBoardPanel({ dom, load: async () => board(), storage, view: DESKTOP, foyer });
+    els.tab.listeners[0]?.fn(); // 玩家按的
+    expect(els.root.classes.has('collapsed')).toBe(true);
+    expect(els.root.classes.has('foyer')).toBe(false);
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.collapsed);
+    foyer.up = false;
+    foyer.refresh?.();
+    expect(els.root.classes.has('collapsed')).toBe(true);
+    expect(storage.map.get(BOARD_STATE_KEY)).toBe('1');
+  });
+
+  it('收起 / 展开都跟着改写 `--board-w`（门厅跟着动）', async () => {
+    const { dom, els, layout } = fakePanel();
+    await installBoardPanel({ dom, load: async () => board(), storage: fakeStorage(), view: DESKTOP });
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.expanded);
+    els.tab.listeners[0]?.fn();
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.collapsed);
+    els.tab.listeners[0]?.fn();
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe(BOARD_WIDTH.expanded);
+  });
+
+  it('★ 拿不到 board.json ⇒ `--board-w` 是 0px（门厅照旧铺满整屏，不空一条）', async () => {
+    const { dom, layout } = fakePanel();
+    const shown = await installBoardPanel({ dom, load: async () => null, storage: fakeStorage(), view: DESKTOP });
+    expect(shown).toBe(false);
+    expect(layout.props.get(BOARD_WIDTH_VAR)).toBe('0px');
+  });
+
+  it('门厅开关没给（桌面壳 / 测试）也照装，`refresh` 没人填', async () => {
+    const { dom, els } = fakePanel();
+    const shown = await installBoardPanel({ dom, load: async () => board(), storage: fakeStorage(), view: DESKTOP });
+    expect(shown).toBe(true);
+    expect(els.root.classes.has('collapsed')).toBe(false);
   });
 });
 
@@ -611,6 +765,34 @@ describe('★ index.html 的布局：面板是「挤窄舞台」的兄弟项，�
     }
     // 更新日誌默认收起（`<details>` 不带 open）
     expect(html).toMatch(/<details id="boardlog">/);
+  });
+});
+
+describe('★ 门厅不再盖住面板（源码钉子）', () => {
+  it('★ 门厅的左边就是面板的占位宽度 —— 不是 `inset:0`（那就是「进门看不见公告」的老毛病）', () => {
+    expect(foyerSrc).toContain('position:fixed;left:var(--board-w,0px);top:0;right:0;bottom:0');
+    expect(foyerCode).not.toContain('inset:0');
+    // 覆盖层该有的那几样一个没少
+    expect(foyerSrc).toContain('z-index:50');
+    expect(foyerSrc).toContain('align-items:center');
+    expect(foyerSrc).toContain('justify-content:center');
+    expect(foyerSrc).toContain('radial-gradient(');
+    expect(foyerSrc).toContain('overflow:auto');
+  });
+
+  it('★ 卡片按门厅自己的宽度收 —— 面板展开时 360px 的卡片不许溢到面板底下', () => {
+    expect(foyerSrc).toContain('max-width:calc(100% - 32px)');
+    expect(foyerCode).not.toContain('100vw');
+  });
+
+  it('★ main.ts 在门厅开合的整段里拨那块开关，并把开关交给面板', () => {
+    expect(main).toContain('boardPanelFoyer()');
+    expect(main).toContain('foyer: boardFoyer');
+    expect(main).toContain('await whileFoyerUp(() =>');
+    expect(main).toContain('boardFoyer.up = true');
+    expect(main).toContain('boardFoyer.up = false');
+    // 开关落在 `finally` 里：门厅中途抛了也得把「门厅没了」说出去
+    expect(main.indexOf('boardFoyer.up = false')).toBeGreaterThan(main.indexOf('boardFoyer.up = true'));
   });
 });
 
