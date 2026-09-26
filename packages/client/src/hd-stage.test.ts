@@ -170,11 +170,14 @@ describe('surfaceScaleOf', () => {
 });
 
 describe('hdStageRequested', () => {
-  it('★ 默认开（2026-09-24 上线）；?hd=0 关、?hd=1 开（URL 优先于 localStorage）', () => {
-    expect(hdStageRequested('', null)).toBe(true);
+  it('★ 默认关（2026-09-25 改：高清是 AI 重繪、動畫一致性尚有问题且手机发烫）；?hd=0 关、?hd=1 开（URL 优先于 localStorage）', () => {
+    expect(hdStageRequested('', null)).toBe(false);
     expect(hdStageRequested('?hd=1', '0')).toBe(true);
     expect(hdStageRequested('?hd=0', '1')).toBe(false);
     expect(hdStageRequested('?hd=false', null)).toBe(false);
+    // 本机没勾过 => 关；勾过（存 '1'）=> 开，且不带参数时也认
+    expect(hdStageRequested('?humans=1', null)).toBe(false);
+    expect(hdStageRequested('', '1')).toBe(true);
     expect(hdStageRequested('?humans=1', '1')).toBe(true);
     // 本机记过「关」
     expect(hdStageRequested('?humans=1', '0')).toBe(false);

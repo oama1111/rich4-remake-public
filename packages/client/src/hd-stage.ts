@@ -246,14 +246,16 @@ export const HD_STORAGE_KEY = 'rich4.hd';
 
 /**
  * 高清舞台开关：`?hd=0` 关、`?hd=1` 开（URL 优先）；URL 没写就看 `localStorage['rich4.hd']`，
- * 存的是 `'0'` 才关。
+ * 存的是 `'1'` 才开。
  *
- * ★ 2026-09-24 需求方拍板：**默认开**（W-80 §8 上线）。先前默认关是为了「不影响线上版本」。
+ * ★ 2026-09-25 需求方拍板：**默认关**（2026-09-24 曾默认开）。理由：高清素材是 AI 重绘的、
+ * 部分角色的动画一致性尚有问题，而且手机上会明显发烫 —— 想体验的人自己在门厅勾一次
+ * （勾选记在本机 `localStorage`，不上网、不进存档；`?hd=1` 仍可强制开）。
  */
 export function hdStageRequested(search: string, stored: string | null): boolean {
   const q = new URLSearchParams(search).get('hd');
   if (q !== null) return !(q === '0' || q === 'false');
-  return stored !== '0';
+  return stored === '1';
 }
 
 /**

@@ -5766,7 +5766,8 @@ const hudOffCtx = (() => {
  * 高清（`hd-stage.ts` + 已验证的超分素材，W-80 §8）：开着时舞台 / 棋盘 / 側欄三块离屏画布按窗口的
  * 放大倍数开像素，文字与超分素材不再被压回 640×480。
  *
- * ★ 2026-09-24 起**默认开**；`?hd=0` 或 `localStorage['rich4.hd'] = '0'`（门厅的「高清畫面」勾选框）关。
+ * ★ 2026-09-25 起**默认关**（需求方拍板：高清是 AI 重繪、部分角色動畫一致性尚有問題，手机也发烫）；
+ *   在门厅勾一次「高清畫面」即开（`localStorage['rich4.hd'] = '1'`），`?hd=1` 可强制开、`?hd=0` 强制关。
  *   关着时 `surfaceScale` 恒为 1，三块画布一次都不碰，也不去拉超分清单 —— 与改造前逐像素一致。
  * ★ 这是**每台设备自己的显示设定**：不进存档、不上网，联机时各端各看各的（不影响同步）。
  */
@@ -5775,7 +5776,7 @@ let hdStage = (() => {
   try {
     stored = localStorage.getItem(HD_STORAGE_KEY);
   } catch {
-    // 隐私模式等拿不到 localStorage —— 按默认（开）处理
+    // 隐私模式等拿不到 localStorage —— 按默认（关）处理
   }
   return hdStageRequested(window.location.search, stored);
 })();

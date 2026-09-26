@@ -474,7 +474,7 @@ export function showFoyer(opts: FoyerOptions): Promise<FoyerChoice> {
         box.id = 'foyer-hd';
         box.checked = hd.on;
         box.addEventListener('change', () => hd.set(box.checked));
-        row.append(box, el(doc, 'span', '', '高清畫面（文字更清晰、部分美術重繪；手機發燙可以關掉）'));
+        row.append(box, el(doc, 'span', '', '高清畫面（文字更清晰、部分美術AI重繪；手機發燙可以關掉）'));
         card.append(row);
       }
 
