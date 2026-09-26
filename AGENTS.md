@@ -12,4 +12,4 @@
 - 凭感觉补一个数值 / 坐标 / 分支 —— 禁止（规则 4）。拿不准就写 [`docs/escalations.md`](docs/escalations.md)，换下一个任务。
 - `pnpm test` 出现 `skipped` 还当成全绿 —— 那是原版目录没找到（`RICH4_WORKSPACE`，见 `vitest.config.ts`）。
 
-门禁：`pnpm check`。仓库含原版素材，**必须保持 private**。一任务一分支 `ds/<任务号>-<slug>`，开 PR，不直接推 `main`。
+门禁：`pnpm check`。**本仓库是 code-only 公开镜像：不含原版素材、没有 LFS**（带素材的那份仓库保持 private；素材自备见 `docs/assets.md`）。一任务一分支 `ds/<任务号>-<slug>`，开 PR，不直接推 `main`。

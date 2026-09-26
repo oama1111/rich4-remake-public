@@ -44,12 +44,6 @@
     ],
     "copyright": "大富翁4 版权归 大宇资讯 / 软星科技 所有。本重制版为个人练习项目。",
     "shortDescription": "大富翁4 重制版",
-    "longDescription": "大富翁4（1998，大宇/软星）的开源重制版。原版素材已随包附带，双击即可运行。",
-    "resources": [
-      "../../../assets/game/*.mkf",
-      "../../../assets/game/*.mid",
-      "../../../assets/game/Midi.txt",
-      "../../../assets/game/RICH4.CFG"
-    ]
+    "longDescription": "大富翁4（1998，大宇/软星）的重制版。本仓库是 code-only 公开镜像，不含原版素材，打包也不附带任何游戏数据：运行前需自备原版《大富翁4》安装目录（见 docs/assets.md），程序会在运行时从该目录读取素材。"
   }
 }

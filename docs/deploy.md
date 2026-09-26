@@ -11,7 +11,8 @@
    - **不许**提交进仓库（`.gitignore` 已经挡了 `*.br` / `*.gz` / `assets-manifest.json`）；
    - **不许**打进任何**公开**的 Docker 镜像；
    - **不许**传到任何公开的对象存储 / CDN（S3 公开桶、Cloudflare R2 公开域……）。
-2. **仓库保持 private**（它含原版素材，走 LFS）。不发公开 release、不 fork 到公开仓库。
+2. **带素材的那份仓库保持 private**（它含原版素材，走 LFS）；公开的 `rich4-remake-public`
+   是 **code-only 镜像：不含 `assets/`、没有 LFS**。不发公开 release、不 fork 到公开仓库。
 3. 整站只有**一道共享密码** —— 那是唯一的门，选一个只有朋友知道的，别用你的常用密码。
 4. 这台机器上**只有 80/443 对公网开**；Node 进程只听 `127.0.0.1:8787`。
 
@@ -97,6 +98,9 @@ ls packages/client/dist-web/index.html   # 期望：文件在
 ## 4. 摆素材（原件 + 预压缩 + 清单）
 
 **服务端不读仓库里的 `assets/game/`**，它读的是**部署目录**里的那一份：
+
+> 📦 下面 `rsync` 的**源**是**你自己那份原版安装目录**（见 `docs/assets.md`）——
+> 公开的 code-only 镜像里没有 `assets/game/`；在带素材的那份私有仓库里，源就是仓库内的 `assets/game/`。
 
 ```bash
 cd /srv/rich4/rich4-remake

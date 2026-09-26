@@ -9,12 +9,13 @@
 
 ## 素材来源
 
-原版素材（`assets/game/`）已随仓库入库，桌面版也**随包附带**——
-打出来的 `.app` 双击即可运行，不会问你任何路径。
+> ⚠️ **本仓库是 code-only 公开镜像：不含任何原版素材，也没有 Git LFS。**
+> 所以 clone 下来**不能直接跑** —— 先自备原版《大富翁4 超时空之旅》v3.11 的安装目录
+> （`assets/game/`：7 个 `.mkf` + 配乐），按 [`docs/assets.md`](docs/assets.md) 摆好。
 
-这是个人练习项目的定位（见 DEVELOPMENT_PLAN.md §5.6 的 C-LEG-2 / C-LEG-3）。
-⚠️ 若日后要公开发布，把 `bundle.resources` 去掉即可回到「玩家自备目录」模式——
-那条读取外部目录的路径始终保留着，只是平时用不到。
+桌面版同样**不附带**素材：`bundle.resources` 已从 `tauri.conf.json` 去掉，
+打包出来的 `.app` 在运行时读取外部目录（玩家自备目录模式，
+见 DEVELOPMENT_PLAN.md §5.6 的 C-LEG-2 / C-LEG-3）。
 
 原作版权归 **大宇资讯 / 软星科技** 所有。
 
@@ -27,7 +28,7 @@ pnpm install
 pnpm dev                       # → http://localhost:5180
 #   可选参数：?humans=1&ai=3&map=0&seed=7&chars=0,3,5,7
 
-# 打一个可双击的桌面版
+# 打一个桌面版（素材自备，产物不含游戏数据 —— 见上）
 pnpm --filter @rich4/desktop build
 #   产物：packages/desktop/src-tauri/target/release/bundle/macos/大富翁4 重制版.app
 ```
