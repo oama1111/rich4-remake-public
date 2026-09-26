@@ -39,7 +39,7 @@ systemd 单元原样可用；外网实测门 / 白名单 / WebSocket 升级口 /
 
 **实际采用的做法与下文第 2–4 步不同（更省事，推荐）**：服务器上**不 clone 仓库**（不用往服务器放 GitHub 凭据，
 服务器上也就不会出现完整的原版素材目录），而是在自己电脑上构建好再 `rsync` 上去：
-① 本机 `pnpm --filter @rich4/client build` 与 `pnpm precompress --from assets/game --out <本机临时目录>`；
+① 本机 `pnpm --filter @rich4/client build` + `pnpm board`（生成 `dist-web/board.json`，见 §3）与 `pnpm precompress --from assets/game --out <本机临时目录>`；
 ② `rsync` 三样：服务器要用的源码（`packages/{core,data,assets-pipeline,server}` + 根上的 `package.json` / `pnpm-lock.yaml` /
 `pnpm-workspace.yaml` / `tsconfig*.json` + `deploy/`）、`packages/client/dist-web/`、素材（7 个 `.mkf` 原件 + `.br/.gz` + 清单 + `*.mid`）；
 ③ 服务器上只装运行期依赖：`pnpm install --frozen-lockfile --prod --filter "@rich4/server..."`（1 GB 内存十秒装完）。
@@ -110,7 +110,12 @@ sudo -u rich4 -H git -C /srv/rich4 clone https://github.com/oama1111/rich4-remak
 cd /srv/rich4/rich4-remake
 sudo -u rich4 -H pnpm install --frozen-lockfile
 sudo -u rich4 -H pnpm --filter @rich4/client build
+# ★ 佈告欄（左侧公告 + 更新日誌）：**每次构建之后**都要跑 —— `dist-web/` 是 `rsync --delete`
+#   同步的，手放进去的 board.json 下次部署就没了。要改公告 / 亮点就改
+#   `docs/board/announcement.md` 与 `docs/board/highlights.md`，再重跑这一条。
+sudo -u rich4 -H pnpm board
 ls packages/client/dist-web/index.html   # 期望：文件在
+ls packages/client/dist-web/board.json   # 期望：文件在
 ```
 
 ## 4. 摆素材（原件 + 预压缩 + 清单）
