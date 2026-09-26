@@ -15,9 +15,12 @@
 | 步骤 2 画质 | 管线打通，**`assets/hd/` 仍是空的**（没真跑过超分）|
 | 步骤 3 联机 | 服务器 / 大厅 / 客户端接线完成；Q-NET-1（desync 自愈）、Q-NET-2（大厅换角色/地图）**已于 09-15 结案**（`net-client.ts` 的 `requestResync`/`setCharacter`/`setMap`）—— ⚠️ `DEVELOPMENT_PLAN.md` §11 末尾仍写着「未做」，是过期记录（WORKPLAN 的 W-01）。**缺的是多机实战验证**（W-40）|
 
-**远端（2026-09-18 起）**：两个**私有**仓库 —— `github.com/oama1111/rich4-remake`（本仓库，素材走 LFS）、
-`github.com/oama1111/rich4-spec`（规格 + 差分测试，此前**不在任何版本控制里**）。
-⚠️ 含原版素材，**必须保持 private**（C-LEG-2/3）。
+**远端**：带素材的 **私有** `github.com/oama1111/rich4-remake`（本仓库，素材走 LFS）、
+**私有** `github.com/oama1111/rich4-spec`（规格 + 差分测试，此前**不在任何版本控制里**），
+以及一个 **公开的 code-only 镜像** `github.com/oama1111/rich4-remake-public`
+（由本仓库 `git filter-repo` 得来：去掉 `assets/` 与 LFS、隐去服务器 IP 与部署密钥路径；
+**没有素材，clone 下来跑不起来** —— 见 README「素材来源」/ `docs/assets.md`）。
+⚠️ 含原版素材的那两个**必须保持 private**（C-LEG-2/3）；公开镜像里不许出现任何原版素材或画面。
 
 **真值测试的路径**：一律从 `RICH4_WORKSPACE` 起算（`vitest.config.ts`，默认 = 本仓库的上一级目录，
 即要求 `../Rich4`、`../extracted`、`../assets-clean`、`../rich4-re` 与本仓库并排）。

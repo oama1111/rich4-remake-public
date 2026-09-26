@@ -5,10 +5,12 @@
 #   （Windows 的 .msi 要在 Windows 上打、Linux 的 AppImage 要在 Linux 上打），
 #   本机是 macOS，所以 Windows/Linux 那两个只能在这里验。
 #
-# ★ 素材随包：`assets/game/*.mkf` 由 tauri.conf.json 的 bundle.resources 带进去，
-#   但**素材不入库**（太大），CI 里要用 `RICH4_ASSETS` 指到一份现成的
-#   （见 README 的「素材」一节）；没有素材时构建仍然能过，只是打出来的包
-#   启动后要用户手选目录。
+# ⚠️ **本仓库是 code-only 公开镜像**：不含 `assets/`、没有 Git LFS，
+#   `tauri.conf.json` 里也没有 `bundle.resources`。所以这里打出来的包**不含游戏数据**
+#   （构建照样能过；装上去要用户自己选原版目录，见 README「素材来源」/ docs/assets.md）。
+#   要出「素材随包」的包，用下面的 `RICH4_ASSETS` 指一份现成的原版安装目录。
+#   ⚠️ `check` job 里读素材的测试会跳过 ⇒ **本镜像的 CI 绿只说明「没写坏」，证明不了保真**。
+#   带素材的那份私有仓库里这套工作流才是完整形态（素材走 LFS、由 bundle.resources 打进包）。
 name: build
 
 on:
@@ -33,17 +35,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      # ★ assets/game/ 走 LFS；不拉的话 *.mkf / *.mid 只是指针文件，读它们的测试会炸
-      #   （"mkf 索引表偏移非法: 1936876918" = 把 "version https://git-lfs…" 当成了表头）。
-      #   素材几乎不变 ⇒ 按 LFS 对象清单做缓存，只有首次 / 缓存过期才消耗 LFS 流量。
-      - name: LFS 对象清单（缓存键）
-        # hashFiles 只认工作区内的文件 ⇒ 落在 .git/ 下（不会弄脏工作树）
-        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .git/lfs-ids
-      - uses: actions/cache@v6
-        with:
-          path: .git/lfs
-          key: lfs-v2-${{ hashFiles('.git/lfs-ids') }}
-      - run: git lfs pull
+      # ⚠️ 本镜像**没有 Git LFS、也没有 `assets/`**（见文件头）：原来那三步
+      #   「LFS 对象清单 → 缓存 `.git/lfs` → `git lfs pull`」在这里只会空跑，已删掉。
+      #   带素材的私有仓库里**必须保留**（否则 checkout 拿到的只是指针文件，
+      #   "mkf 索引表偏移非法: 1936876918" = 把 "version https://git-lfs…" 当成了表头）。
       - uses: pnpm/action-setup@v6
         with:
           version: 9
@@ -112,19 +107,10 @@ jobs:
       RICH4_ASSETS: ${{ secrets.RICH4_ASSETS }}
     steps:
       - uses: actions/checkout@v7
-      # ★ W-05：素材走 **LFS**（`assets/game/**.mkf` 等）。不打这一条，checkout 拿到的
-      #   只是指针文件（"version https://git-lfs…"），打出来的包没有素材、读它的代码会炸。
-      #   缓存键做法与 check job 完全一致（同一把 key ⇒ 两个 job 共享缓存）。
-      - name: LFS 对象清单（缓存键）
-        shell: bash
-        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .git/lfs-ids
-      - uses: actions/cache@v6
-        with:
-          path: .git/lfs
-          key: lfs-v2-${{ hashFiles('.git/lfs-ids') }}
-      - name: 拉素材（LFS）
-        shell: bash
-        run: git lfs pull
+      # ⚠️ 本镜像没有 Git LFS / `assets/`：原来那三步拉素材的（W-05 的 LFS 清单 + 缓存 +
+      #   `git lfs pull`）已删掉；带素材的私有仓库里请保留。
+      #   这里**没有素材也能出包**，只是包内不含游戏数据 —— 要「素材随包」就走下面
+      #   「取素材」那一步，用 `RICH4_ASSETS` 指一份原版安装目录。
       - uses: pnpm/action-setup@v6
         with:
           version: 9
@@ -156,9 +142,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # 素材：LFS 已经拿到；这一条只是**可选覆盖**（secret 指一份别的素材时用）。
+      # 素材：**本镜像里这是唯一一条拿素材的路**（没有 LFS 可拉）。不设 `RICH4_ASSETS`
+      #   就打出不含游戏数据的包（用户第一次启动自己选目录）。
       # ★ Windows 的默认 shell 是 pwsh，下面这段是 bash 语法 ⇒ 必须钉 shell: bash。
-      - name: 取素材（可选覆盖）
+      - name: 取素材（可选：RICH4_ASSETS）
         if: env.RICH4_ASSETS != ''
         shell: bash
         run: |
