@@ -11,11 +11,15 @@
  *   VITE=5417 node tools/board-panel-pw.mjs
  *
  * 量四件事：
+ *   ⓪ **门厅（进站第一屏）**：面板不再被那块 `position:fixed` 的覆盖层盖住 ——
+ *      公告文字在门厅上 `elementFromPoint` 判得到、细籤点得动、模式按钮照样点得到、
+ *      左下角「回報問題」判得到也点得开、面板与画布仍不重叠。桌面 1440×900 与
+ *      iPhone 13 横屏 / **竖屏**各量一遍（竖屏那一档面板会窄到 150px，给门厅留 240px）。
  *   ① 桌面 1440×900：面板默认展开、画布整块在视口里、两者不重叠、画布**正中/四边**上
  *      `elementFromPoint` 都判给画布、真的点下去画布收得到 `mousedown`；页面不可滚。
  *   ② iPhone 13 横屏：面板默认**收起**（只剩细籤）、画布整块在视口里、点一下画布照收。
  *   ③ 面板收起/展开来回切：画布跟着变宽变窄，切换前后都整块可见、都能点。
- *   ④ `/board.json` 404：面板**一直不出现**，画布照旧收得到点击（游戏不受影响）。
+ *   ④ `/board.json` 404：面板**一直不出现**、门厅照旧铺满整屏，画布照旧收得到点击。
  *
  * `PLAYWRIGHT_FROM`：从哪个目录 require('playwright')（与 tools/ 下别的 pw 脚本同一套约定）。
  * 截图落在 `.qa-tmp/`（**不入库**）。
@@ -124,6 +128,148 @@ async function waitForPanel(page) {
   await page.waitForSelector('#boardpanel:not([hidden])', { timeout: 180000 });
 }
 
+// ============================================================
+//  ⓪ 门厅：公告必须在**进门第一屏**就看得见
+// ============================================================
+
+/** 门厅与面板的几何 + 命中判定（门厅还盖着的时候用） */
+const FOYER_GEOM = `(() => {
+  const r = (id) => {
+    const el = document.getElementById(id);
+    if (el === null) return null;
+    const b = el.getBoundingClientRect();
+    return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, w: b.width, h: b.height };
+  };
+  const hit = (id) => {
+    const el = document.getElementById(id);
+    if (el === null) return '(missing)';
+    const b = el.getBoundingClientRect();
+    const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    if (at === null) return '(null)';
+    // 命中的元素自己或它的祖先（面板里点到的多半是里面的 <p> / <li>）
+    return el.contains(at) || at.contains(el) ? id : (at.id || at.tagName);
+  };
+  const panel = document.getElementById('boardpanel');
+  const canvas = document.getElementById('board');
+  const foyer = document.getElementById('foyer');
+  const pr = panel.getBoundingClientRect(), cr = canvas.getBoundingClientRect(), fr = foyer.getBoundingClientRect();
+  const body = document.getElementById('boardbody');
+  const fb = document.getElementById('feedback');
+  return {
+    vw: window.innerWidth, vh: window.innerHeight,
+    panel: { left: pr.left, right: pr.right, w: pr.width, h: pr.height },
+    canvas: { left: cr.left, right: cr.right, w: cr.width },
+    foyer: { left: fr.left, right: fr.right, w: fr.width, top: fr.top, bottom: fr.bottom },
+    collapsed: panel.classList.contains('collapsed'),
+    tabLabel: document.getElementById('boardtab').textContent,
+    boardWidthVar: getComputedStyle(document.body).getPropertyValue('--board-w').trim(),
+    panelOverCanvas: Math.min(cr.right, pr.right) - Math.max(cr.left, pr.left) > 0.5 &&
+                     Math.min(cr.bottom, pr.bottom) - Math.max(cr.top, pr.top) > 0.5,
+    panelOverFoyer: Math.min(fr.right, pr.right) - Math.max(fr.left, pr.left) > 0.5,
+    gap: fr.left - pr.right,                       // 门厅左边界 − 面板右边界（应当 ≈ 0）
+    canvasLeftGap: cr.left - pr.right,             // 画布左边界 − 面板右边界（同上）
+    // 公告正文那一段的可见性：命中 + 在视口里 + 有字
+    announcement: (() => {
+      const el = document.getElementById('boardannouncement');
+      const p = el.querySelector('p');
+      if (p === null) return { text: '', hit: '(no p)' };
+      const b = p.getBoundingClientRect();
+      const at = document.elementFromPoint(b.left + Math.min(40, b.width / 2), b.top + b.height / 2);
+      return {
+        text: (p.textContent ?? '').slice(0, 24),
+        len: (p.textContent ?? '').length,
+        hit: at !== null && (p === at || p.contains(at)) ? 'boardannouncement' : (at === null ? '(null)' : (at.id || at.tagName)),
+        inView: b.left >= -0.5 && b.right <= window.innerWidth + 0.5 && b.top >= -0.5 && b.bottom <= window.innerHeight + 0.5,
+        rect: { left: Math.round(b.left), top: Math.round(b.top), right: Math.round(b.right), bottom: Math.round(b.bottom) },
+      };
+    })(),
+    // 面板自己滚得动吗 + 它给左下角那颗按钮留的白够不够
+    scroll: (() => {
+      const pad = parseFloat(getComputedStyle(body).paddingBottom);
+      const fbr = fb.getBoundingClientRect();
+      return { h: body.clientHeight, scrollH: body.scrollHeight, padBottom: pad, needPad: window.innerHeight - fbr.top };
+    })(),
+    // 首页那几个按钮：名字框 / 單人模式 / 在線聯機（面板展开之后还点得到吗）
+    solo: (() => {
+      const el = document.getElementById('foyer-solo');
+      const b = el.getBoundingClientRect();
+      const title = el.querySelector('div');           // 「單人模式」那一行
+      const tb = title.getBoundingClientRect();
+      const lh = parseFloat(getComputedStyle(title).lineHeight) || 27;
+      return {
+        hit: hit('foyer-solo'), w: b.width, h: b.height, inView: b.bottom <= window.innerHeight + 0.5 && b.top >= -0.5,
+        titleLines: Math.round(tb.height / lh),        // > 2 行 = 被挤成竖排了
+        overflowX: el.scrollWidth > el.clientWidth + 0.5 || title.scrollWidth > title.clientWidth + 0.5,
+        card: (() => { const c = document.getElementById('foyer').firstElementChild.getBoundingClientRect();
+          return { left: Math.round(c.left), right: Math.round(c.right), w: Math.round(c.width), h: Math.round(c.height), inFoyer: c.left >= fr.left - 0.5 && c.right <= fr.right + 0.5 }; })(),
+      };
+    })(),
+    feedbackHit: hit('feedback'),
+    tabHit: hit('boardtab'),
+    foyerHit: (() => {
+      const at = document.elementFromPoint(fr.left + fr.width / 2, fr.top + fr.height - 4);
+      return at === null ? '(null)' : (at.id || at.tagName);
+    })(),
+  };
+})()`;
+
+/**
+ * ⓪ 门厅上量一遍：公告看得见 + 各颗按钮点得到 + 面板与画布不重叠。
+ * `tag` 是前缀（`[桌面 门厅]` / `[iPhone 横屏 门厅]`）。
+ */
+async function foyerChecks(page, tag, opts) {
+  await page.waitForSelector('#foyer', { timeout: 180000 });
+  await page.waitForTimeout(300); // 等面板取回 /board.json 并摆好
+  const g = await page.evaluate(FOYER_GEOM);
+  const numbers = JSON.stringify({
+    面板宽: Math.round(g.panel.w),
+    门厅宽: Math.round(g.foyer.w),
+    '--board-w': g.boardWidthVar,
+    门厅左: Math.round(g.foyer.left),
+    面板右: Math.round(g.panel.right),
+    公告命中: g.announcement.hit,
+    模式按钮命中: g.solo.hit,
+    回報問題命中: g.feedbackHit,
+  });
+
+  check(`${tag} 面板在门厅上是**展开**的（不是只给一条细籤）`, g.collapsed === false && g.panel.w > 100, `w=${Math.round(g.panel.w)} collapsed=${g.collapsed}`);
+  check(`${tag} ★ 公告正文在门厅上看得见（elementFromPoint 判给公告）`, g.announcement.hit === 'boardannouncement' && g.announcement.len > 10, `${g.announcement.hit} / ${g.announcement.len} 字 / ${g.announcement.text}`);
+  check(`${tag} 公告整段在视口里（没有被挤出去）`, g.announcement.inView, JSON.stringify(g.announcement.rect));
+  check(`${tag} ★ 细籤点得到（elementFromPoint 判给 #boardtab）`, g.tabHit === 'boardtab', g.tabHit);
+  check(`${tag} 面板与门厅**不重叠**：门厅左边界 = 面板右边界`, Math.abs(g.gap) <= 0.5 && g.panelOverFoyer === false, `gap=${g.gap.toFixed(2)} foyer.left=${g.foyer.left} panel.right=${g.panel.right}`);
+  check(`${tag} 面板与画布仍不重叠（面板没浮到画布上）`, g.panelOverCanvas === false && Math.abs(g.canvasLeftGap) <= 0.5, `panel.right=${g.panel.right} canvas.left=${g.canvas.left}`);
+  check(`${tag} --board-w 写出来了（门厅靠它让位）`, g.boardWidthVar !== '', `--board-w=${g.boardWidthVar} 面板=${Math.round(g.panel.w)}px`);
+  check(`${tag} 面板自己滚得动，且给「回報問題」留的白够（≥ 那颗按钮从底边算起的高度）`, g.scroll.scrollH >= g.scroll.h && g.scroll.padBottom >= g.scroll.needPad, JSON.stringify(g.scroll));
+  check(`${tag} ★ 左下角「回報問題」判得到（没被面板盖住）`, g.feedbackHit === 'feedback', g.feedbackHit);
+  check(`${tag} ★ 模式按钮还点得到（面板展开没把门厅挤爆）`, g.solo.hit === 'foyer-solo' && g.solo.inView === true && g.solo.overflowX === false && g.solo.titleLines <= 2, `hit=${g.solo.hit} 按钮=${Math.round(g.solo.w)}×${Math.round(g.solo.h)} 标题=${g.solo.titleLines}行 卡片=${JSON.stringify(g.solo.card)}`);
+  check(`${tag} 卡片落在门厅那一块里（没溢到面板底下）`, g.solo.card.inFoyer === true, JSON.stringify(g.solo.card));
+  check(`${tag} 页面不可滚`, (await page.evaluate(() => window.scrollY)) === 0);
+  console.log(`   · ${tag} 数字：${numbers}`);
+  return g;
+}
+
+/**
+ * ⓪′ 「回報問題」真的点得开（只在门厅上点，点完关掉）。
+ * 面板是没 position 的 flex 子项、那颗按钮是 `z-index: 40` 的固定定位元素 ——
+ * 层序上按钮在上，这里用真点击确认一遍。
+ */
+async function feedbackClickable(page, tag) {
+  await page.click('#feedback');
+  await page.waitForTimeout(150);
+  const open = await page.evaluate(() => document.getElementById('feedbackpanel').hidden === false);
+  const noteHit = await page.evaluate(() => {
+    const el = document.getElementById('feedbacknote');
+    const b = el.getBoundingClientRect();
+    const at = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    return at === null ? '(null)' : (at.id || at.tagName);
+  });
+  check(`${tag} ★ 点「回報問題」开得出面板（不是只有命中判定）`, open === true, `#feedbackpanel hidden=${!open} 备注框命中=${noteHit}`);
+  if (open) {
+    await page.click('#feedbackcancel');
+    await page.waitForTimeout(150);
+  }
+}
+
 /**
  * 门厅（`#foyer`，`position: fixed; inset: 0; z-index: 50`）是进站的第一屏 ——
  * 它盖着整页（包括佈告欄），所以「画布吃不吃得到点击」必须**先进游戏**再量。
@@ -139,6 +285,60 @@ async function enterGame(page) {
 async function main() {
   mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ args: ['--mute-audio', '--autoplay-policy=no-user-gesture-required'] });
+
+  // ── ⓪ 门厅（进站第一屏）：公告必须看得见 ──────────────────
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`${BASE}?mute=1`, { waitUntil: 'domcontentloaded' });
+    await waitForPanel(page);
+
+    const g = await foyerChecks(page, '[桌面 门厅]');
+    await feedbackClickable(page, '[桌面 门厅]');
+    if (SHOTS) await page.screenshot({ path: `${OUT}/desktop-foyer.png` });
+
+    // 细籤在门厅上也点得动：点一下 ⇒ 收起（门厅跟着往左挪，面板那一条变成 30px）
+    await page.click('#boardtab');
+    await page.waitForTimeout(200);
+    const gc = await page.evaluate(FOYER_GEOM);
+    check('[桌面 门厅] 点细籤能收起，门厅跟着挪到 30px', gc.collapsed === true && Math.abs(gc.foyer.left - 30) <= 1, `foyer.left=${gc.foyer.left.toFixed(1)} panel.w=${gc.panel.w}`);
+    check('[桌面 门厅] 收起后门厅仍不压住面板', gc.panelOverFoyer === false && Math.abs(gc.gap) <= 0.5, `gap=${gc.gap.toFixed(2)}`);
+    await page.click('#boardtab');
+    await page.waitForTimeout(200);
+    const ge = await page.evaluate(FOYER_GEOM);
+    check('[桌面 门厅] 再点一下展开回来（门厅让出整块面板）', ge.collapsed === false && Math.abs(ge.foyer.left - g.panel.w) <= 1, `foyer.left=${ge.foyer.left.toFixed(1)} panel.w=${Math.round(g.panel.w)}`);
+    check('[桌面 门厅] 页面没有 JS 异常', errors.length === 0, errors.join(' | '));
+
+    // 进游戏：门厅一收，面板回到「宽屏默认展开」的老样子
+    await enterGame(page);
+    const gg = await page.evaluate(GEOM);
+    check('[桌面 进游戏后] 门厅没了，面板照旧展开、画布整块可见', gg.collapsed === false && gg.panel.w > 100 && !gg.overlap, `w=${Math.round(gg.panel.w)}`);
+    await ctx.close();
+  }
+
+  // ── ⓪″ iPhone 13 横屏 / 竖屏的门厅：面板展开之后门厅还够不够用（数字说话）──
+  for (const [tag, device] of [
+    ['[iPhone 横屏 门厅]', 'iPhone 13 landscape'],
+    ['[iPhone 竖屏 门厅]', 'iPhone 13'],
+  ]) {
+    const ctx = await browser.newContext({ ...devices[device] });
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`${BASE}?mute=1`, { waitUntil: 'domcontentloaded' });
+    await waitForPanel(page);
+    await foyerChecks(page, tag);
+    if (SHOTS) await page.screenshot({ path: `${OUT}/${device.replaceAll(' ', '-')}-foyer.png` });
+    // 真的点一下「單人模式」：门厅挤爆的话这里就进不去游戏
+    await page.fill('#foyer-name', 'pw-foyer');
+    await page.tap('#foyer-solo');
+    await page.waitForSelector('#foyer', { state: 'detached', timeout: 60000 });
+    check(`${tag} 点得到「單人模式」，进得了游戏`, true);
+    check(`${tag} 页面没有 JS 异常`, errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
 
   // ── ① 桌面 ────────────────────────────────────────────────
   {
@@ -321,6 +521,12 @@ async function main() {
     const page = await ctx.newPage();
     await page.route('**/board.json', (route) => route.fulfill({ status: 404, body: 'Not Found' }));
     await page.goto(`${BASE}?mute=1`, { waitUntil: 'domcontentloaded' });
+    // ★ 拿不到 board.json ⇒ 面板不占位（`--board-w: 0px`），门厅照旧铺满整屏、按钮照旧点得到
+    await page.waitForSelector('#foyer', { timeout: 180000 });
+    await page.waitForTimeout(1000); // 给面板那一次 fetch 留出失败的时间
+    const gf = await page.evaluate(FOYER_GEOM);
+    check('★ [无 board.json] 门厅铺满整屏（面板一个像素都不占）', gf.foyer.left === 0 && gf.panelOverFoyer === false && gf.boardWidthVar === '0px', `foyer.left=${gf.foyer.left} 面板宽=${Math.round(gf.panel.w)} --board-w=${gf.boardWidthVar}`);
+    check('★ [无 board.json] 模式按钮照旧点得到', gf.solo.hit === 'foyer-solo', gf.solo.hit);
     await enterGame(page);
     // 反向等：游戏起来了之后，面板仍然不该出现
     await page.waitForTimeout(2000);

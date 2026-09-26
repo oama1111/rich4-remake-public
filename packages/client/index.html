@@ -16,6 +16,11 @@
         position: fixed; top: 0; left: 0; right: 0; bottom: 0;
         margin: 0; overflow: hidden; overscroll-behavior: none; display: flex; background: #000; color: #e6e8ee;
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", sans-serif;
+        /* ★ 左侧佈告欄此刻占多宽（`0px` = 没露出来）—— `board-panel.ts` 每次
+           收起/展开都写它（`BOARD_WIDTH_VAR`），门厅（`foyer.ts` 的 `#foyer`）拿它当
+           左边界：`left: var(--board-w, 0px)`。面板于是**永远**露在门厅外面，而它自己
+           还是 `body` 里没 position 的 flex 子项，不会浮到画布上。 */
+        --board-w: 0px;
       }
       /* ★ 第二十七份（iPhone Safari）「输入文字后画面显示不全」：iOS 聚焦**计算字号 < 16px** 的
          文字框会自动放大整页、失焦后不缩回 ⇒ 舞台只剩放大后的一角。兜底：所有文字类输入框
@@ -144,13 +149,25 @@
          **不是浮层**（没有 position: absolute/fixed），所以它一展开画布就自己变窄，
          两者永不重叠 ⇒ 画布上的指针/触摸事件一个都截不走，`touch-action: none` 照旧。
          收起时只剩 30px 的细籤（手机上默认收起，见 board-panel.ts 的 defaultCollapsed）。
-         内容与收起状态见 board-panel.ts；拿不到 /board.json 时整块 `hidden`。 */
+         内容与收起状态见 board-panel.ts；拿不到 /board.json 时整块 `hidden`。
+
+         ★ 门厅（`foyer.ts` 的 `#foyer`，固定定位盖满整屏）不再把这一块盖死：
+           门厅的左边界是 `left: var(--board-w, 0px)`，而 `--board-w` 就是下面这个宽度
+           （`board-panel.ts` 在每次收起/展开时写上 `body`）。两条宽度必须一致 ——
+           对不上门厅就会与面板错开一条缝或者压住面板一条，`board-panel.test.ts` 钉着。
+           门厅在屏幕上时面板默认**展开**（连手机也是，`initialCollapsed` 的 `foyerUp`）。 */
       #boardpanel {
         flex: none; display: flex; flex-direction: row; align-items: stretch;
         width: min(300px, 64vw); overflow: hidden;
         background: #14171d; border-right: 1px solid #2a2e38; color: #c9d2e0;
       }
       #boardpanel[hidden] { display: none; }
+      /* ★ 门厅在屏幕上、面板展开着的那一档（`board-panel.ts` 加 `.foyer` 类）：
+         给门厅那张卡片留出 240px。手机上还按 64vw 占 250px 的话，390 宽的竖屏只剩
+         140px，卡片被挤成 108px、模式按钮竖排四行（量过）。桌面上 `100vw − 240px`
+         远大于 300px ⇒ 与上面那条**完全一样**，桌面观感一个字没变。
+         写作位置在 `.collapsed` 之前：两个类同时出现时让收起那一档说了算。 */
+      #boardpanel.foyer { width: min(300px, max(120px, 100vw - 240px)); }
       #boardpanel.collapsed { width: 30px; }
       #boardpanel.collapsed #boardbody { display: none; }
       #boardtab {

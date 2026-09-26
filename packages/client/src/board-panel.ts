@@ -17,6 +17,16 @@
  *   · 收起时只剩一条 30px 的细籤：手机上默认收起（见 `defaultCollapsed`），
  *     但新公告仍然看得见「公告」两个字，点一下就开。
  *
+ * ── 门厅（进站第一屏）怎么办 ────────────────────────────────
+ * 门厅（`foyer.ts` 的 `#foyer`）是一块 `position: fixed` 的满屏覆盖层，z-index 50 ——
+ * 它以前正好把这块面板盖死：第一次来的人**根本看不到公告**。现在两条：
+ *   · 面板把自己当前的占位宽度写进 `body` 上的 `--board-w`（`boardPanelWidth`），
+ *     门厅的左边界就用它（`left: var(--board-w, 0px)`）⇒ 面板那一条永远露在门厅外面；
+ *   · 门厅在屏幕上的期间面板**一律展开**（`BoardPanelFoyer`，连手机也是）——
+ *     需求方「一进去就要看到」；玩家进了游戏门厅一收，就回到正常判据（手机上仍然收起，
+ *     不然 300px 会把棋盘挤没）。
+ * 门厅自己**一个像素都不许动**面板（不 position、不 z-index、不改宽度）—— 它只读那个变量。
+ *
  * ── 拿不到数据怎么办 ────────────────────────────────────────
  * `#boardpanel` 在 index.html 里是 `hidden` 的，只有 `/board.json` 取回来且解析得动
  * （`board-data.ts` 的 `parseBoard`）、里面**确实有内容**，才 `hidden = false`。
@@ -38,6 +48,73 @@ import {
 /** 收起/展开记在这里（`'1'` = 收起，`'0'` = 展开） */
 export const BOARD_STATE_KEY = 'rich4.board.collapsed';
 
+/**
+ * 面板**当前占多宽**写在 `body` 的这个 CSS 自定义属性上（`document.body.style.setProperty`）。
+ *
+ * 门厅（`foyer.ts` 的 `#foyer`，`position: fixed`）的左边界就用它：
+ * `left: var(--board-w, 0px)` —— 面板那一条于是永远露在门厅外面。
+ * 面板自己**还是** `body` 里 `#board` 前面的普通 flex 子项（没有 position），
+ * 所以这条变量只是「告诉门厅左边该从哪开始」，不会让面板浮到画布上去。
+ */
+export const BOARD_WIDTH_VAR = '--board-w';
+
+/**
+ * 三种状态下 `--board-w` 的值。
+ *
+ * ⚠️ 前三条**必须**与 index.html 里 `#boardpanel` / `#boardpanel.foyer` /
+ *   `#boardpanel.collapsed` 的宽度一字不差（`board-panel.test.ts` 拿 CSS 源码钉着）
+ *   —— 对不上的话门厅会与面板错开一条缝（缝里露出画布）或者压住面板一条。
+ */
+export const BOARD_WIDTH = {
+  /** 面板 `hidden`（拿不到 / 空的 `board.json`）⇒ 不占位，门厅铺满整屏 */
+  hidden: '0px',
+  /** 只剩左边那条细籤 */
+  collapsed: '30px',
+  /**
+   * ★ 门厅在屏幕上**展开**时那一档：给门厅那张卡片留出 240px。
+   *
+   * 手机上（390 宽的竖屏）如果还按 64vw 占 250px，门厅只剩 140px —— 卡片被挤成
+   * 108px 宽的一条，模式按钮竖着排成四行（量过：`tools/board-panel-pw.mjs`）。
+   * 这一档把面板压到 150px，门厅拿回 240px 放得下卡片。桌面上 `100vw − 240px`
+   * 远大于 300px ⇒ 与展开那一档**完全一样**（不改任何桌面上的观感）。
+   * 下限 120px：再窄的屏幕上也不把面板自己挤没。
+   */
+  foyer: 'min(300px, max(120px, 100vw - 240px))',
+  /** 展开（与 `#boardpanel` 的 `width` 同一条公式）*/
+  expanded: 'min(300px, 64vw)',
+} as const;
+
+/** 面板此刻占多宽（`hidden` 优先，其次收起）—— 写进 `--board-w` 的就是它 */
+export function boardPanelWidth(state: {
+  readonly hidden: boolean;
+  readonly collapsed: boolean;
+  /** 门厅在屏幕上（展开那一档要给门厅留出 240px，见 `BOARD_WIDTH.foyer`）*/
+  readonly foyer?: boolean;
+}): string {
+  if (state.hidden) return BOARD_WIDTH.hidden;
+  if (state.collapsed) return BOARD_WIDTH.collapsed;
+  return state.foyer === true ? BOARD_WIDTH.foyer : BOARD_WIDTH.expanded;
+}
+
+/**
+ * 门厅与面板之间**唯一**的那点联系（一块由 main.ts 拿着的小开关）。
+ *
+ * · `up` —— 门厅在不在屏幕上。`true` 时面板一律展开（连手机也是，见 `initialCollapsed`）；
+ * · `refresh` —— 面板装上时填进来的「重摆一次」。改完 `up` 调一下：
+ *   `foyer.up = true; foyer.refresh?.()` ／ `foyer.up = false; foyer.refresh?.()`。
+ *   面板还没装好（`/board.json` 还在路上）时 `refresh` 是 `null`，
+ *   而那一声「叫」也不会丢 —— 装好那一刻会按当时的 `up` 摆。
+ */
+export interface BoardPanelFoyer {
+  up: boolean;
+  refresh: (() => void) | null;
+}
+
+/** 造一块门厅开关（`installBoardPanel({ foyer })` 之后面板会往 `refresh` 里填东西） */
+export function boardPanelFoyer(up = false): BoardPanelFoyer {
+  return { up, refresh: null };
+}
+
 /** 窄到这个宽度以下（或矮到这个高度以下）就当手机：**默认收起** */
 export const NARROW_WIDTH_PX = 760;
 export const NARROW_HEIGHT_PX = 560;
@@ -45,6 +122,11 @@ export const NARROW_HEIGHT_PX = 560;
 /** 细籤上的字：收起时是入口，展开时是收起钮 */
 export const TAB_LABEL_OPEN = '公告';
 export const TAB_LABEL_CLOSE = '收起';
+
+/** 写 CSS 自定义属性那一小块 —— 真 DOM 上就是 `document.body.style` */
+export interface BoardPanelLayout {
+  setProperty(name: string, value: string): void;
+}
 
 /** 面板要碰的那几个 DOM 面 —— 测试里喂假的（见 `board-panel.test.ts`） */
 export interface BoardPanelDom {
@@ -57,6 +139,13 @@ export interface BoardPanelDom {
     setAttribute(name: string, value: string): void;
     addEventListener(type: 'click', listener: () => void): void;
   };
+  /**
+   * 面板的**占位宽度**写到哪儿 —— `document.body` 的 `style`（`--board-w`）。
+   * 门厅（`#foyer`）用它把自己推到面板右边（见 index.html 的 `#foyer` 注释）。
+   * 拿不到（老页面 / 测试里的假 doc）就给 `null`：面板照旧，只是没人给它让位。
+   * ⚠️ 拿的是 `body`，不是画布 —— 白名单还是那 6 个 id。
+   */
+  readonly layout: BoardPanelLayout | null;
   readonly announcement: { replaceChildren(...nodes: readonly unknown[]): void };
   readonly announcedAt: { textContent: string | null };
   readonly highlights: { replaceChildren(...nodes: readonly unknown[]): void };
@@ -118,13 +207,25 @@ export function storedCollapsedValue(collapsed: boolean): string {
 }
 
 /**
- * 开局该是收着还是开着：**玩家自己按过就听他的**，没按过才按视口判。
+ * 开局该是收着还是开着：**玩家自己按过就听他的**，没按过再看门厅 / 视口。
+ *
+ * ★ 门厅在屏幕上（`foyerUp`）时**默认展开**，连手机也是 —— 需求方「一进去就要看到」：
+ *   第一屏只给一条 30px 的细籤不算「看到公告」。玩家进了游戏（门厅收掉）就回到
+ *   `defaultCollapsed` 那套判据，手机上仍然默认收起，不然 300px 会把棋盘挤没。
+ *   玩家自己按过（存过 `0`/`1`）的**永远优先** —— 门厅期间也一样。
  *
  * ⚠️ 玩家没按过时**不写** localStorage（见 `installBoardPanel`）—— 写下去就等于
  *   把「在手机上默认收起」这件事钉死成「这台设备永远收起」，换个屏幕也不改了。
  */
-export function initialCollapsed(view: BoardPanelView, stored: string | null | undefined): boolean {
-  return readStoredCollapsed(stored) ?? defaultCollapsed(view);
+export function initialCollapsed(
+  view: BoardPanelView,
+  stored: string | null | undefined,
+  foyerUp = false,
+): boolean {
+  const chosen = readStoredCollapsed(stored);
+  if (chosen !== null) return chosen;
+  if (foyerUp) return false;
+  return defaultCollapsed(view);
 }
 
 // ============================================================
@@ -198,6 +299,11 @@ export interface InstallBoardPanelOptions {
   readonly storage: BoardStorage | null;
   readonly view: BoardPanelView;
   /**
+   * 门厅开关（见 `BoardPanelFoyer`）。给了就由它决定「门厅期间一律展开」这件事，
+   * 面板还会往它的 `refresh` 里填一个「重摆一次」。不给 = 没有门厅这回事（桌面壳 / 测试）。
+   */
+  readonly foyer?: BoardPanelFoyer | undefined;
+  /**
    * 面板的**占位宽度变了**（出现 / 收起 / 展开）—— 画布跟着变宽变窄，
    * 调用方在这里排一帧（`requestRender`），`resizeCanvas()` 会在那一帧里读新尺寸。
    * ⚠️ 面板本身**从不**碰画布，这是它与画布之间唯一的联系。
@@ -210,26 +316,44 @@ export interface InstallBoardPanelOptions {
 /**
  * 装上佈告欄：取数据 → 画上去 → 露出来 → 接上细籤的收起/展开。
  *
+ * 每一步都顺手把**当前占位宽度**写给门厅（`body` 上的 `--board-w`，见 `BOARD_WIDTH`）：
+ * 拿不到数据 ⇒ `0px`（门厅铺满整屏），收起 ⇒ `30px`，展开 ⇒ 门厅在不在决定用哪一档。
+ *
  * 返回**面板有没有露出来**（测试用；调用方当它没有返回值也行）。
  * 拿不到数据 / 数据是空的 / 中途出了任何意外 ⇒ 返回 `false`，面板保持 `hidden`，
  * 而且**一个监听都不挂**（连收起状态都不去动）—— 游戏该怎么跑还怎么跑。
  */
 export async function installBoardPanel(opts: InstallBoardPanelOptions): Promise<boolean> {
-  const { dom, storage, view, onLayoutChange, onError } = opts;
+  const { dom, storage, view, foyer, onLayoutChange, onError } = opts;
+  // 面板一上来是 `hidden`（index.html 原样）⇒ 先把「我不占位」写出去，门厅照旧铺满整屏。
+  // 拿不到数据时这句就是最终值；真要露出来下面 apply() 会改掉。
+  dom.layout?.setProperty(BOARD_WIDTH_VAR, boardPanelWidth({ hidden: true, collapsed: true }));
   try {
     const data = await opts.load();
     if (data === null || !hasBoardContent(data)) return false;
 
     renderBoardPanel(dom, data);
 
-    let collapsed = initialCollapsed(view, safeGet(storage));
+    /** 此刻该收着还是开着：玩家按过的优先，其次是「门厅在不在」与视口（见 initialCollapsed） */
+    const decide = (): boolean => initialCollapsed(view, safeGet(storage), foyer?.up ?? false);
+    let collapsed = decide();
     const apply = (next: boolean, remember: boolean): void => {
       collapsed = next;
+      // ★ 门厅在屏幕上**且展开着** ⇒ 走窄一点的那一档（`BOARD_WIDTH.foyer`）：
+      //   手机上给门厅那张卡片留出 240px，不然模式按钮会被挤成竖排四行。
+      //   收起时不加这个类（`#boardpanel.collapsed` 的 30px 说了算）。
+      const narrowForFoyer = !next && (foyer?.up ?? false);
       dom.root.classList.toggle('collapsed', next);
+      dom.root.classList.toggle('foyer', narrowForFoyer);
       dom.tab.textContent = next ? TAB_LABEL_OPEN : TAB_LABEL_CLOSE;
       dom.tab.title = next ? '看公告與更新日誌' : '收起佈告欄';
       // 细籤自己就是那颗开关：收起时它「开」面板，所以当前状态是收着的
       dom.tab.setAttribute('aria-expanded', next ? 'false' : 'true');
+      // ★ 占位宽度写给门厅（`left: var(--board-w)`）—— 面板本身还是没 position 的 flex 子项
+      dom.layout?.setProperty(
+        BOARD_WIDTH_VAR,
+        boardPanelWidth({ hidden: false, collapsed: next, foyer: narrowForFoyer }),
+      );
       if (remember) safeSet(storage, BOARD_STATE_KEY, storedCollapsedValue(next));
       onLayoutChange?.();
     };
@@ -237,6 +361,9 @@ export async function installBoardPanel(opts: InstallBoardPanelOptions): Promise
     dom.root.hidden = false;
     apply(collapsed, false); // 首屏只按默认/记忆摆一次，**不写**回去
     dom.tab.addEventListener('click', () => apply(!collapsed, true));
+    // 门厅开/关时 main.ts 改 `foyer.up` 再调它：门厅起来了 ⇒ 展开（连手机也是），
+    // 门厅收了 ⇒ 回到正常判据（存过就听玩家的）。玩家按过的话 `decide()` 会照他的来。
+    if (foyer !== undefined) foyer.refresh = () => apply(decide(), false);
     return true;
   } catch (err) {
     onError?.(err);
@@ -271,6 +398,7 @@ function safeSet(storage: BoardStorage | null, key: string, value: string): void
  *
  * ⚠️ 这里取的名字是**白名单**：只有下面这 6 个 id。画布（`board`）不在这张单子上
  *   —— 面板这一路根本拿不到画布，也就不可能给它挂监听、改它的尺寸（测试钉着）。
+ *   另外要一块 `document.body` 的 `style`：只用来写 `--board-w`（门厅靠它让位）。
  * 少一个元素（有人改了 index.html）⇒ 返回 `null`，面板整个不装，游戏照跑。
  */
 export function boardPanelDom(doc: Document): BoardPanelDom | null {
@@ -290,6 +418,10 @@ export function boardPanelDom(doc: Document): BoardPanelDom | null {
   ) {
     return null;
   }
+
+  // `document.body`（不是画布）：写 `--board-w` 用。测试里那套假 doc 没有 body ⇒ null，
+  // 面板照装，只是没人给它让位。
+  const layout = (doc.body as HTMLElement | undefined)?.style ?? null;
 
   const paragraph = (text: string, signature: boolean): Node => {
     const p = doc.createElement('p');
@@ -314,7 +446,7 @@ export function boardPanelDom(doc: Document): BoardPanelDom | null {
     return box;
   };
 
-  return { root, tab, announcement, announcedAt, highlights, changelog, paragraph, item, group };
+  return { root, tab, layout, announcement, announcedAt, highlights, changelog, paragraph, item, group };
 }
 
 /** 当前视口（判断默认收起用） */
